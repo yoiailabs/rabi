@@ -1,0 +1,4 @@
+interface:
+  display_name: "Rabi Development"
+  short_description: "Manage rabi workspace development with subagents"
+  default_prompt: "Use $rabi-dev to manage this workspace task through implementation, verification, and review."
