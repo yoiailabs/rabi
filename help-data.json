@@ -79,6 +79,10 @@
     {
       "name": "workflow",
       "description": "List, inspect, and validate workflow definitions without executing them"
+    },
+    {
+      "name": "run",
+      "description": "Run trusted workflows in a new workspace and inspect saved runs"
     }
   ],
   "helps": {
@@ -1947,7 +1951,7 @@
         "Definitions come from the built-in default and .rabi/workflows/<name>.yaml in the invoking checkout, or the selected primary checkout with -R/--repo. The name default is reserved.",
         "Inspection requires no trust and runs no workflow steps or external agent CLI. JSON uses the existing schema 2 envelope.",
         "JSON data is {workflow:{name,version,schemaVersion,source,path,definition,agents,steps}}. agents maps agent step IDs to resolved provider/model/effort. Unknown names exit 3; invalid definitions exit 2 with error.details.diagnostics.",
-        "Every step accepts boolean allow_dirty (default false): definition.steps retains allow_dirty, and steps maps step IDs to {allowDirty}. Runtime dirty enforcement is deferred."
+        "Every step accepts boolean allow_dirty (default false): definition.steps retains allow_dirty, and steps maps step IDs to {allowDirty}. Execution stops on non-ignored uncommitted changes unless allow_dirty is true."
       ],
       "examples": [
         {
@@ -2000,6 +2004,157 @@
           "command": "rabi workflow check default --json",
           "description": "Inspect the built-in default workflow"
         }
+      ]
+    },
+    "run": {
+      "name": "run",
+      "description": "Run trusted workflows in a new workspace and inspect saved runs",
+      "usage": "rabi run <start|show> [options]",
+      "options": [
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Select a repository by path, registered ID, canonical host/owner/repo name, or an unambiguous name suffix. May precede the command. For exec, put it before the workspace name."
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "The default ends with an ordinary draft-pull-request agent step. There is no automatic retry or resume."
+      ]
+    },
+    "run start": {
+      "name": "run start",
+      "description": "Execute a trusted workflow in a new workspace",
+      "usage": "rabi run start TASK --name NAME --base REF [--workflow NAME] [--provider P] [--model M] [--check CMD]...",
+      "options": [
+        {
+          "name": "name",
+          "type": "string",
+          "description": "Required new workspace and branch name"
+        },
+        {
+          "name": "base",
+          "type": "string",
+          "description": "Required Git base reference; use a branch or origin tracking branch for PR creation"
+        },
+        {
+          "name": "workflow",
+          "type": "string",
+          "description": "Workflow name (default: default)"
+        },
+        {
+          "name": "provider",
+          "type": "string",
+          "description": "Override all agent providers: codex, cursor, or claude. Only codex is runnable"
+        },
+        {
+          "name": "model",
+          "type": "string",
+          "description": "Override the model for every agent step"
+        },
+        {
+          "name": "check",
+          "type": "string",
+          "description": "Check command for commands: cli; repeat to run multiple checks",
+          "multiple": true
+        },
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Select a repository by path, registered ID, canonical host/owner/repo name, or an unambiguous name suffix. May precede the command. For exec, put it before the workspace name."
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "TASK is a Markdown file read from the invoking directory. Trust and validation precede workspace creation. There is no --workspace flag.",
+        "JSON is one schema 2 envelope with data.run; progress goes to stderr and child output is saved in attempt logs. A stopped run after persistent changes exits 6.",
+        "Agents commit; the final draft-pull-request agent pushes only the run branch to origin without force or tags and opens a draft PR against the base branch. rabi advances on normal agent success and the dirty-workspace rule; it does not verify publication or extract PR URLs.",
+        "rabi passes branch/base/remote/check/review facts. The agent writes Summary / Testing / Risk / How to revert and reports the PR URL in its answer log; risk is not assessed by rabi unless the task says otherwise. Only prepare is a system action; removed push/draft-pr actions fail validation."
+      ],
+      "examples": [
+        {
+          "command": "rabi run start task.md --name fix/example --base origin/main --check 'cargo test --locked'",
+          "description": "Run the default workflow in the foreground"
+        }
+      ]
+    },
+    "run show": {
+      "name": "run show",
+      "description": "Read saved run progress, workspace, PR and stop reason",
+      "usage": "rabi run show RUN_ID [options]",
+      "options": [
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Select a repository by path, registered ID, canonical host/owner/repo name, or an unambiguous name suffix. May precede the command. For exec, put it before the workspace name."
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "RUN_ID is the full run_<uuid v4> ID. Reading a stopped run succeeds with exit 0. JSON data.run includes the record directory. Reading requires no execution trust."
       ]
     }
   },

@@ -78,6 +78,9 @@ rabi remove task/auth
 | `rabi repo list` | 登録済み・検出されたリポジトリの一覧 |
 | `rabi repo show` | リポジトリを確認 |
 | `rabi repo forget` | 登録だけを削除 |
+| `rabi run` | ワークフローの実行操作 |
+| `rabi run start` | 信頼済みワークフローを新規 workspace で実行 |
+| `rabi run show` | 進捗・PR・停止理由を表示 |
 | `rabi workflow` | ワークフロー定義の操作 |
 | `rabi workflow list` | 組み込み・リポジトリ定義の一覧 |
 | `rabi workflow show` | YAML と解決済みの agent 設定を表示 |
@@ -119,6 +122,14 @@ rabi remove task/auth
 ## ワークフロー定義
 
 `rabi workflow list`、`rabi workflow show NAME`、`rabi workflow check [NAME]` は組み込みの `default` と `.rabi/workflows/<name>.yaml` を、実行せず信頼も要求せずに確認します。`-R` 指定時は選択したプライマリ、それ以外は呼び出し元のチェックアウトから読みます。`rabi trust add` はフックとともにリポジトリのワークフローを列挙し、同じリポジトリ実行信頼を付与します。[ワークフロー定義](docs/workflows.md)を参照してください。
+
+`rabi run start TASK --name NAME --base REF --check CMD` は信頼済みワークフローを foreground で実行します。agent がコミットし、最後の `draft-pull-request` agent 工程が origin へ push して draft PR を作成します。push または draft PR 作成に失敗した場合、プロンプトは agent に未コミット・未追跡の `DRAFT_PULL_REQUEST_FAILED.txt` を残し、`git status --porcelain` に表示されることを確認するよう指示します。無視される場合は、代わりに追跡済みファイルへの未コミットの変更としてエラーを残す必要があります。dirty-workspace ルールで実行が停止し、`run show` に変更されたパスが表示されます。rabi 自体は PR の存在を確認せず、報告は agent のログに残します。保存結果は `rabi run show RUN_ID` で確認できます。実行できる provider は現在 Codex のみです。provider/model の上書きは全 agent 工程に適用します。[ワークフローの実行](docs/workflows.md)を参照してください。
+
+```sh
+rabi trust add
+rabi run start task.md --name fix/example --base origin/main --check 'cargo test --locked'
+rabi run show run_<uuid>
+```
 
 ## 設定
 

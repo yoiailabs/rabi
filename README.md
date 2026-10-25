@@ -78,6 +78,9 @@ Read [removal safety and retries](docs/safety.md) and [sync strategies](docs/syn
 | `rabi repo list` | List registered and discovered repositories |
 | `rabi repo show` | Inspect a repository |
 | `rabi repo forget` | Drop a registration |
+| `rabi run` | Workflow execution commands |
+| `rabi run start` | Run a trusted workflow in a new workspace |
+| `rabi run show` | Read progress, PR and stop reason |
 | `rabi workflow` | Workflow definition commands |
 | `rabi workflow list` | List built-in and repository definitions |
 | `rabi workflow show` | Show YAML and resolved agent settings |
@@ -119,6 +122,14 @@ See [JSON objects and per-command data](docs/json.md) and [exit codes and recove
 ## Workflow definitions
 
 `rabi workflow list`, `rabi workflow show NAME`, and `rabi workflow check [NAME]` inspect the built-in `default` and `.rabi/workflows/<name>.yaml` without executing them or requiring trust. `-R` uses the selected primary checkout; otherwise definitions come from the invoking checkout. `rabi trust add` lists repository workflows alongside hooks and grants the same repository execution trust. See [workflow definitions](docs/workflows.md).
+
+`rabi run start TASK --name NAME --base REF --check CMD` executes a trusted workflow in the foreground. Agents commit, then a final `draft-pull-request` agent step pushes to origin and opens a draft PR. On push or draft PR failure, the prompt tells the agent to leave an uncommitted, untracked `DRAFT_PULL_REQUEST_FAILED.txt` and verify it appears in `git status --porcelain`. If ignored, the agent must leave the error as an uncommitted change to a tracked file instead. The dirty-workspace rule stops the run and `run show` names the changed path. rabi does not check PR existence; reports stay in the agent logs. Inspect saved results with `rabi run show RUN_ID`. Only Codex runs today. Provider/model overrides apply to all agent steps. See [workflow execution](docs/workflows.md).
+
+```sh
+rabi trust add
+rabi run start task.md --name fix/example --base origin/main --check 'cargo test --locked'
+rabi run show run_<uuid>
+```
 
 ## Configuration
 

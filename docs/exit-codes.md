@@ -20,3 +20,5 @@ GC plans and protected skips succeed with exit 0. A warning does not by itself m
 
 
 `workflow list/show/check` use the existing exit table. Unknown workflow names exit 3 (`not_found`). Invalid definitions exit 2 (`usage`); check keeps all items and diagnostics in data. Reading and validation require no trust and run no workflow commands.
+
+`run start` uses 2 for invalid definitions/options, 4 (`untrusted`) for untrusted execution before allocation, and 6 (`partial`) when execution stops after persistent changes. Operational preflight errors use their ordinary status. `run show` exits 0 for any readable run, including stopped runs; unknown IDs exit 3 and malformed IDs exit 2.

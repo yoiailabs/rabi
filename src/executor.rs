@@ -1,4 +1,4 @@
-//! Foreground workflow engine. Deliberately internal until run start is public.
+//! Foreground workflow engine.
 #![allow(dead_code)]
 
 use std::collections::BTreeMap;
@@ -74,7 +74,7 @@ pub(crate) fn execute(context: &Context, request: Request<'_>) -> Result<Record>
     run::require_trust(&context.git_root)?;
     // Before prepare this describes the requested destination. Allocation fills
     // the observed metadata, retaining the schema-1 workspace object shape.
-    let mut record = Record::new(
+    let record = Record::new(
         &request.workflow.entry,
         definition,
         run::Workspace {
@@ -92,6 +92,18 @@ pub(crate) fn execute(context: &Context, request: Request<'_>) -> Result<Record>
         request.task,
         &request.workflow.yaml,
     )?;
+    let run_id = record.id.clone();
+    execute_created(context, request, record, definition, agents)
+        .map_err(|error| Error::status(crate::error::PARTIAL, format!("Run {run_id} could not persist progress: {error}. Inspect its records before any further action.")))
+}
+
+fn execute_created(
+    context: &Context,
+    request: Request<'_>,
+    mut record: Record,
+    definition: &workflow::Definition,
+    agents: BTreeMap<String, workflow::Agent>,
+) -> Result<Record> {
     let dir = run::directory(&context.git_root, &record.id)?;
     fs::File::create(dir.join("worklog.md")).map_err(io)?;
     let mut engine = Engine {
@@ -103,6 +115,10 @@ pub(crate) fn execute(context: &Context, request: Request<'_>) -> Result<Record>
         sessions: BTreeMap::new(),
         checks: String::new(),
         review: None,
+        reviews: BTreeMap::new(),
+        feedback: String::new(),
+        report: String::new(),
+        base_branch: None,
     };
     let mut next = definition.start.clone();
     loop {
@@ -131,6 +147,13 @@ pub(crate) fn execute(context: &Context, request: Request<'_>) -> Result<Record>
                 _ => None,
             },
         });
+        crate::output::errln!(
+            "Run {}: starting {} ({}/{})",
+            record.id,
+            crate::output::visible_text(&next),
+            record.steps_started + 1,
+            definition.limits.max_steps
+        );
         let mut attempt = run::begin_attempt(&context.git_root, &mut record, &next, agent)?;
         let attempt_dir =
             run::attempt_directory(&context.git_root, &record.id, &next, attempt.attempt)?;
@@ -210,7 +233,12 @@ pub(crate) fn execute(context: &Context, request: Request<'_>) -> Result<Record>
                                 .get_mut(name)
                                 .ok_or_else(|| Error::msg("Validated loop is missing"))?;
                             if counter.used >= counter.max as u64 {
-                                stop = Some(reason("limit", format!("Loop '{name}' exhausted")));
+                                let message = match attempt.result.as_str() {
+                                    "revise" => format!("Review limit reached: loop '{name}' exhausted. Reconsider the approach before starting a new run."),
+                                    "fail" => format!("Check failure exhausted loop '{name}'. Reconsider the approach before starting a new run."),
+                                    _ => format!("Loop '{name}' exhausted"),
+                                };
+                                stop = Some(reason("limit", message));
                             } else {
                                 counter.used += 1;
                             }
@@ -246,6 +274,17 @@ struct Engine<'a> {
     sessions: BTreeMap<String, String>,
     checks: String,
     review: Option<String>,
+    reviews: BTreeMap<String, Review>,
+    feedback: String,
+    report: String,
+    base_branch: Option<String>,
+}
+
+struct Review {
+    round: u64,
+    head: String,
+    base: String,
+    verdict: String,
 }
 
 type StepResult = std::result::Result<&'static str, StopReason>;
@@ -319,6 +358,10 @@ impl Engine<'_> {
                 let base = allocation.source["base"]
                     .as_str()
                     .ok_or_else(|| Error::msg("Allocation did not return a base"))?;
+                self.base_branch = base
+                    .strip_prefix("refs/heads/")
+                    .or_else(|| base.strip_prefix("refs/remotes/origin/"))
+                    .map(str::to_owned);
                 record.base = Some(git::output(
                     &["rev-parse", "--verify", &format!("{base}^{{commit}}")],
                     Some(&self.context.source_checkout),
@@ -335,17 +378,6 @@ impl Engine<'_> {
                 }
                 Ok(Ok("ok"))
             }
-            StepKind::System { action } => Ok(Err(reason(
-                "operation_failed",
-                format!(
-                    "System action {} is not available yet",
-                    match action {
-                        Action::Prepare => "prepare",
-                        Action::Push => "push",
-                        Action::DraftPr => "draft-pr",
-                    }
-                ),
-            ))),
             StepKind::Check { commands } => {
                 let workspace = self.workspace(record)?;
                 let commands = match commands {
@@ -432,11 +464,54 @@ impl Engine<'_> {
                     Some(workspace),
                     true,
                 )?;
-                let diff = git::output(&["diff", &merge_base, "--"], Some(workspace), false)?;
+                let head = git::output(&["rev-parse", "HEAD"], Some(workspace), true)?;
+                let previous = self.reviews.get(&attempt.step);
+                let diff_base = if *output == Output::ReviewV1 {
+                    previous
+                        .map(|review| review.head.as_str())
+                        .unwrap_or(&merge_base)
+                } else {
+                    &merge_base
+                };
+                let diff = if *output == Output::ReviewV1 && !step.allow_dirty {
+                    git::output(&["diff", diff_base, &head, "--"], Some(workspace), false)?
+                } else {
+                    git::output(&["diff", diff_base, "--"], Some(workspace), false)?
+                };
                 let mut prompt = format!(
                     "{instruction}\n\n# Task\n{}\n\n# Diff\n{diff}\n",
                     self.request.task
                 );
+                if *output == Output::ReviewV1 {
+                    let round = previous.map(|review| review.round + 1).unwrap_or(1);
+                    let limit = step
+                        .transitions
+                        .get("revise")
+                        .and_then(|target| match target {
+                            Target::Loop { name, .. } => {
+                                self.definition.loops.get(name).map(|max| *max as u64 + 1)
+                            }
+                            _ => None,
+                        });
+                    let merge_base = previous
+                        .map(|review| review.base.as_str())
+                        .unwrap_or(&merge_base);
+                    prompt.push_str(&format!("\n# Review round {round} / {}\nInitial merge-base: {merge_base}\nReviewed HEAD: {head}\nReview command: git diff {diff_base} {head}\n", limit.map(|n| n.to_string()).unwrap_or_else(|| format!("max_steps {}", self.definition.limits.max_steps))));
+                    for name in ["REVIEW.md", "AGENTS.md", "CLAUDE.md"] {
+                        let path = workspace.join(name);
+                        if path.is_file() {
+                            prompt.push_str(&format!(
+                                "Read {} when reviewing.\n",
+                                crate::output::visible_text(&path.to_string_lossy())
+                            ));
+                        }
+                    }
+                    prompt.push_str(REVIEW_INSTRUCTION);
+                    prompt.push_str(&format!(
+                        "\n# Prior review answers and fix responses\n{}\n",
+                        self.feedback
+                    ));
+                }
                 let untracked = git::output(
                     &["ls-files", "--others", "--exclude-standard", "-z"],
                     Some(workspace),
@@ -462,6 +537,36 @@ impl Engine<'_> {
                         prompt.push_str(&format!("\n# Latest review\n{review}\n"));
                     }
                 }
+                prompt.push_str(&format!("\n# Run facts\nRun branch: {}\nBase branch: {}\nRequested base ref: {}\nRemote: origin\n",
+                    record.workspace.branch.as_deref().unwrap_or("unknown"),
+                    self.base_branch.as_deref().unwrap_or("unknown (resolve the requested base ref)"),
+                    self.request.base));
+                if matches!(mode, workflow::Mode::Edit) {
+                    prompt.push_str(&format!(
+                        "\n# Latest agent report\n{}\n\n# Review outcomes\n",
+                        self.report
+                    ));
+                    if self.reviews.is_empty() {
+                        prompt.push_str("No reviews performed.\n");
+                    }
+                    for (id, review) in &self.reviews {
+                        prompt.push_str(&format!(
+                            "Review {id}: verdict {}, reviewed HEAD {}, rounds {}\n",
+                            review.verdict, review.head, review.round
+                        ));
+                    }
+                    prompt.push_str(&format!(
+                        "\n# Review history and fix responses\n{}\n",
+                        self.feedback
+                    ));
+                    if self.checks.is_empty() {
+                        prompt.push_str("\nChecks not run.\n");
+                    }
+                }
+                // Keep the output contract last, after task, diff and all context.
+                if *output == Output::ReviewV1 {
+                    prompt.push_str(VERDICT_INSTRUCTION);
+                }
                 fs::write(dir.join("prompt.md"), prompt).map_err(io)?;
                 let mut command = provider::codex(&config, mode, workspace, dir, session)?;
                 let code = logged(&mut command, dir)?;
@@ -481,6 +586,35 @@ impl Engine<'_> {
                 session?;
                 let answer = fs::read_to_string(dir.join("answer.md")).map_err(io)?;
                 if *output == Output::ReviewV1 {
+                    let round = self
+                        .reviews
+                        .get(&attempt.step)
+                        .map(|review| review.round + 1)
+                        .unwrap_or(1);
+                    let base = self
+                        .reviews
+                        .get(&attempt.step)
+                        .map(|review| review.base.clone())
+                        .unwrap_or(merge_base);
+                    self.reviews.insert(
+                        attempt.step.clone(),
+                        Review {
+                            round,
+                            head: head.clone(),
+                            base,
+                            verdict: answer
+                                .lines()
+                                .rev()
+                                .find(|line| !line.trim().is_empty())
+                                .unwrap_or("")
+                                .trim()
+                                .into(),
+                        },
+                    );
+                    self.feedback.push_str(&format!(
+                        "\nReview {} round {round} at {head}:\n{answer}\n",
+                        attempt.step
+                    ));
                     self.review = Some(answer.clone());
                     return Ok(
                         match answer
@@ -497,6 +631,11 @@ impl Engine<'_> {
                             )),
                         },
                     );
+                }
+                self.report = answer.clone();
+                if matches!(mode, workflow::Mode::Edit) && self.review.is_some() {
+                    self.feedback
+                        .push_str(&format!("\nFix response ({}):\n{answer}\n", attempt.step));
                 }
                 Ok(Ok("ok"))
             }
@@ -564,6 +703,21 @@ fn dirty(workspace: &Path) -> Result<Option<String>> {
         }
     )))
 }
+
+const REVIEW_INSTRUCTION: &str = "
+Start with an actual count of actionable findings (Important / Nit / Pre-existing).
+Tag findings [Important], [Nit], or [Pre-existing]; give each an ID and file:line
+code evidence, triggering conditions, impact, confidence, and a fix direction.
+Group instances by bug class. Pre-existing means present at the initial base.
+Read prior findings and responses; update their status without duplicate findings.
+Count unresolved prior Important findings too. Report unverified assumptions.
+If the comparison cannot be interpreted (including rewritten history), request a
+stop and reconsideration; do not silently broaden the diff. Every session is fresh.
+Unresolved Important findings require the final line 判定: 要修正.
+Only Nit/Pre-existing or no findings require the final line 判定: 問題なし.
+";
+
+const VERDICT_INSTRUCTION: &str = "\nEven when there are no findings, the final line must be exactly 判定: 問題なし or 判定: 要修正.\n";
 
 #[cfg(test)]
 mod tests;

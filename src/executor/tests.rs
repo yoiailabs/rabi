@@ -30,6 +30,8 @@ fi
 printf 'diagnostic\n' >&2
 [ "$RABI_TEST_CASE" != nonzero ] || exit 9
 case "$prompt" in
+    DRAFT_PULL_REQUEST*) printf 'Draft PR: https://github.com/test/repo/pull/42\n' > "$answer" ;;
+    SUMMARY*) printf 'Final summary.\nVerification gap: integration checks were not run.\n' > "$answer" ;;
     REVIEW*)
         case "$RABI_TEST_CASE" in
             verdict) printf 'No verdict here\n' > "$answer" ;;
@@ -191,13 +193,20 @@ fn ignored_files_are_clean() {
     scenario("ignored");
 }
 #[test]
-fn push_is_unavailable() {
-    scenario("push");
+fn draft_pull_request_is_an_ordinary_agent_step() {
+    scenario("draft_pull_request");
 }
+
 #[test]
-fn draft_is_unavailable() {
-    scenario("draft");
+fn read_only_final_report_reaches_draft_pull_request_prompt() {
+    scenario("draft_pull_request_summary");
 }
+
+#[test]
+fn read_only_report_without_edit_reaches_draft_pull_request_prompt() {
+    scenario("draft_pull_request_summary_only");
+}
+
 #[test]
 fn unsupported_provider_preflight() {
     scenario("unsupported");
@@ -282,26 +291,57 @@ fn worker() {
     git::run(&["add", "."], Some(&repo)).unwrap();
     git::run(&["commit", "-qm", "chore: initial"], Some(&repo)).unwrap();
     let initial_head = git::head_commit(&repo).unwrap();
+    for name in ["REVIEW.md", "AGENTS.md", "CLAUDE.md"] {
+        fs::write(repo.join(name), "Review guidance.\n").unwrap();
+    }
+    git::run(&["add", "."], Some(&repo)).unwrap();
+    git::run(&["commit", "-qm", "docs: review guidance"], Some(&repo)).unwrap();
+    let initial_head = git::head_commit(&repo).unwrap_or(initial_head);
     let context = crate::context::create_at(&repo).unwrap();
-    let mut yaml = workflow::DEFAULT_YAML.replace("pass: push", "pass: succeeded");
-    // Keep the future system actions unreachable except in their own tests.
-    if case == "push" {
-        yaml = yaml.replace("pass: succeeded", "pass: push");
-    }
-    if case == "draft" {
-        yaml = yaml.replace("pass: succeeded", "pass: draft");
-    }
-    // Use short instructions so the fake can distinguish the role.
+    let yaml = if case.starts_with("draft_pull_request") {
+        workflow::DEFAULT_YAML.to_string()
+    } else {
+        workflow::DEFAULT_YAML.replace("pass: draft-pull-request", "pass: succeeded")
+    };
+    // Prefix the built-in instructions so the fake can distinguish the role.
     let mut definition: workflow::Definition = serde_norway::from_str(&yaml).unwrap();
     for (id, step) in &mut definition.steps {
         if let StepKind::Agent { instruction, .. } = &mut step.kind {
-            *instruction = match id.as_str() {
-                "implement" => "IMPLEMENT",
-                "fix" => "FIX",
-                _ => "REVIEW",
-            }
-            .into();
+            *instruction = format!(
+                "{}\n{instruction}",
+                match id.as_str() {
+                    "implement" => "IMPLEMENT",
+                    "fix" => "FIX",
+                    "draft-pull-request" => "DRAFT_PULL_REQUEST",
+                    _ => "REVIEW",
+                }
+            );
         }
+    }
+    if case.starts_with("draft_pull_request_summary") {
+        let mut summary = definition.steps["implement"].clone();
+        if let StepKind::Agent {
+            mode, instruction, ..
+        } = &mut summary.kind
+        {
+            *mode = workflow::Mode::ReadOnly;
+            *instruction = "SUMMARY".into();
+        }
+        summary
+            .transitions
+            .insert("ok".into(), Target::Step("draft-pull-request".into()));
+        definition.steps.insert("summary".into(), summary);
+        let (previous, result) = if case == "draft_pull_request_summary_only" {
+            ("prepare", "ok")
+        } else {
+            ("review", "pass")
+        };
+        definition
+            .steps
+            .get_mut(previous)
+            .unwrap()
+            .transitions
+            .insert(result.into(), Target::Step("summary".into()));
     }
     if matches!(case.as_str(), "allowed" | "dirty_diff") {
         // All later steps see the same permitted dirty file.
@@ -496,6 +536,13 @@ fn worker() {
             assert!(attempt.head.is_some());
         }
         if attempt.agent.is_some() {
+            let prompt = fs::read_to_string(path.join("prompt.md")).unwrap();
+            if attempt.step == "implement" || attempt.step == "fix" {
+                assert!(prompt.contains("Do not push or create PRs."));
+            }
+            if attempt.step == "review" {
+                assert!(prompt.ends_with("Even when there are no findings, the final line must be exactly 判定: 問題なし or 判定: 要修正.\n"));
+            }
             assert!(path.join("prompt.md").is_file());
             assert!(path.join("answer.md").is_file());
             assert!(fs::read_to_string(path.join("prompt.md"))
@@ -504,8 +551,19 @@ fn worker() {
         }
     }
     let expected = match case.as_str() {
-        "pass" | "repair" | "review_repair" | "allowed" | "ignored" | "list_commands"
-        | "blank_report" | "base_head" | "dirty_diff" | "fresh_fix" => None,
+        "pass"
+        | "repair"
+        | "review_repair"
+        | "allowed"
+        | "ignored"
+        | "list_commands"
+        | "blank_report"
+        | "base_head"
+        | "dirty_diff"
+        | "fresh_fix"
+        | "draft_pull_request"
+        | "draft_pull_request_summary"
+        | "draft_pull_request_summary_only" => None,
         "limit" | "max_steps" | "shared_limit" => Some("limit"),
         "verdict" => Some("contract_invalid"),
         "dirty" | "check_dirty" | "setup_dirty" => Some("dirty_workspace"),
@@ -581,12 +639,12 @@ fn worker() {
             let review_args = fs::read_to_string(root.join("call-2.args")).unwrap();
             assert!(!review_args.lines().any(|arg| arg == "resume"));
             assert!(review_args.contains("--sandbox\nread-only\n"));
+            assert!(!review_args.lines().any(|arg| arg == "--approve-for-me"));
             let args = fs::read_to_string(root.join("call-1.args")).unwrap();
-            assert!(args.contains("--sandbox\nworkspace-write\n"));
+            assert!(args.lines().any(|arg| arg == "--approve-for-me"));
+            assert!(!args.lines().any(|arg| arg == "--sandbox"));
+            assert!(!args.lines().any(|arg| arg == "--add-dir"));
             assert!(!review_args.lines().any(|arg| arg == "--add-dir"));
-            let common =
-                crate::git::git_common_dir(std::path::Path::new(&record.workspace.path)).unwrap();
-            assert!(args.contains(&format!("--add-dir\n{}\n", common.display())));
             assert!(args.contains("-m\ngpt-6.1-sol\n-c\nmodel_reasoning_effort=\"high\"\n"));
             assert!(!args.contains("service_tier"));
             let start: Record =
@@ -616,11 +674,37 @@ fn worker() {
             let call = if case == "repair" { 2 } else { 3 };
             let args = fs::read_to_string(root.join(format!("call-{call}.args"))).unwrap();
             assert!(args.contains("resume\nthread-1\n-\n"));
-            assert!(args.find("--sandbox").unwrap() < args.find("resume").unwrap());
+            assert!(args.starts_with("exec\n"));
+            assert!(args.find("--approve-for-me").unwrap() < args.find("resume").unwrap());
+            assert!(!args.lines().any(|arg| arg == "--sandbox"));
+            assert!(!args.lines().any(|arg| arg == "--add-dir"));
             let prompt = fs::read_to_string(root.join(format!("call-{call}.prompt"))).unwrap();
             assert!(prompt.contains("Latest checks"));
             if case == "review_repair" {
                 assert!(prompt.contains("Please repair the review issue."));
+                let first = run::load_attempt(&repo, &record.id, "review", 4).unwrap();
+                let second = run::load_attempt(&repo, &record.id, "review", 7).unwrap();
+                let prompt = fs::read_to_string(dir.join("steps/007-review/prompt.md")).unwrap();
+                assert!(prompt.contains(&format!(
+                    "git diff {} {}",
+                    first.head.unwrap(),
+                    second.head.unwrap()
+                )));
+                assert!(prompt.contains("# Review round 2 / 3"));
+                assert!(prompt.contains("Please repair the review issue."));
+                assert!(prompt.contains("Fix response (fix):\nImplementation report."));
+                assert!(!prompt.contains("+1\n"));
+                for name in ["REVIEW.md", "AGENTS.md", "CLAUDE.md"] {
+                    assert!(prompt.contains(
+                        Path::new(&record.workspace.path)
+                            .join(name)
+                            .to_str()
+                            .unwrap()
+                    ));
+                }
+                for tag in ["[Important]", "[Nit]", "[Pre-existing]", "file:line"] {
+                    assert!(prompt.contains(tag));
+                }
             }
             let check = run::load_attempt(&repo, &record.id, "check", 3).unwrap();
             if case == "repair" {
@@ -629,6 +713,12 @@ fn worker() {
             }
         }
         "limit" => {
+            assert!(record
+                .stop_reason
+                .as_ref()
+                .unwrap()
+                .message
+                .contains("Check failure exhausted"));
             assert_eq!(record.loops["repair"].used, 2);
             assert_eq!(record.steps_started, 7);
             assert_eq!(fs::read_to_string(root.join("calls")).unwrap(), "3");
@@ -642,6 +732,18 @@ fn worker() {
             }
         }
         "shared_limit" => {
+            assert!(record
+                .stop_reason
+                .as_ref()
+                .unwrap()
+                .message
+                .contains("Review limit reached"));
+            assert!(record
+                .stop_reason
+                .as_ref()
+                .unwrap()
+                .message
+                .contains("Reconsider the approach"));
             assert_eq!(record.loops["repair"].used, 2);
             assert_eq!(record.steps_started, 9);
             for call in [3, 5] {
@@ -673,11 +775,61 @@ fn worker() {
             assert_eq!(record.steps_started, 4);
             assert_eq!(fs::read_to_string(root.join("calls")).unwrap(), "2");
         }
-        "push" | "draft" => assert!(record
-            .stop_reason
-            .unwrap()
-            .message
-            .contains("not available yet")),
+        "draft_pull_request" | "draft_pull_request_summary" | "draft_pull_request_summary_only" => {
+            // No remote or gh is installed: successful publication is the agent's
+            // report, with no rabi publication, lookup, or metadata extraction.
+            assert!(record.pr.is_none());
+            assert!(!dir.join("pr-body.md").exists());
+            assert!(crate::metadata::load(&repo)
+                .unwrap()
+                .values()
+                .all(|m| m.links.pr.is_none()));
+            let prompt = fs::read_to_string(attempts.last().unwrap().join("prompt.md")).unwrap();
+            for text in [
+                "Run branch: topic",
+                "Base branch: main",
+                "Remote: origin",
+                "DRAFT PR",
+                "Summary / Testing / Risk / How to revert",
+                "without force",
+                "risk is not assessed by rabi",
+                "report the PR URL",
+            ] {
+                assert!(prompt.contains(text), "Missing {text}: {prompt}");
+            }
+            if case.starts_with("draft_pull_request_summary") {
+                assert!(prompt.contains(
+                    "Final summary.\nVerification gap: integration checks were not run."
+                ));
+                assert!(!prompt.contains("Implementation report."));
+                assert!(!prompt.contains("Fix response (summary)"));
+            } else {
+                assert!(prompt.contains("Implementation report."));
+            }
+            if case != "draft_pull_request_summary_only" {
+                let review = run::load_attempt(&repo, &record.id, "review", 4).unwrap();
+                assert!(prompt.contains(&format!(
+                    "verdict 判定: 問題なし, reviewed HEAD {}, rounds 1",
+                    review.head.unwrap()
+                )));
+                assert!(prompt.contains("Exit: 0"));
+                assert!(prompt.contains("check-diagnostic"));
+            }
+            let args = fs::read_to_string(root.join(format!(
+                "call-{}.args",
+                if case == "draft_pull_request_summary_only" {
+                    2
+                } else if case == "draft_pull_request_summary" {
+                    4
+                } else {
+                    3
+                }
+            )))
+            .unwrap();
+            assert!(args.contains("--approve-for-me"));
+            assert!(!args.contains("--sandbox"));
+            assert!(!args.contains("resume"));
+        }
         "unrun_continue" => {
             assert_eq!(record.steps_started, 2);
             assert!(!root.join("calls").exists());

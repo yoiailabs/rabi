@@ -1,5 +1,4 @@
 //! Internal workflow progress and attempt records shared by linked checkouts.
-// No run CLI is public yet.
 #![allow(dead_code)]
 
 use serde::{Deserialize, Serialize};

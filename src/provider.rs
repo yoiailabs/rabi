@@ -9,6 +9,8 @@ use crate::error::{Error, Result};
 use crate::workflow::{Agent, Mode, Provider};
 
 pub(crate) fn supported(provider: Provider) -> Result<()> {
+    // TODO: The future Claude Code adapter must use auto mode for edit steps;
+    // read-only remains unsupported until its enforcement is verified.
     match provider {
         Provider::Codex => Ok(()),
         Provider::Claude | Provider::Cursor => Err(Error::msg(format!(
@@ -26,21 +28,19 @@ pub(crate) fn codex(
 ) -> Result<Command> {
     supported(agent.provider)?;
     let mut command = Command::new("codex");
-    // exec-level flags must precede resume, which has no -C or --sandbox.
+    // Exec-level flags, including the mode flags, must precede resume.
     command.args(["exec", "--json", "-C"]);
-    command.arg(workspace).args([
-        "--sandbox",
-        match mode {
-            Mode::ReadOnly => "read-only",
-            Mode::Edit => "workspace-write",
-        },
-    ]);
-    if matches!(mode, Mode::Edit) {
-        // Agents commit their own work. A linked workspace keeps its index and
-        // objects in the common Git directory, outside the workspace root.
-        command
-            .arg("--add-dir")
-            .arg(crate::git::git_common_dir(workspace)?);
+    command.arg(workspace);
+    match mode {
+        Mode::ReadOnly => {
+            command.args(["--sandbox", "read-only"]);
+        }
+        Mode::Edit => {
+            // Auto mode lets agents commit through automatic approval review.
+            // Explicit workspace-write keeps linked Git metadata read-only even
+            // with --add-dir; --approve-for-me conflicts with --sandbox.
+            command.arg("--approve-for-me");
+        }
     }
     if let Some(model) = &agent.model {
         command.args(["-m", model]);

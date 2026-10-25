@@ -695,6 +695,158 @@ fn inspect(args: &[String], path_only: bool) -> Result<i32> {
         Ok(SUCCESS)
     }
 }
+fn run_root(args: &[String]) -> Result<i32> {
+    let parsed = args::parse(args, &command_options("run"), true)?;
+    Err(Error::validation(format!(
+        "Unknown command 'run {}'",
+        parsed.positionals.join(" ")
+    )))
+}
+
+fn run_start(args: &[String]) -> Result<i32> {
+    let parsed = args::parse(args, &command_options("run start"), true)?;
+    let [task] = parsed.positionals.as_slice() else {
+        return Err(Error::validation(
+            "Usage: rabi run start TASK --name NAME --base REF [options]",
+        ));
+    };
+    let name = parsed
+        .value("name")
+        .ok_or_else(|| Error::validation("--name is required"))?;
+    let base = parsed
+        .value("base")
+        .ok_or_else(|| Error::validation("--base is required"))?;
+    let task = std::fs::read_to_string(task)
+        .map_err(|error| Error::msg(format!("Failed to read task: {error}")))?;
+    let context = command_context(&parsed)?;
+    let mut inspection = crate::workflow::find(
+        &context.source_checkout,
+        parsed.value("workflow").unwrap_or("default"),
+    )?
+    .inspect();
+    let provider = parsed
+        .value("provider")
+        .map(|value| match value {
+            "codex" => Ok(crate::workflow::Provider::Codex),
+            "cursor" => Ok(crate::workflow::Provider::Cursor),
+            "claude" => Ok(crate::workflow::Provider::Claude),
+            _ => Err(Error::validation(
+                "--provider must be codex, cursor, or claude",
+            )),
+        })
+        .transpose()?;
+    if provider.is_some() || parsed.value("model").is_some() {
+        inspection.override_agents(provider, parsed.value("model"))?;
+    }
+    if !inspection.valid() {
+        print_workflow_diagnostics(&inspection);
+        return Err(Error::validation(format!(
+            "Workflow '{}' is invalid: {}",
+            inspection.entry.name,
+            inspection
+                .diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.message.as_str())
+                .collect::<Vec<_>>()
+                .join("; ")
+        )));
+    }
+    let checks = parsed.values("check");
+    let record = crate::executor::execute(
+        &context,
+        crate::executor::Request {
+            workflow: &inspection,
+            task: &task,
+            checks: &checks,
+            base,
+            name,
+        },
+    )?;
+    render_run(&context.git_root, &record)?;
+    if record.state == crate::run::State::Stopped {
+        let message = record
+            .stop_reason
+            .as_ref()
+            .map(|reason| reason.message.as_str())
+            .unwrap_or("Run stopped");
+        return Err(Error::status(PARTIAL, message));
+    }
+    Ok(SUCCESS)
+}
+
+fn run_show(args: &[String]) -> Result<i32> {
+    let parsed = args::parse(args, &command_options("run show"), true)?;
+    let [id] = parsed.positionals.as_slice() else {
+        return Err(Error::validation("Usage: rabi run show RUN_ID"));
+    };
+    let context = command_context(&parsed)?;
+    let (record, _) = crate::run::load(&context.git_root, id)?;
+    render_run(&context.git_root, &record)?;
+    Ok(SUCCESS)
+}
+
+fn render_run(root: &Path, record: &crate::run::Record) -> Result<()> {
+    let directory = crate::run::directory(root, &record.id)?;
+    if crate::output::json() {
+        let mut value =
+            serde_json::to_value(record).map_err(|error| Error::msg(error.to_string()))?;
+        value["directory"] = serde_json::json!(directory);
+        crate::output::data(&serde_json::json!({"run":value}))?;
+    } else {
+        outln!("Run: {}", record.id);
+        outln!(
+            "State: {}",
+            match record.state {
+                crate::run::State::Running => "running",
+                crate::run::State::Succeeded => "succeeded",
+                crate::run::State::Stopped => "stopped",
+            }
+        );
+        outln!(
+            "Workflow: {} (version {})",
+            visible_text(&record.workflow.name),
+            record.workflow.version
+        );
+        outln!(
+            "Step: {} ({} started)",
+            visible_text(record.current_step.as_deref().unwrap_or("finished")),
+            record.steps_started
+        );
+        for (name, counter) in &record.loops {
+            outln!(
+                "Loop {}: {}/{}",
+                visible_text(name),
+                counter.used,
+                counter.max
+            );
+        }
+        outln!(
+            "Workspace: {} ({})",
+            visible_text(&record.workspace.name),
+            visible_text(&record.workspace.path)
+        );
+        if let Some(pr) = &record.pr {
+            outln!(
+                "PR: {}",
+                visible_text(pr.url.as_deref().unwrap_or("unknown URL"))
+            );
+        }
+        if let Some(reason) = &record.stop_reason {
+            let mut lines = reason.message.split('\n');
+            outln!(
+                "Stopped ({}): {}",
+                visible_text(&reason.kind),
+                visible_text(lines.next().unwrap_or_default())
+            );
+            for line in lines {
+                outln!("  {}", visible_text(line));
+            }
+        }
+        outln!("Records: {}", visible_text(&directory.to_string_lossy()));
+    }
+    Ok(())
+}
+
 fn workflow_root(args: &[String]) -> Result<i32> {
     let parsed = args::parse(args, &command_options("workflow"), true)?;
     Err(Error::validation(format!(
@@ -1775,6 +1927,21 @@ fn set(args: &[String]) -> Result<i32> {
 /// Shared by common-option extraction and command validation.
 fn command_options(key: &str) -> Vec<Opt> {
     let mut options = match key {
+        "run start" => vec![
+            repo_flag(),
+            value_flag("name", None),
+            value_flag("base", None),
+            value_flag("workflow", None),
+            value_flag("provider", None),
+            value_flag("model", None),
+            Opt {
+                name: "check",
+                short: None,
+                value: true,
+                multiple: true,
+                remainder: false,
+            },
+        ],
         "sync" => vec![
             repo_flag(),
             flag("all", None),
@@ -2331,7 +2498,28 @@ static WORKFLOW_COMMANDS: &[Command] = &[
     },
 ];
 
+static RUN_COMMANDS: &[Command] = &[
+    Command {
+        name: "start",
+        help_key: "run start",
+        run: run_start,
+        children: &[],
+    },
+    Command {
+        name: "show",
+        help_key: "run show",
+        run: run_show,
+        children: &[],
+    },
+];
+
 static COMMANDS: &[Command] = &[
+    Command {
+        name: "run",
+        help_key: "run",
+        run: run_root,
+        children: RUN_COMMANDS,
+    },
     Command {
         name: "workflow",
         help_key: "workflow",

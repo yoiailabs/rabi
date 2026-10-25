@@ -175,8 +175,6 @@ pub(crate) enum Cli {
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum Action {
     Prepare,
-    Push,
-    DraftPr,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -227,6 +225,41 @@ pub(crate) struct Inspection {
 impl Inspection {
     pub fn valid(&self) -> bool {
         self.definition.is_some() && self.diagnostics.is_empty()
+    }
+
+    /// CLI overrides apply last to every resolved step. Changing provider drops
+    /// model/effort inherited from another tool; model-only preserves providers.
+    pub fn override_agents(
+        &mut self,
+        provider: Option<Provider>,
+        model: Option<&str>,
+    ) -> Result<()> {
+        let Some(definition) = &mut self.definition else {
+            return Ok(());
+        };
+        let resolved = definition.agents();
+        for (id, step) in &mut definition.steps {
+            if let StepKind::Agent { agent, .. } = &mut step.kind {
+                let prior = resolved.get(id);
+                let selected = provider.or_else(|| prior.map(|agent| agent.provider));
+                let same = prior.is_some_and(|agent| Some(agent.provider) == selected);
+                *agent = AgentOverride {
+                    provider: selected,
+                    model: model.map(str::to_owned).or_else(|| {
+                        same.then(|| prior.and_then(|agent| agent.model.clone()))
+                            .flatten()
+                    }),
+                    effort: same
+                        .then(|| prior.and_then(|agent| agent.effort.clone()))
+                        .flatten(),
+                };
+            }
+        }
+        definition.agent = None;
+        self.diagnostics = definition.validate();
+        self.yaml =
+            serde_norway::to_string(definition).map_err(|error| Error::msg(error.to_string()))?;
+        Ok(())
     }
 
     pub fn check_json(&self) -> serde_json::Value {
@@ -559,11 +592,11 @@ mod tests {
         let inspected = builtin().inspect();
         assert!(inspected.valid(), "{:?}", inspected.diagnostics);
         let definition = inspected.definition.unwrap();
-        assert_eq!(definition.version, 3);
+        assert_eq!(definition.version, 8);
         assert_eq!(definition.limits.max_steps, 15);
         assert_eq!(definition.loops["repair"], 2);
-        assert_eq!(definition.steps.len(), 7);
-        assert_eq!(definition.agents().len(), 3);
+        assert_eq!(definition.steps.len(), 6);
+        assert_eq!(definition.agents().len(), 4);
         for agent in definition.agents().values() {
             assert_eq!(agent.provider, Provider::Codex);
             assert_eq!(agent.model.as_deref(), Some("gpt-6.1-sol"));
@@ -651,6 +684,82 @@ mod tests {
             .validate()
             .iter()
             .any(|diagnostic| diagnostic.message.contains("Invalid result")));
+    }
+
+    #[test]
+    fn cli_overrides_apply_after_step_defaults_and_revalidate_capabilities() {
+        let mut inspection = builtin().inspect();
+        if let StepKind::Agent { agent, .. } = &mut inspection
+            .definition
+            .as_mut()
+            .unwrap()
+            .steps
+            .get_mut("implement")
+            .unwrap()
+            .kind
+        {
+            agent.model = Some("step-model".into());
+        }
+        inspection
+            .override_agents(Some(Provider::Codex), None)
+            .unwrap();
+        let agents = inspection.definition.as_ref().unwrap().agents();
+        assert_eq!(agents["implement"].model.as_deref(), Some("step-model"));
+        assert_eq!(agents["implement"].effort.as_deref(), Some("high"));
+        inspection
+            .override_agents(Some(Provider::Cursor), None)
+            .unwrap();
+        let agents = inspection.definition.as_ref().unwrap().agents();
+        assert_eq!(agents["review"].provider, Provider::Cursor);
+        assert_eq!(agents["review"].model, None);
+        assert_eq!(agents["review"].effort, None);
+        assert!(!inspection.valid());
+        assert!(inspection
+            .diagnostics
+            .iter()
+            .any(|d| d.message.contains("read-only")));
+        inspection
+            .override_agents(Some(Provider::Codex), Some("cli-model"))
+            .unwrap();
+        assert!(inspection.valid());
+        let agents = inspection.definition.as_ref().unwrap().agents();
+        assert!(agents
+            .values()
+            .all(|agent| agent.model.as_deref() == Some("cli-model") && agent.effort.is_none()));
+        let snapshot: Definition = serde_norway::from_str(&inspection.yaml).unwrap();
+        assert_eq!(snapshot.agents(), agents);
+    }
+
+    #[test]
+    fn model_only_preserves_mixed_providers_and_continue_is_revalidated_after_override() {
+        let mut inspection = builtin().inspect();
+        if let StepKind::Agent { agent, .. } = &mut inspection
+            .definition
+            .as_mut()
+            .unwrap()
+            .steps
+            .get_mut("implement")
+            .unwrap()
+            .kind
+        {
+            agent.provider = Some(Provider::Cursor);
+        }
+        inspection.override_agents(None, Some("cli-model")).unwrap();
+        assert_eq!(
+            inspection.definition.as_ref().unwrap().agents()["implement"].provider,
+            Provider::Cursor
+        );
+        assert!(!inspection.valid()); // fix still continues Codex from Cursor
+        inspection
+            .override_agents(Some(Provider::Codex), None)
+            .unwrap();
+        assert!(inspection.valid());
+        assert_eq!(
+            inspection.definition.as_ref().unwrap().agents()["review"]
+                .model
+                .as_deref(),
+            Some("cli-model")
+        );
     }
 
     #[test]

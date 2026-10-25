@@ -1,0 +1,97 @@
+schema_version: 1
+name: security-review
+version: 5
+workspace: new
+agent: {provider: codex, model: gpt-6.1-sol, effort: high}
+start: prepare
+limits: {max_steps: 18}
+loops: {repair: 2}
+steps:
+  prepare:
+    type: system
+    action: prepare
+    on: {ok: implement}
+  implement:
+    type: agent
+    mode: edit
+    output: report-v1
+    context: fresh
+    instruction: |
+      Implement the task and report changes and verification results.
+      Commit using Conventional Commits. Do not push or create PRs.
+    on: {ok: check}
+  fix:
+    type: agent
+    mode: edit
+    output: report-v1
+    context: {continue: implement}
+    instruction: |
+      Fix verification failures and review findings, report the results, and commit.
+      Respond to every prior finding with the fix or a reason for declining it.
+      Do not push or create PRs.
+    on: {ok: check}
+  check:
+    type: check
+    commands: cli
+    on:
+      pass: review
+      fail: {to: fix, loop: repair}
+  review:
+    type: agent
+    mode: read-only
+    output: review-v1
+    context: fresh
+    instruction: |
+      Read REVIEW.md, AGENTS.md and CLAUDE.md when their paths are provided.
+      Start with counts; group findings by bug class with [Important]/[Nit]/[Pre-existing]
+      tags and file:line evidence. Unresolved Important findings require revise.
+      Review the task and diff without editing. Even when there are no findings,
+      the final line must be exactly 判定: 問題なし or 判定: 要修正.
+    on:
+      pass: security-review
+      revise: {to: fix, loop: repair}
+  security-review:
+    type: agent
+    mode: read-only
+    output: review-v1
+    context: fresh
+    agent: {provider: codex}
+    instruction: |
+      Independently review the change for security issues, without editing.
+      Read REVIEW.md, AGENTS.md and CLAUDE.md when paths are provided.
+      Give count-first findings with [Important]/[Nit]/[Pre-existing] tags and
+      file:line evidence, grouped by bug class. Evaluate trust boundaries,
+      command execution, secret exposure, filesystem writes and input validation.
+      Count unresolved Important findings and finish with 判定: 要修正 if any
+      remain, otherwise 判定: 問題なし. Explain false positives briefly.
+      The final line must be exactly 判定: 問題なし or 判定: 要修正, even with no findings.
+    on:
+      pass: draft-pull-request
+      revise: {to: fix, loop: repair}
+  draft-pull-request:
+    type: agent
+    mode: edit
+    output: report-v1
+    context: fresh
+    instruction: |
+      Push only the run branch to origin, without force,
+      tags, submodule pushes, mirror mode, or any other refs. Use an explicit branch
+      refspec and override Git settings that would publish other refs.
+      Then open a DRAFT PR against the provided base branch. Follow the repository's
+      PR template with sections Summary / Testing / Risk / How to revert.
+      Include check results, unverified items, and each review's verdict, reviewed
+      HEAD and rounds. State that risk is not assessed by rabi unless the task says
+      otherwise. Use the task and reports to write the title and body.
+      If the push or draft PR creation fails (including missing gh authentication),
+      stop without retrying endlessly or working around the failure with other tools.
+      Write the error to DRAFT_PULL_REQUEST_FAILED.txt at the workspace root and
+      leave it uncommitted and untracked. Do not commit it or add it to .gitignore.
+      Confirm that DRAFT_PULL_REQUEST_FAILED.txt appears in `git status --porcelain`.
+      If it does not appear (for example, repository or global excludes ignore it),
+      instead leave the error as an uncommitted modification of an existing tracked
+      file, such as appending it to that file. Do not commit the fallback change.
+      Verify with `git status --porcelain` that a non-ignored, uncommitted change remains.
+      Report the failure; never report success without a draft PR. The uncommitted
+      change makes this step fail through rabi's existing dirty-workspace rule.
+      Only on success report the PR URL.
+    on: {ok: succeeded}
