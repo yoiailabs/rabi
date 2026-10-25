@@ -695,301 +695,93 @@ fn inspect(args: &[String], path_only: bool) -> Result<i32> {
         Ok(SUCCESS)
     }
 }
-fn run_root(args: &[String]) -> Result<i32> {
+fn run_parent(args: &[String]) -> Result<i32> {
+    use std::io::Read;
     let parsed = args::parse(args, &command_options("run"), true)?;
-    Err(Error::validation(format!(
-        "Unknown command 'run {}'",
-        parsed.positionals.join(" ")
-    )))
-}
-
-fn run_start(args: &[String]) -> Result<i32> {
-    let parsed = args::parse(args, &command_options("run start"), true)?;
-    let [task] = parsed.positionals.as_slice() else {
+    if parsed.positionals.len() > 1
+        || parsed
+            .positionals
+            .first()
+            .is_some_and(|s| matches!(s.as_str(), "start" | "show"))
+    {
         return Err(Error::validation(
-            "Usage: rabi run start TASK --name NAME --base REF [options]",
+            "Usage: rabi run [--skill VALUE] [--fresh] [--timeout DURATION] [TASK | -]",
         ));
+    }
+    let timeout = crate::run::timeout(parsed.value("timeout").unwrap_or("2h"))?;
+    let context = crate::context::open(None)?;
+    let cwd = std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?;
+    let tree = worktree::worktree_at_path(&context, &crate::git::top_level(&cwd)?)?;
+    if tree.is_default {
+        return Err(Error::validation("Run requires a workspace. Use `rabi create` to create a workspace first, then run there."));
+    }
+    crate::run::require_trust(&context.git_root)?;
+    let task = match parsed.positionals.first().map(String::as_str) {
+        Some("-") => {
+            let mut task = String::new();
+            std::io::stdin()
+                .read_to_string(&mut task)
+                .map_err(|e| Error::msg(format!("Failed to read task: {e}")))?;
+            Some(task)
+        }
+        other => other.map(str::to_owned),
     };
-    let name = parsed
-        .value("name")
-        .ok_or_else(|| Error::validation("--name is required"))?;
-    let base = parsed
-        .value("base")
-        .ok_or_else(|| Error::validation("--base is required"))?;
-    let task = std::fs::read_to_string(task)
-        .map_err(|error| Error::msg(format!("Failed to read task: {error}")))?;
-    let context = command_context(&parsed)?;
-    let mut inspection = crate::workflow::find(
-        &context.source_checkout,
-        parsed.value("workflow").unwrap_or("default"),
-    )?
-    .inspect();
-    let provider = parsed
-        .value("provider")
-        .map(|value| match value {
-            "codex" => Ok(crate::workflow::Provider::Codex),
-            "cursor" => Ok(crate::workflow::Provider::Cursor),
-            "claude" => Ok(crate::workflow::Provider::Claude),
-            _ => Err(Error::validation(
-                "--provider must be codex, cursor, or claude",
-            )),
-        })
-        .transpose()?;
-    if provider.is_some() || parsed.value("model").is_some() {
-        inspection.override_agents(provider, parsed.value("model"))?;
-    }
-    if !inspection.valid() {
-        print_workflow_diagnostics(&inspection);
-        return Err(Error::validation(format!(
-            "Workflow '{}' is invalid: {}",
-            inspection.entry.name,
-            inspection
-                .diagnostics
-                .iter()
-                .map(|diagnostic| diagnostic.message.as_str())
-                .collect::<Vec<_>>()
-                .join("; ")
-        )));
-    }
-    let checks = parsed.values("check");
-    let record = crate::executor::execute(
-        &context,
-        crate::executor::Request {
-            workflow: &inspection,
-            task: &task,
-            checks: &checks,
-            base,
-            name,
-        },
+    let report = crate::run::execute(
+        &context.git_root,
+        &tree,
+        parsed.value("skill"),
+        parsed.flag("fresh"),
+        task.as_deref(),
+        timeout,
     )?;
-    render_run(&context.git_root, &record)?;
-    if record.state == crate::run::State::Stopped {
-        let message = record
-            .stop_reason
-            .as_ref()
-            .map(|reason| reason.message.as_str())
-            .unwrap_or("Run stopped");
-        return Err(Error::status(PARTIAL, message));
-    }
-    Ok(SUCCESS)
-}
-
-fn run_show(args: &[String]) -> Result<i32> {
-    let parsed = args::parse(args, &command_options("run show"), true)?;
-    let [id] = parsed.positionals.as_slice() else {
-        return Err(Error::validation("Usage: rabi run show RUN_ID"));
-    };
-    let context = command_context(&parsed)?;
-    let (record, _) = crate::run::load(&context.git_root, id)?;
-    render_run(&context.git_root, &record)?;
-    Ok(SUCCESS)
-}
-
-fn render_run(root: &Path, record: &crate::run::Record) -> Result<()> {
-    let directory = crate::run::directory(root, &record.id)?;
     if crate::output::json() {
-        let mut value =
-            serde_json::to_value(record).map_err(|error| Error::msg(error.to_string()))?;
-        value["directory"] = serde_json::json!(directory);
-        crate::output::data(&serde_json::json!({"run":value}))?;
+        crate::output::data(
+            &serde_json::json!({"run": report.run, "launch": report.launch, "answer": report.answer}),
+        )?;
     } else {
-        outln!("Run: {}", record.id);
-        outln!(
-            "State: {}",
-            match record.state {
-                crate::run::State::Running => "running",
-                crate::run::State::Succeeded => "succeeded",
-                crate::run::State::Stopped => "stopped",
-            }
-        );
-        outln!(
-            "Workflow: {} (version {})",
-            visible_text(&record.workflow.name),
-            record.workflow.version
-        );
-        outln!(
-            "Step: {} ({} started)",
-            visible_text(record.current_step.as_deref().unwrap_or("finished")),
-            record.steps_started
-        );
-        for (name, counter) in &record.loops {
-            outln!(
-                "Loop {}: {}/{}",
-                visible_text(name),
-                counter.used,
-                counter.max
-            );
-        }
-        outln!(
-            "Workspace: {} ({})",
-            visible_text(&record.workspace.name),
-            visible_text(&record.workspace.path)
-        );
-        if let Some(pr) = &record.pr {
-            outln!(
-                "PR: {}",
-                visible_text(pr.url.as_deref().unwrap_or("unknown URL"))
-            );
-        }
-        if let Some(reason) = &record.stop_reason {
-            let mut lines = reason.message.split('\n');
-            outln!(
-                "Stopped ({}): {}",
-                visible_text(&reason.kind),
-                visible_text(lines.next().unwrap_or_default())
-            );
-            for line in lines {
-                outln!("  {}", visible_text(line));
-            }
-        }
-        outln!("Records: {}", visible_text(&directory.to_string_lossy()));
+        crate::output::stdout(format_args!("{}", report.answer));
     }
-    Ok(())
+    if let Some(message) = report.launch.message.as_deref() {
+        crate::output::failure(Error::msg(message).to_json(GENERAL).error);
+    } else if report.exit != 0 {
+        crate::output::failure(
+            Error::CommandFailed {
+                command: "codex".into(),
+                code: report.exit,
+            }
+            .to_json(GENERAL)
+            .error,
+        );
+    }
+    Ok(report.exit)
 }
 
-fn workflow_root(args: &[String]) -> Result<i32> {
-    let parsed = args::parse(args, &command_options("workflow"), true)?;
+fn skill_root(args: &[String]) -> Result<i32> {
+    let parsed = args::parse(args, &command_options("skill"), true)?;
     Err(Error::validation(format!(
-        "Unknown command 'workflow {}'",
+        "Unknown command 'skill {}'",
         parsed.positionals.join(" ")
     )))
 }
 
-fn workflow_list(args: &[String]) -> Result<i32> {
-    let parsed = args::parse(args, &command_options("workflow list"), false)?;
-    let context = command_context(&parsed)?;
-    let workflows = crate::workflow::list(&context.source_checkout)?;
+fn skill_list(args: &[String]) -> Result<i32> {
+    args::parse(args, &command_options("skill list"), false)?;
+    let cwd = std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?;
+    let checkout = crate::git::top_level(&cwd)?;
+    let skills = crate::skill::list(&checkout)?;
     if crate::output::json() {
-        crate::output::data(&serde_json::json!({"workflows":workflows}))?;
+        crate::output::data(&serde_json::json!({"skills": skills}))?;
     } else {
-        for workflow in workflows {
+        for skill in skills {
             outln!(
                 "{}\t{}\t{}",
-                visible_text(&workflow.name),
-                workflow.source.as_str(),
-                workflow
-                    .path
-                    .as_deref()
-                    .map(|path| visible_text(&path.to_string_lossy()))
-                    .unwrap_or_default()
+                visible_text(&skill.name),
+                skill.source,
+                visible_text(&skill.path.to_string_lossy())
             );
         }
     }
     Ok(SUCCESS)
-}
-
-fn workflow_show(args: &[String]) -> Result<i32> {
-    let parsed = args::parse(args, &command_options("workflow show"), true)?;
-    let [name] = parsed.positionals.as_slice() else {
-        return Err(Error::validation(
-            "Usage: rabi workflow show NAME [options]",
-        ));
-    };
-    let context = command_context(&parsed)?;
-    let inspection = crate::workflow::find(&context.source_checkout, name)?.inspect();
-    if !inspection.valid() {
-        if !crate::output::json() {
-            print_workflow_diagnostics(&inspection);
-        }
-        let mut error = Error::validation(format!("Workflow '{}' is invalid", visible_text(name)))
-            .to_json(VALIDATION)
-            .error;
-        error.details = Some(serde_json::json!({"diagnostics":inspection.diagnostics}));
-        crate::output::failure(error);
-        return Ok(VALIDATION);
-    }
-    let definition = inspection
-        .definition
-        .as_ref()
-        .ok_or_else(|| Error::validation("Workflow definition is missing"))?;
-    let agents = definition.agents();
-    if crate::output::json() {
-        crate::output::data(&serde_json::json!({"workflow":{
-            "name":inspection.entry.name, "version":definition.version, "schemaVersion":definition.schema_version,
-            "source":inspection.entry.source, "path":inspection.entry.path, "definition":definition, "agents":agents, "steps":definition.step_summaries()
-        }}))?;
-    } else {
-        outln!(
-            "Workflow: {} ({}), version {}",
-            visible_text(&inspection.entry.name),
-            inspection.entry.source.as_str(),
-            definition.version
-        );
-        for line in inspection.yaml.lines() {
-            outln!("{}", visible_text(line));
-        }
-        for (name, step) in &definition.steps {
-            outln!(
-                "Step {}: allow_dirty={}",
-                visible_text(name),
-                step.allow_dirty
-            );
-        }
-        for (name, agent) in agents {
-            outln!(
-                "Agent {}: {}",
-                visible_text(&name),
-                serde_json::to_string(&agent).map_err(|error| Error::msg(error.to_string()))?
-            );
-        }
-    }
-    Ok(SUCCESS)
-}
-
-fn print_workflow_diagnostics(inspection: &crate::workflow::Inspection) {
-    for diagnostic in &inspection.diagnostics {
-        errln!(
-            "{}{}: {}",
-            visible_text(&inspection.entry.name),
-            diagnostic
-                .step
-                .as_deref()
-                .map(|step| format!(" ({})", visible_text(step)))
-                .unwrap_or_default(),
-            visible_text(&diagnostic.message)
-        );
-    }
-}
-
-fn workflow_check(args: &[String]) -> Result<i32> {
-    let parsed = args::parse(args, &command_options("workflow check"), true)?;
-    if parsed.positionals.len() > 1 {
-        return Err(Error::validation(
-            "Usage: rabi workflow check [NAME] [options]",
-        ));
-    }
-    let context = command_context(&parsed)?;
-    let entries = match parsed.positionals.first() {
-        Some(name) => vec![crate::workflow::find(&context.source_checkout, name)?],
-        None => crate::workflow::list(&context.source_checkout)?,
-    };
-    let inspections: Vec<_> = entries.into_iter().map(|entry| entry.inspect()).collect();
-    let valid = inspections.iter().all(crate::workflow::Inspection::valid);
-    if crate::output::json() {
-        let items: Vec<_> = inspections
-            .iter()
-            .map(crate::workflow::Inspection::check_json)
-            .collect();
-        crate::output::data(&serde_json::json!({"items":items}))?;
-    } else {
-        for inspection in &inspections {
-            outln!(
-                "{}: {}",
-                visible_text(&inspection.entry.name),
-                if inspection.valid() {
-                    "valid"
-                } else {
-                    "invalid"
-                }
-            );
-            print_workflow_diagnostics(inspection);
-        }
-    }
-    if valid {
-        Ok(SUCCESS)
-    } else {
-        Err(Error::validation("Workflow validation failed"))
-    }
 }
 
 fn show(args: &[String]) -> Result<i32> {
@@ -1927,20 +1719,10 @@ fn set(args: &[String]) -> Result<i32> {
 /// Shared by common-option extraction and command validation.
 fn command_options(key: &str) -> Vec<Opt> {
     let mut options = match key {
-        "run start" => vec![
-            repo_flag(),
-            value_flag("name", None),
-            value_flag("base", None),
-            value_flag("workflow", None),
-            value_flag("provider", None),
-            value_flag("model", None),
-            Opt {
-                name: "check",
-                short: None,
-                value: true,
-                multiple: true,
-                remainder: false,
-            },
+        "run" => vec![
+            value_flag("skill", None),
+            flag("fresh", None),
+            value_flag("timeout", None),
         ],
         "sync" => vec![
             repo_flag(),
@@ -2055,7 +1837,9 @@ fn command_options(key: &str) -> Vec<Opt> {
 
         _ => vec![],
     };
-    if !options.iter().any(|option| option.name == "repo") {
+    if !matches!(key, "run" | "skill" | "skill list")
+        && !options.iter().any(|option| option.name == "repo")
+    {
         options.push(repo_flag());
     }
     options
@@ -2197,25 +1981,6 @@ fn trust_cmd(args: &[String]) -> Result<i32> {
         visible_text(&project.project),
         trust::format_hooks(&project.setup, &project.pre_remove)
     );
-    // Bare repositories have no checkout; preserve their existing trust path
-    // without trying to discover checkout-local workflow definitions.
-    if let Ok(checkout) = crate::git::top_level(&start) {
-        let workflows = crate::workflow::list(&checkout)?;
-        errln!("workflows:");
-        for workflow in workflows
-            .iter()
-            .filter(|entry| entry.source == crate::workflow::Source::Repository)
-        {
-            if let Some(path) = &workflow.path {
-                errln!(
-                    "  {}  {}",
-                    visible_text(&workflow.name),
-                    visible_text(&path.to_string_lossy())
-                );
-            }
-        }
-    }
-    errln!("Workflow agent steps and check commands, including built-in workflows, execute under this repository trust.");
     match trust::trust_root(Path::new(&project.git_root)) {
         Ok(record) => {
             if json {
@@ -2477,54 +2242,25 @@ static TRUST_COMMANDS: &[Command] = &[
     },
 ];
 
-static WORKFLOW_COMMANDS: &[Command] = &[
-    Command {
-        name: "list",
-        help_key: "workflow list",
-        run: workflow_list,
-        children: &[],
-    },
-    Command {
-        name: "show",
-        help_key: "workflow show",
-        run: workflow_show,
-        children: &[],
-    },
-    Command {
-        name: "check",
-        help_key: "workflow check",
-        run: workflow_check,
-        children: &[],
-    },
-];
-
-static RUN_COMMANDS: &[Command] = &[
-    Command {
-        name: "start",
-        help_key: "run start",
-        run: run_start,
-        children: &[],
-    },
-    Command {
-        name: "show",
-        help_key: "run show",
-        run: run_show,
-        children: &[],
-    },
-];
+static SKILL_COMMANDS: &[Command] = &[Command {
+    name: "list",
+    help_key: "skill list",
+    run: skill_list,
+    children: &[],
+}];
 
 static COMMANDS: &[Command] = &[
     Command {
         name: "run",
         help_key: "run",
-        run: run_root,
-        children: RUN_COMMANDS,
+        run: run_parent,
+        children: &[],
     },
     Command {
-        name: "workflow",
-        help_key: "workflow",
-        run: workflow_root,
-        children: WORKFLOW_COMMANDS,
+        name: "skill",
+        help_key: "skill",
+        run: skill_root,
+        children: SKILL_COMMANDS,
     },
     Command {
         name: "completions",
@@ -2888,9 +2624,9 @@ mod forget_tests {
 }
 
 #[cfg(test)]
-mod run_tests {
+mod allocation_tests {
     use super::*;
-    use crate::{allocation, context::Context, git, run};
+    use crate::{allocation, context::Context, git};
     use std::{fs, path::PathBuf};
 
     struct Fixture {
@@ -2940,7 +2676,7 @@ mod run_tests {
     }
 
     #[test]
-    fn allocation_success_and_partial_setup_can_both_be_saved_as_runs() {
+    fn allocation_success_and_partial_setup_render_without_early_output() {
         for partial in [false, true] {
             let fixture = Fixture::new();
             let context = &fixture.context;
@@ -3028,31 +2764,6 @@ mod run_tests {
             assert_eq!(
                 rendered.map_err(|error| error.exit_code()),
                 if partial { Err(6) } else { Ok(0) }
-            );
-            let workflow = crate::workflow::builtin().inspect();
-            let definition = workflow.definition.as_ref().unwrap();
-            let mut record = run::Record::from_allocation(&allocation, &workflow.entry, definition);
-            assert_eq!(record.workspace.id, allocation.workspace.metadata.id);
-            assert_eq!(record.workspace.path, allocation.workspace.path);
-            if partial {
-                record.finish(Some(run::StopReason {
-                    kind: "setup_failed".into(),
-                    message: "Copying failed".into(),
-                }));
-            }
-            run::create(&context.git_root, &record, "# Task", &workflow.yaml).unwrap();
-            let file = run::directory(&context.git_root, &record.id)
-                .unwrap()
-                .join("run.json");
-            let bytes = fs::read(&file).unwrap();
-            assert_eq!(run::load(&context.git_root, &record.id).unwrap().0, record);
-            assert_eq!(fs::read(&file).unwrap(), bytes);
-            // Linked checkout paths resolve the very same run directory.
-            assert_eq!(
-                run::load(Path::new(&allocation.workspace.path), &record.id)
-                    .unwrap()
-                    .0,
-                record
             );
         }
     }

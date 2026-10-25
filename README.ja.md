@@ -78,15 +78,11 @@ rabi remove task/auth
 | `rabi repo list` | 登録済み・検出されたリポジトリの一覧 |
 | `rabi repo show` | リポジトリを確認 |
 | `rabi repo forget` | 登録だけを削除 |
-| `rabi run` | ワークフローの実行操作 |
-| `rabi run start` | 信頼済みワークフローを新規 workspace で実行 |
-| `rabi run show` | 進捗・PR・停止理由を表示 |
-| `rabi workflow` | ワークフロー定義の操作 |
-| `rabi workflow list` | 組み込み・リポジトリ定義の一覧 |
-| `rabi workflow show` | YAML と解決済みの agent 設定を表示 |
-| `rabi workflow check` | 定義を実行せずに検証 |
-| `rabi trust` | フック・ワークフロー実行の信頼設定 |
-| `rabi trust add` | フック・ワークフローを表示し、確認プロンプトなしで信頼を付与 |
+| `rabi run` | ワークスペースの親セッションを起動・再開 |
+| `rabi skill` | スキル探索 |
+| `rabi skill list` | スキル名・探索元・パスを一覧表示 |
+| `rabi trust` | フック・run 実行の信頼設定 |
+| `rabi trust add` | フックを表示し、確認プロンプトなしで信頼を付与 |
 | `rabi trust remove` | 信頼を取り消す |
 | `rabi trust list` | 信頼済みの Git 共通ディレクトリの一覧 |
 | `rabi config` | ユーザー設定の操作 |
@@ -99,7 +95,7 @@ rabi remove task/auth
 | `rabi shell-init` | `rabi cd` 用のシェル関数を生成 |
 | `rabi --version` | アプリのバージョンを表示（`-v` も利用可） |
 
-グローバルオプションは `-R/--repo REF`、`--json`、`--output text|json`、`--no-input`、`-h/--help`、`-v/--version` です。`exec` では rabi のオプションをセレクターの前に、子コマンドを `--` の後に置きます。[全オプションとワークフロー](docs/commands.md)を参照してください。
+グローバルオプションは `-R/--repo REF`、`--json`、`--output text|json`、`--no-input`、`-h/--help`、`-v/--version` です。`run` と `skill` は現在のチェックアウトを使い、`-R` を受け付けません。`exec` では rabi のオプションをセレクターの前に、子コマンドを `--` の後に置きます。[全オプションと使用例](docs/commands.md)を参照してください。
 
 ## エージェント向け
 
@@ -116,19 +112,22 @@ rabi remove task/auth
 | 4 | 安全上の拒否 |
 | 5 | 同期の競合 |
 | 6 | 永続的な変更後の部分的な完了 |
+| 124 | run の制限時間超過 |
+| 130 | run の中断 |
 
 [JSON オブジェクトとコマンド別データ](docs/json.md)、[終了コードと復旧](docs/exit-codes.md)を参照してください。
 
-## ワークフロー定義
+## 親セッションとスキル
 
-`rabi workflow list`、`rabi workflow show NAME`、`rabi workflow check [NAME]` は組み込みの `default` と `.rabi/workflows/<name>.yaml` を、実行せず信頼も要求せずに確認します。`-R` 指定時は選択したプライマリ、それ以外は呼び出し元のチェックアウトから読みます。`rabi trust add` はフックとともにリポジトリのワークフローを列挙し、同じリポジトリ実行信頼を付与します。[ワークフロー定義](docs/workflows.md)を参照してください。
+`rabi run --skill rabi-dev "Fix issue #123"` は現在のワークスペースで Codex の親セッションを1つ起動します。親が進行管理、subagent への委任、証拠収集、完了判断を担当します。次の `rabi run` は同じ親を再開し、`--fresh --skill VALUE` は古い記録を残して新しく開始します。`--skill` はファイルを解決せず値をそのまま指示に渡します。`--timeout 30m` で起動ごとの制限時間を変更できます（既定 `2h`）。リポジトリの信頼が必要です。先にワークスペースを作成してください。[コマンド](docs/commands.md)を参照。
 
-`rabi run start TASK --name NAME --base REF --check CMD` は信頼済みワークフローを foreground で実行します。agent がコミットし、最後の `draft-pull-request` agent 工程が origin へ push して draft PR を作成します。push または draft PR 作成に失敗した場合、プロンプトは agent に未コミット・未追跡の `DRAFT_PULL_REQUEST_FAILED.txt` を残し、`git status --porcelain` に表示されることを確認するよう指示します。無視される場合は、代わりに追跡済みファイルへの未コミットの変更としてエラーを残す必要があります。dirty-workspace ルールで実行が停止し、`run show` に変更されたパスが表示されます。rabi 自体は PR の存在を確認せず、報告は agent のログに残します。保存結果は `rabi run show RUN_ID` で確認できます。実行できる provider は現在 Codex のみです。provider/model の上書きは全 agent 工程に適用します。[ワークフローの実行](docs/workflows.md)を参照してください。
+`rabi skill list` はチェックアウトとユーザーのスキルディレクトリから直下のスキルを重複も含めて一覧表示します。`rabi run` はこの探索を使いません。
 
 ```sh
-rabi trust add
-rabi run start task.md --name fix/example --base origin/main --check 'cargo test --locked'
-rabi run show run_<uuid>
+rabi skill list
+rabi run --skill rabi-dev "Fix issue #123"
+rabi run "Address the review findings"
+rabi run --fresh --skill rabi-dev - < task.md
 ```
 
 ## 設定
@@ -137,7 +136,7 @@ rabi run show run_<uuid>
 
 ## フックと信頼
 
-リポジトリの `.rabi.toml` に setup・pre-remove フックを定義します。`.worktreeinclude` はプライマリからコピーする無視ファイルを選びます。`rabi trust add` で信頼を付与する前にフックとワークフロー定義を確認してください。信頼は Git 共通ディレクトリのパスに付与され、同じパスに clone し直しても取り消すまで有効です。[フック・信頼・セットアップの再試行](docs/hooks.md)を参照してください。
+リポジトリの `.rabi.toml` に setup・pre-remove フックを定義します。`.worktreeinclude` はプライマリからコピーする無視ファイルを選びます。`rabi trust add` で信頼を付与する前にフックと親への指示を確認してください。信頼は Git 共通ディレクトリのパスに付与され、同じパスに clone し直しても取り消すまで有効です。[フック・信頼・セットアップの再試行](docs/hooks.md)を参照してください。
 
 ## FAQ
 

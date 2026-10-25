@@ -13,13 +13,13 @@ Classify the change, never the author. Read the full PR diff and relevant caller
 The following paths are high unless the diff demonstrably does not touch the sensitive behavior. Record evidence for any exception; paths are prompts to inspect behavior, not a complete classifier:
 
 - `src/trust.rs`; setup and hooks in `src/setup.rs`, `src/config.rs`, and `.rabi.toml`.
-- Process execution in `src/process.rs`, `src/runtime.rs`, `src/executor.rs`, and provider code.
+- Process execution in `src/process.rs`, `src/runtime.rs`, `src/run/lifecycle.rs`, and provider code.
 - Worktree removal, gc, and preservation in `src/worktree.rs`, `src/gc.rs`, and `src/git.rs`.
 - `src/sync.rs` and `src/sync/**`.
 - `install.sh`, build scripts (`build.rs`, `build_git.rs`), and `.github/workflows/**`.
 - Toolchain, version/release files, and Cargo dependency changes (`rust-toolchain.toml`, `Cargo.toml`, `Cargo.lock`).
 
-Sensitive behavior moved elsewhere is still high. Workflow/run code (`src/workflow*`, `src/run*`, `.rabi/workflows/**`) is not automatically medium or high: classify its content using the same criteria. Documentation that directs unsafe actions is not automatically low.
+Sensitive behavior moved elsewhere is still high. Run code (`src/run*`) is not automatically medium or high: classify its content using the same criteria. Documentation that directs unsafe actions is not automatically low.
 
 Any change touching trust, hooks, delete/remove (including gc), or sync requires a separate fresh read-only security review, focused on security, in addition to the ordinary Codex review. Address every finding and resolve every Important before merging.
 

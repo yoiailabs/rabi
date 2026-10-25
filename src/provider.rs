@@ -1,79 +1,80 @@
-//! CLI adapters: argv, session extraction and final-answer files only.
-#![allow(dead_code)]
-
+//! Codex invocation and protocol observations; no task-progress interpretation.
 use std::fs;
-use std::path::Path;
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::error::{Error, Result};
-use crate::workflow::{Agent, Mode, Provider};
 
-pub(crate) fn supported(provider: Provider) -> Result<()> {
-    // TODO: The future Claude Code adapter must use auto mode for edit steps;
-    // read-only remains unsupported until its enforcement is verified.
-    match provider {
-        Provider::Codex => Ok(()),
-        Provider::Claude | Provider::Cursor => Err(Error::msg(format!(
-            "Provider {provider:?} is not supported yet"
-        ))),
-    }
-}
+const MODEL: &str = "gpt-6.1-sol";
+const EFFORT: &str = "model_reasoning_effort=\"high\"";
 
-pub(crate) fn codex(
-    agent: &Agent,
-    mode: &Mode,
-    workspace: &Path,
-    dir: &Path,
-    session: Option<&str>,
-) -> Result<Command> {
-    supported(agent.provider)?;
+pub(crate) fn codex(workspace: &Path, dir: &Path, session: Option<&str>) -> Result<Command> {
     let mut command = Command::new("codex");
-    // Exec-level flags, including the mode flags, must precede resume.
-    command.args(["exec", "--json", "-C"]);
-    command.arg(workspace);
-    match mode {
-        Mode::ReadOnly => {
-            command.args(["--sandbox", "read-only"]);
-        }
-        Mode::Edit => {
-            // Auto mode lets agents commit through automatic approval review.
-            // Explicit workspace-write keeps linked Git metadata read-only even
-            // with --add-dir; --approve-for-me conflicts with --sandbox.
-            command.arg("--approve-for-me");
-        }
-    }
-    if let Some(model) = &agent.model {
-        command.args(["-m", model]);
-    }
-    if let Some(effort) = &agent.effort {
-        // JSON strings are also TOML basic strings, including escaped quotes.
-        let quoted =
-            serde_json::to_string(effort).map_err(|error| Error::msg(error.to_string()))?;
-        command.args(["-c", &format!("model_reasoning_effort={quoted}")]);
-    }
-    command.arg("-o").arg(dir.join("answer.md"));
+    command
+        .args(["exec", "--json", "-C"])
+        .arg(workspace)
+        .args(["--approve-for-me", "-m", MODEL, "-c", EFFORT])
+        .arg("-o")
+        .arg(dir.join("answer.md"));
     if let Some(session) = session {
         command.args(["resume", session]);
     }
     command.arg("-").current_dir(workspace);
     command.stdin(Stdio::from(
-        fs::File::open(dir.join("prompt.md")).map_err(|error| Error::msg(error.to_string()))?,
+        fs::File::open(dir.join("prompt.md")).map_err(io_error)?,
     ));
     Ok(command)
 }
 
 pub(crate) fn session_id(stdout: &Path) -> Result<String> {
-    use std::io::{BufRead, BufReader};
-    let file = fs::File::open(stdout).map_err(|error| Error::msg(error.to_string()))?;
-    for line in BufReader::new(file).lines() {
-        let line = line.map_err(|error| Error::msg(error.to_string()))?;
+    for line in BufReader::new(fs::File::open(stdout).map_err(io_error)?).lines() {
+        let line = line.map_err(io_error)?;
         if let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) {
             if event["type"] == "thread.started" {
-                if let Some(id) = event["thread_id"].as_str().filter(|id| !id.is_empty()) {
+                if let Some(id) = event["thread_id"].as_str().filter(|s| !s.is_empty()) {
                     return Ok(id.to_owned());
                 }
             }
         }
     }
     Err(Error::msg("Codex did not report thread.started.thread_id"))
+}
+
+pub(crate) fn codex_home() -> Result<PathBuf> {
+    if let Some(home) = std::env::var_os("CODEX_HOME").filter(|s| !s.is_empty()) {
+        return Ok(PathBuf::from(home));
+    }
+    std::env::var_os("HOME")
+        .map(|home| PathBuf::from(home).join(".codex"))
+        .ok_or_else(|| Error::msg("HOME is not set"))
+}
+
+pub(crate) fn has_rollout(session: &str) -> Result<bool> {
+    fn visit(dir: &Path, suffix: &str) -> Result<bool> {
+        let entries = match fs::read_dir(dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(io_error(e)),
+        };
+        for entry in entries {
+            let entry = entry.map_err(io_error)?;
+            let kind = entry.file_type().map_err(io_error)?;
+            if kind.is_dir() && visit(&entry.path(), suffix)? {
+                return Ok(true);
+            }
+            if kind.is_file() && entry.file_name().to_string_lossy().ends_with(suffix) {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+    visit(
+        &codex_home()?.join("sessions"),
+        &format!("-{session}.jsonl"),
+    )
+}
+
+fn io_error(error: std::io::Error) -> Error {
+    Error::msg(error.to_string())
 }

@@ -30,7 +30,7 @@
     },
     {
       "name": "trust",
-      "description": "Manage repository hook and workflow execution trust"
+      "description": "Manage repository hook and run execution trust"
     },
     {
       "name": "exec",
@@ -77,12 +77,12 @@
       "description": "Output a shell function for rabi cd in bash, zsh or fish"
     },
     {
-      "name": "workflow",
-      "description": "List, inspect, and validate workflow definitions without executing them"
+      "name": "run",
+      "description": "Launch or resume one Codex parent session in the current workspace"
     },
     {
-      "name": "run",
-      "description": "Run trusted workflows in a new workspace and inspect saved runs"
+      "name": "skill",
+      "description": "Discover available skills"
     }
   ],
   "helps": {
@@ -418,7 +418,7 @@
     },
     "trust": {
       "name": "trust",
-      "description": "Manage repository hook and workflow execution trust",
+      "description": "Manage repository hook and run execution trust",
       "usage": "rabi trust <add|remove|list> [options]",
       "options": [
         {
@@ -450,7 +450,7 @@
         }
       ],
       "notes": [
-        "trust add also lists repository workflow names and paths. Workflow agent steps and check commands, including built-in workflows, execute under the same common-directory trust. JSON data remains {path,trustedAt}."
+        "trust add lists hooks and grants common-directory execution trust. Run uses the same trust without prompting. JSON data remains {path,trustedAt}."
       ]
     },
     "trust remove": {
@@ -1188,7 +1188,7 @@
     },
     "trust add": {
       "name": "trust add",
-      "description": "Show hooks and repository workflows, then grant execution trust without prompting",
+      "description": "Show hooks, then grant repository execution trust without prompting",
       "usage": "rabi trust add [REPO] [options]",
       "options": [
         {
@@ -1221,7 +1221,7 @@
       ],
       "notes": [
         "Defaults to -R/--repo or the current repository. Trust is recorded against the canonical Git common directory. During create, setup, and remove a human TTY can receive a trust prompt; noninteractive untrusted hooks exit 4.",
-        "trust add also lists repository workflow names and paths. Workflow agent steps and check commands, including built-in workflows, execute under the same common-directory trust. JSON data remains {path,trustedAt}."
+        "Run uses the same common-directory trust and never prompts. JSON data remains {path,trustedAt}."
       ]
     },
     "trust list": {
@@ -1837,185 +1837,25 @@
         }
       ]
     },
-    "workflow": {
-      "name": "workflow",
-      "description": "Workflow definition commands",
-      "usage": "rabi workflow <list|show|check> [options]",
-      "options": [
-        {
-          "name": "repo",
-          "short": "R",
-          "type": "string",
-          "description": "Select a repository by path, registered ID, canonical host/owner/repo name, or an unambiguous name suffix. May precede the command. For exec, put it before the workspace name."
-        },
-        {
-          "name": "json",
-          "type": "boolean",
-          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
-        },
-        {
-          "name": "output",
-          "type": "string",
-          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
-        },
-        {
-          "name": "no-input",
-          "type": "boolean",
-          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
-        },
-        {
-          "name": "help",
-          "short": "h",
-          "type": "boolean",
-          "description": "Show text help"
-        }
-      ],
-      "notes": [
-        "Definitions come from the built-in default and .rabi/workflows/<name>.yaml in the invoking checkout, or the selected primary checkout with -R/--repo. The name default is reserved.",
-        "Inspection requires no trust and runs no workflow steps or external agent CLI. JSON uses the existing schema 2 envelope."
-      ]
-    },
-    "workflow list": {
-      "name": "workflow list",
-      "description": "List built-in and repository workflow definitions",
-      "usage": "rabi workflow list [options]",
-      "options": [
-        {
-          "name": "repo",
-          "short": "R",
-          "type": "string",
-          "description": "Select a repository by path, registered ID, canonical host/owner/repo name, or an unambiguous name suffix. May precede the command. For exec, put it before the workspace name."
-        },
-        {
-          "name": "json",
-          "type": "boolean",
-          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
-        },
-        {
-          "name": "output",
-          "type": "string",
-          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
-        },
-        {
-          "name": "no-input",
-          "type": "boolean",
-          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
-        },
-        {
-          "name": "help",
-          "short": "h",
-          "type": "boolean",
-          "description": "Show text help"
-        }
-      ],
-      "notes": [
-        "Definitions come from the built-in default and .rabi/workflows/<name>.yaml in the invoking checkout, or the selected primary checkout with -R/--repo. The name default is reserved.",
-        "Inspection requires no trust and runs no workflow steps or external agent CLI. JSON uses the existing schema 2 envelope.",
-        "JSON data is {workflows:[{name,source,path}]}; source is builtin or repository, and the built-in path is null. Listing does not validate file contents."
-      ]
-    },
-    "workflow show": {
-      "name": "workflow show",
-      "description": "Inspect a workflow definition and resolved agent settings",
-      "usage": "rabi workflow show NAME [options]",
-      "options": [
-        {
-          "name": "repo",
-          "short": "R",
-          "type": "string",
-          "description": "Select a repository by path, registered ID, canonical host/owner/repo name, or an unambiguous name suffix. May precede the command. For exec, put it before the workspace name."
-        },
-        {
-          "name": "json",
-          "type": "boolean",
-          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
-        },
-        {
-          "name": "output",
-          "type": "string",
-          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
-        },
-        {
-          "name": "no-input",
-          "type": "boolean",
-          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
-        },
-        {
-          "name": "help",
-          "short": "h",
-          "type": "boolean",
-          "description": "Show text help"
-        }
-      ],
-      "notes": [
-        "Definitions come from the built-in default and .rabi/workflows/<name>.yaml in the invoking checkout, or the selected primary checkout with -R/--repo. The name default is reserved.",
-        "Inspection requires no trust and runs no workflow steps or external agent CLI. JSON uses the existing schema 2 envelope.",
-        "JSON data is {workflow:{name,version,schemaVersion,source,path,definition,agents,steps}}. agents maps agent step IDs to resolved provider/model/effort. Unknown names exit 3; invalid definitions exit 2 with error.details.diagnostics.",
-        "Every step accepts boolean allow_dirty (default false): definition.steps retains allow_dirty, and steps maps step IDs to {allowDirty}. Execution stops on non-ignored uncommitted changes unless allow_dirty is true."
-      ],
-      "examples": [
-        {
-          "command": "rabi workflow show default --json",
-          "description": "Inspect the built-in default workflow"
-        }
-      ]
-    },
-    "workflow check": {
-      "name": "workflow check",
-      "description": "Validate workflow definitions without running anything",
-      "usage": "rabi workflow check [NAME] [options]",
-      "options": [
-        {
-          "name": "repo",
-          "short": "R",
-          "type": "string",
-          "description": "Select a repository by path, registered ID, canonical host/owner/repo name, or an unambiguous name suffix. May precede the command. For exec, put it before the workspace name."
-        },
-        {
-          "name": "json",
-          "type": "boolean",
-          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
-        },
-        {
-          "name": "output",
-          "type": "string",
-          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
-        },
-        {
-          "name": "no-input",
-          "type": "boolean",
-          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
-        },
-        {
-          "name": "help",
-          "short": "h",
-          "type": "boolean",
-          "description": "Show text help"
-        }
-      ],
-      "notes": [
-        "Definitions come from the built-in default and .rabi/workflows/<name>.yaml in the invoking checkout, or the selected primary checkout with -R/--repo. The name default is reserved.",
-        "Inspection requires no trust and runs no workflow steps or external agent CLI. JSON uses the existing schema 2 envelope.",
-        "Omitting NAME checks the built-in and every repository file. JSON data is {items:[{name,source,path,valid,diagnostics:[{step,line,column,message}]}]}. Invalid definitions exit 2 while keeping data; unknown names exit 3.",
-        "Read-only agent steps must resolve to codex, the currently verified provider for enforcing read-only. Cursor and unverified Claude are rejected; per-step overrides are resolved first."
-      ],
-      "examples": [
-        {
-          "command": "rabi workflow check default --json",
-          "description": "Inspect the built-in default workflow"
-        }
-      ]
-    },
     "run": {
       "name": "run",
-      "description": "Run trusted workflows in a new workspace and inspect saved runs",
-      "usage": "rabi run <start|show> [options]",
+      "description": "Launch or resume one Codex parent session in the current workspace",
+      "usage": "rabi run [--skill VALUE] [--fresh] [--timeout DURATION] [TASK | -]",
       "options": [
         {
-          "name": "repo",
-          "short": "R",
+          "name": "skill",
           "type": "string",
-          "description": "Select a repository by path, registered ID, canonical host/owner/repo name, or an unambiguous name suffix. May precede the command. For exec, put it before the workspace name."
+          "description": "Verbatim skill instruction for the parent; required on first run and with --fresh. No file lookup."
+        },
+        {
+          "name": "fresh",
+          "type": "boolean",
+          "description": "Start a new parent session, retaining older run records"
+        },
+        {
+          "name": "timeout",
+          "type": "string",
+          "description": "Wall-clock budget per launch: positive integer with s, m, or h (default 2h)"
         },
         {
           "name": "json",
@@ -2040,97 +1880,55 @@
         }
       ],
       "notes": [
-        "The default ends with an ordinary draft-pull-request agent step. There is no automatic retry or resume."
-      ]
-    },
-    "run start": {
-      "name": "run start",
-      "description": "Execute a trusted workflow in a new workspace",
-      "usage": "rabi run start TASK --name NAME --base REF [--workflow NAME] [--provider P] [--model M] [--check CMD]...",
-      "options": [
-        {
-          "name": "name",
-          "type": "string",
-          "description": "Required new workspace and branch name"
-        },
-        {
-          "name": "base",
-          "type": "string",
-          "description": "Required Git base reference; use a branch or origin tracking branch for PR creation"
-        },
-        {
-          "name": "workflow",
-          "type": "string",
-          "description": "Workflow name (default: default)"
-        },
-        {
-          "name": "provider",
-          "type": "string",
-          "description": "Override all agent providers: codex, cursor, or claude. Only codex is runnable"
-        },
-        {
-          "name": "model",
-          "type": "string",
-          "description": "Override the model for every agent step"
-        },
-        {
-          "name": "check",
-          "type": "string",
-          "description": "Check command for commands: cli; repeat to run multiple checks",
-          "multiple": true
-        },
-        {
-          "name": "repo",
-          "short": "R",
-          "type": "string",
-          "description": "Select a repository by path, registered ID, canonical host/owner/repo name, or an unambiguous name suffix. May precede the command. For exec, put it before the workspace name."
-        },
-        {
-          "name": "json",
-          "type": "boolean",
-          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
-        },
-        {
-          "name": "output",
-          "type": "string",
-          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
-        },
-        {
-          "name": "no-input",
-          "type": "boolean",
-          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
-        },
-        {
-          "name": "help",
-          "short": "h",
-          "type": "boolean",
-          "description": "Show text help"
-        }
-      ],
-      "notes": [
-        "TASK is a Markdown file read from the invoking directory. Trust and validation precede workspace creation. There is no --workspace flag.",
-        "JSON is one schema 2 envelope with data.run; progress goes to stderr and child output is saved in attempt logs. A stopped run after persistent changes exits 6.",
-        "Agents commit; the final draft-pull-request agent pushes only the run branch to origin without force or tags and opens a draft PR against the base branch. rabi advances on normal agent success and the dirty-workspace rule; it does not verify publication or extract PR URLs.",
-        "rabi passes branch/base/remote/check/review facts. The agent writes Summary / Testing / Risk / How to revert and reports the PR URL in its answer log; risk is not assessed by rabi unless the task says otherwise. Only prepare is a system action; removed push/draft-pr actions fail validation."
+        "Uses the checkout containing cwd; primary checkouts and -R/--repo are refused. Repository trust is required without prompting.",
+        "TASK is optional text; - reads stdin. Later launches resume the recorded parent session; with no message, send Continue. Missing sessions stop with a --fresh hint.",
+        "Codex manages progress and its own subagents. Parent exit 0 returns 0 without claiming task completion; other parent statuses pass through. Timeout exits 124; SIGINT/SIGTERM exits 130. The process group is terminated and reaped.",
+        "Text prints the final parent answer. JSON data is {run,launch,answer}; raw stdout and stderr are saved per launch."
       ],
       "examples": [
         {
-          "command": "rabi run start task.md --name fix/example --base origin/main --check 'cargo test --locked'",
-          "description": "Run the default workflow in the foreground"
+          "command": "rabi run --skill rabi-dev \"Fix issue #123\"",
+          "description": "Start a parent session in a trusted workspace"
+        },
+        {
+          "command": "rabi run",
+          "description": "Resume the same parent with Continue."
         }
       ]
     },
-    "run show": {
-      "name": "run show",
-      "description": "Read saved run progress, workspace, PR and stop reason",
-      "usage": "rabi run show RUN_ID [options]",
+    "skill": {
+      "name": "skill",
+      "description": "Discover available skills",
+      "usage": "rabi skill list",
       "options": [
         {
-          "name": "repo",
-          "short": "R",
-          "type": "string",
-          "description": "Select a repository by path, registered ID, canonical host/owner/repo name, or an unambiguous name suffix. May precede the command. For exec, put it before the workspace name."
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
         },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ]
+    },
+    "skill list": {
+      "name": "skill list",
+      "description": "List direct child directories containing SKILL.md",
+      "usage": "rabi skill list [--json]",
+      "options": [
         {
           "name": "json",
           "type": "boolean",
@@ -2154,7 +1952,8 @@
         }
       ],
       "notes": [
-        "RUN_ID is the full run_<uuid v4> ID. Reading a stopped run succeeds with exit 0. JSON data.run includes the record directory. Reading requires no execution trust."
+        "Scan checkout .agents/skills, .codex/skills, .claude/skills, then ~/.agents/skills, $CODEX_HOME/skills (default ~/.codex/skills), ~/.claude/skills. Skip missing directories; sort names within each source; list duplicates. No parsing of skill contents.",
+        "Text is name<TAB>source<TAB>path; JSON data is {skills:[{name,source,path}]}. Run does not use this discovery command."
       ]
     }
   },
@@ -2200,7 +1999,9 @@
     "3": "Target or context not found",
     "4": "Safety refusal",
     "5": "Integration conflict",
-    "6": "Partial completion"
+    "6": "Partial completion",
+    "124": "Run launch timed out",
+    "130": "Run interrupted by SIGINT or SIGTERM"
   },
   "errorCodes": {
     "failed": 1,

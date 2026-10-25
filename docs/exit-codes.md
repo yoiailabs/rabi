@@ -11,6 +11,8 @@
 | 4 | Safety refusal before changes | `dirty`, `unpreserved`, `published`, `exists`, `exists_remote`, `untrusted`, `primary`, `refused` |
 | 5 | Sync conflict, rolled back or kept with `--keep-conflicts` | `conflict` |
 | 6 | Persistent changes followed by failure or partial success | `partial` |
+| 124 | Run wall-clock timeout | `failed` |
+| 130 | Run interrupted by SIGINT/SIGTERM | `failed` |
 
 `refused` is the fallback safety error when no more specific code applies. Text and JSON use the same exit codes. Standalone `exec` preserves its child’s status, including 128+signal, and does not return an envelope.
 
@@ -18,7 +20,4 @@ Create may retain a workspace and exit 6 if metadata, copying, or setup fails. R
 
 GC plans and protected skips succeed with exit 0. A warning does not by itself mean failure. The complete error and warning code lists are in `rabi help --json` (`data.errorCodes` and `data.warningCodes`). See [JSON](json.md), [safety](safety.md), and [sync](sync.md) for per-command details.
 
-
-`workflow list/show/check` use the existing exit table. Unknown workflow names exit 3 (`not_found`). Invalid definitions exit 2 (`usage`); check keeps all items and diagnostics in data. Reading and validation require no trust and run no workflow commands.
-
-`run start` uses 2 for invalid definitions/options, 4 (`untrusted`) for untrusted execution before allocation, and 6 (`partial`) when execution stops after persistent changes. Operational preflight errors use their ordinary status. `run show` exits 0 for any readable run, including stopped runs; unknown IDs exit 3 and malformed IDs exit 2.
+`run` passes through the parent's exit status (0 does not imply task completion; signals use 128+signal). Launcher/protocol errors use 1, invalid options/timeout or a primary checkout use 2, untrusted or concurrent launches use 4. Timeout uses 124; SIGINT/SIGTERM received by rabi use 130. JSON retains run/launch data after launch failure and reports an error; the launch's exitCode records the parent's actual status separately. No rollback of parent changes or pushes occurs.

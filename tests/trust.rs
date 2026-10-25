@@ -664,7 +664,7 @@ fn branch_and_detached_sources_preserve_trust_and_reuse_skips_authorization() {
 }
 
 #[test]
-fn trust_add_records_bare_repositories_without_discovering_workflows() {
+fn trust_add_records_bare_repositories_and_ignores_retired_workflow_files() {
     let repo = Repo::new();
     let bare = repo.root.join("bare.git");
     repo.git(&["init", "--bare", bare.to_str().unwrap()]);
