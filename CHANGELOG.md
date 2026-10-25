@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `rabi run SEL -- [TASK | -]` launches or resumes a selected workspace without changing directory; `-R/--repo` can select its repository when SEL is supplied. Existing task-only forms retain their meanings.
+- `rabi list` and `rabi show` expose the current parent run state, session id, and latest launch log/answer paths in JSON, with compact run state in text. Run inspection is read-only; stale running records display as stopped, and invalid records produce a warning without failing inspection.
+
 ## v7.1.0 (2026-10-25)
 
 ### Changed (Breaking)

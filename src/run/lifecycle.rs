@@ -178,7 +178,7 @@ fn busy() -> Error {
     )
 }
 
-fn group_is_alive(pgid: u32) -> bool {
+pub(super) fn group_is_alive(pgid: u32) -> bool {
     let Some(pgid) = i32::try_from(pgid).ok().filter(|id| *id > 0) else {
         return true;
     };

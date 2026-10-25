@@ -14318,10 +14318,15 @@ fn review3_forget_matches_show_and_list_after_record_removal() {
         assert!(list.status.success(), "{}", text(&list.stdout));
         let listed = assert_envelope(&list, "list");
         let tree = &shown["data"]["workspace"];
+        let mut shared_tree = tree.clone();
+        assert_eq!(
+            shared_tree.as_object_mut().unwrap().remove("run"),
+            Some(serde_json::Value::Null)
+        );
         assert_eq!(tree["managed"], expected_managed);
         for item in forgotten["data"]["items"].as_array().unwrap() {
             assert_eq!(item["ok"], true);
-            assert_eq!(&item["workspace"], tree, "{location}");
+            assert_eq!(item["workspace"], shared_tree, "{location}");
         }
         assert!(listed["data"]["workspaces"]
             .as_array()
@@ -14368,7 +14373,12 @@ fn review1_forget_returns_the_workspace_after_removing_its_record() {
         let tree = &item["workspace"];
         let shown = repo.rabi(&["show", "review", "--json"]);
         assert!(shown.status.success());
-        assert_eq!(tree, &json_value(&shown)["data"]["workspace"]);
+        let mut shown_tree = json_value(&shown)["data"]["workspace"].clone();
+        assert_eq!(
+            shown_tree.as_object_mut().unwrap().remove("run"),
+            Some(serde_json::Value::Null)
+        );
+        assert_eq!(tree, &shown_tree);
         for field in [
             "id",
             "base",

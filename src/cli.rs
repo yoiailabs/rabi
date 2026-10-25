@@ -480,6 +480,11 @@ fn list(args: &[String]) -> Result<i32> {
             }
             count += 1;
             let workspace = tree.to_json(None);
+            let run = if parsed.flag("names") || parsed.flag("paths") {
+                None
+            } else {
+                crate::run::summary(&context.git_root, &tree.path)
+            };
             if !json {
                 if parsed.flag("names") {
                     outln!("{}", tree.name);
@@ -526,7 +531,7 @@ fn list(args: &[String]) -> Result<i32> {
                     .collect::<Vec<_>>()
                     .join(" ");
                     outln!(
-                        "{} {}  {}  {}  {}  {}  {}  {}{}",
+                        "{} {}  {}  {}  {}  {}  {}  {}{}{}",
                         if workspace.current { "*" } else { " " },
                         visible_text(&tree.name),
                         visible_text(workspace.branch.as_deref().unwrap_or("(detached)")),
@@ -541,11 +546,14 @@ fn list(args: &[String]) -> Result<i32> {
                             .map(|s| format!("setup:{}", s.state.as_str()))
                             .unwrap_or_default(),
                         visible_text(tree.metadata.purpose.as_deref().unwrap_or("")),
-                        if tree.orphaned { " [orphaned]" } else { "" }
+                        if tree.orphaned { " [orphaned]" } else { "" },
+                        run.as_ref()
+                            .map(|run| format!(" run:{}", run.state))
+                            .unwrap_or_default()
                     );
                 }
             }
-            workspaces.push(workspace);
+            workspaces.push(crate::run::WorkspaceOutput { workspace, run });
         }
         if count == 0 && !json && !parsed.flag("names") && !parsed.flag("paths") {
             outln!("No linked workspaces found");
@@ -586,14 +594,20 @@ fn inspect(args: &[String], path_only: bool) -> Result<i32> {
             "Workspace is orphaned: its directory is gone. Use rabi show to inspect its record.",
         ));
     }
+    let run = if path_only {
+        None
+    } else {
+        crate::run::summary(&context.git_root, &tree.path)
+    };
     if crate::output::json() {
         if path_only {
             emit_json(&serde_json::json!({"path": tree.path}))
         } else {
-            emit_json(&worktree::WorktreeRefOutput {
-                version: crate::error::JSON_VERSION,
-                worktree: tree.to_json(None),
-            })
+            emit_json(
+                &serde_json::json!({"workspace": crate::run::WorkspaceOutput {
+                    workspace: tree.to_json(None), run,
+                }}),
+            )
         }
     } else {
         if path_only {
@@ -657,6 +671,25 @@ fn inspect(args: &[String], path_only: bool) -> Result<i32> {
             );
             outln!("Current: {}", object.current);
             outln!("Orphaned: {}", object.orphaned);
+            if let Some(run) = run {
+                outln!("Run: {} ({})", run.state, run.id);
+                if let Some(session) = run.session_id {
+                    outln!("Session: {}", visible_text(&session));
+                }
+                if let Some(launch) = run.last_launch {
+                    outln!(
+                        "Last launch: {} {}",
+                        launch.n,
+                        launch.stop_reason.unwrap_or("unfinished")
+                    );
+                    if let Some(answer) = launch.answer_path {
+                        outln!("Answer: {}", visible_text(&answer));
+                    }
+                    if let Some(events) = launch.events_path {
+                        outln!("Log: {}", visible_text(&events));
+                    }
+                }
+            }
             if let Some(upstream) = object.upstream {
                 outln!(
                     "Upstream: {}{}",
@@ -697,28 +730,66 @@ fn inspect(args: &[String], path_only: bool) -> Result<i32> {
 }
 fn run_parent(args: &[String]) -> Result<i32> {
     use std::io::Read;
-    let parsed = args::parse(args, &command_options("run"), true)?;
+    let options = command_options("run");
+    // An option's value may itself be `--`. Only a separator outside an
+    // option value introduces the selector/task boundary.
+    let mut index = 0;
+    let mut boundary = None;
+    while index < args.len() {
+        let arg = &args[index];
+        if arg == "--" {
+            boundary = Some(index);
+            break;
+        }
+        if options.iter().any(|spec| {
+            spec.value
+                && (arg == &format!("--{}", spec.name)
+                    || spec.short.is_some_and(|short| arg == &format!("-{short}")))
+        }) {
+            index += 1;
+        }
+        index += 1;
+    }
+    let parsed = args::parse(&args[..boundary.unwrap_or(args.len())], &options, true)?;
+    let selector = boundary.and_then(|_| parsed.positionals.first().map(String::as_str));
+    let task = match boundary {
+        Some(index) if args.len() <= index + 2 => args.get(index + 1).map(String::as_str),
+        Some(_) => return Err(Error::validation("Run accepts at most one task after --")),
+        None => parsed.positionals.first().map(String::as_str),
+    };
     if parsed.positionals.len() > 1
-        || parsed
-            .positionals
-            .first()
-            .is_some_and(|s| matches!(s.as_str(), "start" | "show"))
+        || (selector.is_none() && task.is_some_and(|s| matches!(s, "start" | "show")))
     {
         return Err(Error::validation(
-            "Usage: rabi run [--skill VALUE] [--fresh] [--timeout DURATION] [TASK | -]",
+            "Usage: rabi run [--skill VALUE] [--fresh] [--timeout DURATION] [SEL --] [TASK | -]",
         ));
+    }
+    if selector.is_none() && parsed.value("repo").is_some() {
+        return Err(Error::validation("Run allows -R/--repo only with SEL --"));
     }
     let timeout = crate::run::timeout(parsed.value("timeout").unwrap_or("2h"))?;
     let cwd = std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?;
+    let repository = selected_repository(&parsed)?;
     // Trust resolution only needs rev-parse of the common directory. In
     // particular, do not inspect status (which can execute fsmonitor) first.
-    crate::run::require_trust(&cwd)?;
-    let context = crate::context::open(None)?;
-    let tree = worktree::worktree_at_path(&context, &crate::git::top_level(&cwd)?)?;
+    crate::run::require_trust(repository.as_deref().unwrap_or(&cwd))?;
+    // Registered paths can have been replaced by foreign checkouts. Resolve
+    // without executing their fsmonitor/hooks, then verify the target belongs
+    // to the repository whose common directory passed the trust check.
+    let _hooks = crate::process::suppress_git_hooks();
+    let context = crate::context::open(repository.as_deref())?;
+    let tree = match selector {
+        Some(selector) => crate::selectors::resolve(&context, selector, false, None)?,
+        None => worktree::worktree_at_path(&context, &crate::git::top_level(&cwd)?)?,
+    };
     if tree.is_default {
         return Err(Error::validation("Run requires a workspace. Use `rabi create` to create a workspace first, then run there."));
     }
-    let task = match parsed.positionals.first().map(String::as_str) {
+    if !Path::new(&tree.path).is_dir() {
+        return Err(Error::msg("Workspace is orphaned: its directory is gone"));
+    }
+    worktree::validate_checkout(&context, &tree, "run")?;
+    let task = match task {
         Some("-") => {
             let mut task = String::new();
             std::io::stdin()
@@ -1725,6 +1796,7 @@ fn set(args: &[String]) -> Result<i32> {
 fn command_options(key: &str) -> Vec<Opt> {
     let mut options = match key {
         "run" => vec![
+            repo_flag(),
             value_flag("skill", None),
             flag("fresh", None),
             value_flag("timeout", None),

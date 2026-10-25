@@ -7,7 +7,9 @@ use std::time::Duration;
 use crate::error::{Error, Result};
 use crate::worktree::WorktreeInfo;
 
+mod inspect;
 mod lifecycle;
+pub(crate) use inspect::{summary, WorkspaceOutput};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

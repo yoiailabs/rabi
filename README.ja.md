@@ -132,12 +132,15 @@ npx skills update rabi
 
 `rabi run --skill rabi-dev "Fix issue #123"` は現在のワークスペースで Codex の親セッションを1つ起動します。親が進行管理、subagent への委任、証拠収集、完了判断を担当します。次の `rabi run` は同じ親を再開し、`--fresh --skill VALUE` は古い記録を残して新しく開始します。`--skill` はファイルを解決せず値をそのまま指示に渡します。`--timeout 30m` で起動ごとの制限時間を変更できます（既定 `2h`）。リポジトリの信頼が必要です。先にワークスペースを作成してください。[コマンド](docs/commands.md)を参照。
 
+`rabi run SEL -- [TASK]` でディレクトリを移動せずにワークスペースを選べます。リポジトリ外からは `-R REPO` を追加します。`--` がない場合の単一の位置引数は従来どおりタスクの文章です。`rabi list` と `rabi show` は現在の親の実行状態を表示し、JSON にはセッション ID と最新起動のログ・回答のパスも含まれます。
+
 `rabi skill list` はチェックアウトとユーザーのスキルディレクトリから直下のスキルを重複も含めて一覧表示します。`rabi run` はこの探索を使いません。
 
 ```sh
 rabi skill list
 rabi run --skill rabi-dev "Fix issue #123"
 rabi run "Address the review findings"
+rabi run -R /path/to/repo task/auth -- "Address the review findings"
 rabi run --fresh --skill rabi-dev - < task.md
 ```
 
