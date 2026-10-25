@@ -1,7 +1,7 @@
 //! One resumable parent session per workspace. Task progress belongs to Codex.
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::error::{Error, Result};
@@ -142,10 +142,55 @@ fn broken(reason: impl std::fmt::Display) -> Error {
     Error::msg(format!("Cannot resume current run: {reason}. Start a new parent with `rabi run --fresh --skill <value>`."))
 }
 
-// Bounded to one filename even for long hierarchical workspace names.
-fn workspace_key(name: &str) -> String {
+// Checkout paths stay stable across branch changes, including detached HEAD.
+fn workspace_key(path: &str) -> String {
     use sha2::{Digest, Sha256};
-    format!("{:x}", Sha256::digest(name.as_bytes()))
+    format!("{:x}", Sha256::digest(path.as_bytes()))
+}
+
+fn prepare_launch(dir: &Path, record: &mut Record, prompt: &str) -> Result<PathBuf> {
+    let launches = dir.join("launches");
+    io(fs::create_dir_all(&launches))?;
+    let mut n = record.launches.last().map_or(0, |launch| launch.n);
+    let launch_dir = loop {
+        n = n
+            .checked_add(1)
+            .ok_or_else(|| Error::msg("Launch number overflow"))?;
+        let path = launches.join(n.to_string());
+        match fs::create_dir(&path) {
+            Ok(()) => break path,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(Error::msg(e.to_string())),
+        }
+    };
+    let old_state = record.state.clone();
+    let old_len = record.launches.len();
+    let prepared = (|| {
+        io(crate::atomic::write(
+            &launch_dir.join("prompt.md"),
+            prompt.as_bytes(),
+        ))?;
+        record.launches.push(Launch {
+            n,
+            started_at: crate::metadata::iso_now(),
+            finished_at: None,
+            exit_code: None,
+            stop_reason: None,
+            skill: record.skill.clone(),
+            session_id: None,
+            message: None,
+        });
+        record.state = State::Running;
+        save(dir, record)
+    })();
+    if let Err(error) = prepared {
+        // A failed preparation must not reserve this launch number forever.
+        let _ = fs::remove_dir_all(&launch_dir);
+        record.launches.truncate(old_len);
+        record.state = old_state;
+        return Err(error);
+    }
+    Ok(launch_dir)
 }
 
 pub(crate) fn execute(
@@ -160,8 +205,8 @@ pub(crate) fn execute(
     let runs = crate::git::git_common_dir(root)?.join("rabi/runs");
     let current = runs.join("current");
     io(fs::create_dir_all(&current))?;
-    let key = workspace_key(&tree.name);
-    let _lock = lifecycle::Lock::acquire(current.join(format!("{key}.lock")))?;
+    let key = workspace_key(&tree.path);
+    let mut lock = lifecycle::Lock::acquire(current.join(format!("{key}.lock")))?;
     let pointer = current.join(key);
     let previous = if fresh {
         None
@@ -180,7 +225,6 @@ pub(crate) fn execute(
         if record.schema != 2
             || record.id != id
             || record.provider != "codex"
-            || record.workspace.name != tree.name
             || record.workspace.path != tree.path
         {
             return Err(broken(
@@ -235,27 +279,11 @@ pub(crate) fn execute(
         io(fs::create_dir(&dir))?;
         save(&dir, &record)?;
     }
-    let n = record.launches.len() + 1;
-    let launch_dir = dir.join("launches").join(n.to_string());
-    io(fs::create_dir_all(dir.join("launches")))?;
-    io(fs::create_dir(&launch_dir))?;
-    io(crate::atomic::write(
-        &launch_dir.join("prompt.md"),
-        prompt.as_bytes(),
-    ))?;
-    record.launches.push(Launch {
-        n,
-        started_at: crate::metadata::iso_now(),
-        finished_at: None,
-        exit_code: None,
-        stop_reason: None,
-        skill: record.skill.clone(),
-        session_id: None,
-        message: None,
-    });
-    record.state = State::Running;
-    save(&dir, &record)?;
+    let launch_dir = prepare_launch(&dir, &mut record, &prompt)?;
     io(crate::atomic::write(&pointer, record.id.as_bytes()))?;
+    if !crate::output::json() {
+        crate::output::stderr(format_args!("rabi: running parent session (run {}) in {}. Ctrl-C stops it; `rabi run \"...\"` resumes.\n", record.id, crate::output::visible_text(&tree.path)));
+    }
     // Every fallible launch operation is enclosed so even spawn/protocol/IO failures
     // finalize the record, and the lifecycle guard reaps any live child first.
     let launched = lifecycle::launch(
@@ -267,6 +295,7 @@ pub(crate) fn execute(
             None
         },
         timeout,
+        &mut lock,
     );
     let launch = record
         .launches
@@ -342,6 +371,29 @@ pub(crate) fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn failed_launch_preparation_removes_directory_and_allows_retry() {
+        let dir = std::env::temp_dir().join(format!("rabi-launch-{}", uuid::Uuid::new_v4()));
+        // A directory at the state destination deterministically rejects the
+        // atomic rename, including when the test runs with elevated privileges.
+        fs::create_dir_all(dir.join("state.json")).unwrap();
+        let mut record: Record = serde_json::from_value(serde_json::json!({
+            "schema": 2, "id": format!("run_{}", uuid::Uuid::new_v4()),
+            "workspace": {"id": null, "name": "test", "path": "/test", "branch": null},
+            "provider": "codex", "sessionId": "test-session", "skill": "test", "state": "idle", "launches": []
+        })).unwrap();
+        assert!(prepare_launch(&dir, &mut record, "test prompt").is_err());
+        assert!(!dir.join("launches/1").exists());
+        assert!(record.launches.is_empty());
+        fs::remove_dir(dir.join("state.json")).unwrap();
+        let path = prepare_launch(&dir, &mut record, "retry prompt").unwrap();
+        assert_eq!(path, dir.join("launches/1"));
+        assert_eq!(
+            fs::read_to_string(path.join("prompt.md")).unwrap(),
+            "retry prompt"
+        );
+        fs::remove_dir_all(dir).unwrap();
+    }
     #[test]
     fn duration_validation_and_path_encoding() {
         for (s, seconds) in [("90s", 90), ("30m", 1800), ("2h", 7200)] {

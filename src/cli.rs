@@ -709,13 +709,15 @@ fn run_parent(args: &[String]) -> Result<i32> {
         ));
     }
     let timeout = crate::run::timeout(parsed.value("timeout").unwrap_or("2h"))?;
-    let context = crate::context::open(None)?;
     let cwd = std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?;
+    // Trust resolution only needs rev-parse of the common directory. In
+    // particular, do not inspect status (which can execute fsmonitor) first.
+    crate::run::require_trust(&cwd)?;
+    let context = crate::context::open(None)?;
     let tree = worktree::worktree_at_path(&context, &crate::git::top_level(&cwd)?)?;
     if tree.is_default {
         return Err(Error::validation("Run requires a workspace. Use `rabi create` to create a workspace first, then run there."));
     }
-    crate::run::require_trust(&context.git_root)?;
     let task = match parsed.positionals.first().map(String::as_str) {
         Some("-") => {
             let mut task = String::new();
@@ -740,6 +742,9 @@ fn run_parent(args: &[String]) -> Result<i32> {
         )?;
     } else {
         crate::output::stdout(format_args!("{}", report.answer));
+        if !report.answer.ends_with('\n') {
+            crate::output::stdout(format_args!("\n"));
+        }
     }
     if let Some(message) = report.launch.message.as_deref() {
         crate::output::failure(Error::msg(message).to_json(GENERAL).error);

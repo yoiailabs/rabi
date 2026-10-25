@@ -97,8 +97,21 @@ impl Lock {
                         continue;
                     }
                     let body = fs::read_to_string(&path).map_err(|_| busy())?;
-                    let pid = body.trim().parse::<u32>().map_err(|_| busy())?;
-                    if crate::process::process_is_alive(pid) {
+                    let mut ids = body.split_whitespace();
+                    let pid = ids
+                        .next()
+                        .ok_or_else(busy)?
+                        .parse::<u32>()
+                        .map_err(|_| busy())?;
+                    let pgid = ids
+                        .next()
+                        .map(str::parse::<u32>)
+                        .transpose()
+                        .map_err(|_| busy())?;
+                    if ids.next().is_some()
+                        || crate::process::process_is_alive(pid)
+                        || pgid.is_some_and(group_is_alive)
+                    {
                         return Err(busy());
                     }
                     // Keep the stale inode flocked through unlink. Propagate
@@ -119,6 +132,22 @@ impl Lock {
                 Err(e) => return Err(Error::msg(e.to_string())),
             }
         }
+    }
+    fn record_group(&mut self, pgid: u32) -> Result<()> {
+        let mut replacement = None;
+        // Lock the replacement inode before publishing it, so contenders
+        // cannot acquire an unlocked inode during atomic replacement.
+        io(crate::atomic::write_with(&self.path, |file| {
+            // SAFETY: valid open fd; nonblocking exclusive lock.
+            if unsafe { flock(file.as_raw_fd(), 2 | 4) } != 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            writeln!(file, "{} {pgid}", std::process::id())?;
+            replacement = Some(file.try_clone()?);
+            Ok(())
+        }))?;
+        self.file = replacement.ok_or_else(|| Error::msg("Missing replacement run lock"))?;
+        Ok(())
     }
     fn exclusive(&self) -> Result<()> {
         // SAFETY: valid open fd; LOCK_EX | LOCK_NB never waits.
@@ -145,8 +174,17 @@ impl Drop for Lock {
 fn busy() -> Error {
     Error::status(
         REFUSED,
-        "A rabi run already holds this workspace lock (or its pid cannot be verified)",
+        "A rabi run already holds this workspace lock (or its pid/process group cannot be verified)",
     )
+}
+
+fn group_is_alive(pgid: u32) -> bool {
+    let Some(pgid) = i32::try_from(pgid).ok().filter(|id| *id > 0) else {
+        return true;
+    };
+    // SAFETY: positive pgid; signal 0 only probes the isolated process group.
+    let status = unsafe { kill(-pgid, 0) };
+    status == 0 || std::io::Error::last_os_error().raw_os_error() != Some(3)
 }
 
 struct Group(Child);
@@ -188,6 +226,7 @@ pub(super) fn launch(
     dir: &Path,
     session: Option<&str>,
     timeout: Duration,
+    lock: &mut Lock,
 ) -> Result<Outcome> {
     let mut cmd = crate::provider::codex(workspace, dir, session)?;
     cmd.stdout(io(File::create(dir.join("events.jsonl")))?)
@@ -200,10 +239,14 @@ pub(super) fn launch(
             reason: StopReason::Interrupted,
         });
     }
+    // Fail closed if the launcher dies between spawning and publishing the
+    // child's pgid. Zero is unverifiable, never evidence of a dead group.
+    lock.record_group(0)?;
     let mut group = Group(cmd.spawn().map_err(|e| Error::Spawn {
         command: "codex".into(),
         details: e.to_string(),
     })?);
+    lock.record_group(group.0.id())?;
     let start = Instant::now();
     loop {
         let reason = if INTERRUPTED.load(Ordering::Relaxed) {

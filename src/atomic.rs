@@ -8,7 +8,7 @@ pub(crate) fn write(path: &Path, contents: &[u8]) -> io::Result<()> {
     write_with(path, |file| file.write_all(contents))
 }
 
-fn write_with(
+pub(crate) fn write_with(
     path: &Path,
     body: impl FnOnce(&mut std::fs::File) -> io::Result<()>,
 ) -> io::Result<()> {

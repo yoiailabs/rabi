@@ -75,7 +75,7 @@ if not os.environ.get('FAKE_NO_THREAD'):
     rollout = pathlib.Path(os.environ['CODEX_HOME'])/'sessions/2026/10/25'/('rollout-test-'+sid+'.jsonl')
     rollout.parent.mkdir(parents=True, exist_ok=True)
     rollout.write_text('{}\n')
-pathlib.Path(args[args.index('-o')+1]).write_text('Parent final answer.\n')
+pathlib.Path(args[args.index('-o')+1]).write_text(os.environ.get('FAKE_ANSWER', 'Parent final answer.\n'))
 print('fake stderr', file=sys.stderr, flush=True)
 if os.environ.get('FAKE_BLOCK'):
     signal.signal(signal.SIGTERM, signal.SIG_DFL if os.environ.get('FAKE_PARENT_TERM_DEFAULT') else signal.SIG_IGN)
@@ -321,6 +321,180 @@ fn validation_trust_stdin_and_removed_commands() {
 }
 
 #[test]
+fn untrusted_run_does_not_execute_fsmonitor() {
+    let f = Fixture::new();
+    let monitor = f.root.join("bin/monitor");
+    fs::write(&monitor, "#!/usr/bin/env python3\nimport os, pathlib\n(pathlib.Path(os.environ['FAKE_ROOT'])/'fsmonitor-ran').touch()\n").unwrap();
+    fs::set_permissions(&monitor, fs::Permissions::from_mode(0o755)).unwrap();
+    f.git(&["config", "core.fsmonitor", monitor.to_str().unwrap()]);
+    for args in [
+        vec!["run", "--skill", "x"],
+        vec!["run", "--skill", "x", "--json"],
+    ] {
+        assert_error(
+            f.command(&args)
+                .env("RABI_TRUST_ALL", "0")
+                .output()
+                .unwrap(),
+            4,
+            "trust",
+        );
+        assert!(!f.root.join("fsmonitor-ran").exists());
+        assert_eq!(f.calls(), 0);
+    }
+    f.json(&["run", "--skill", "x", "--json"]);
+    assert!(
+        f.root.join("fsmonitor-ran").exists(),
+        "positive fsmonitor control"
+    );
+}
+
+#[test]
+fn text_answer_has_newline_and_progress_is_only_on_text_stderr() {
+    let f = Fixture::new();
+    for answer in ["answer without newline", "answer with newline\n", ""] {
+        let out = f
+            .command(&["run", "--fresh", "--skill", "x"])
+            .env("FAKE_ANSWER", answer)
+            .output()
+            .unwrap();
+        assert!(out.status.success());
+        let expected = if answer.ends_with('\n') {
+            answer.to_owned()
+        } else {
+            format!("{answer}\n")
+        };
+        assert_eq!(out.stdout, expected.as_bytes());
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        assert_eq!(stderr.lines().count(), 1);
+        assert!(stderr.contains(&format!("rabi: running parent session (run {}) in {}. Ctrl-C stops it; `rabi run \"...\"` resumes.", f.state()["id"].as_str().unwrap(), f.workspace.display())));
+    }
+    let out = f
+        .command(&["run", "--json"])
+        .env("FAKE_ANSWER", "no newline")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert!(out.stderr.is_empty());
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["data"]["answer"], "no newline");
+}
+
+#[test]
+fn resume_skips_incomplete_launch_directories() {
+    let f = Fixture::new();
+    let first = f.json(&["run", "--skill", "x", "--json"]);
+    let leftover = f.run_dir().join("launches/2");
+    fs::create_dir(&leftover).unwrap();
+    fs::write(leftover.join("prompt.md"), "incomplete previous attempt").unwrap();
+    let resumed = f.json(&["run", "--json"]);
+    assert_eq!(resumed["run"]["id"], first["run"]["id"]);
+    assert_eq!(resumed["run"]["sessionId"], first["run"]["sessionId"]);
+    assert_eq!(resumed["launch"]["n"], 3);
+    assert_eq!(
+        fs::read_to_string(leftover.join("prompt.md")).unwrap(),
+        "incomplete previous attempt"
+    );
+    assert_eq!(f.json(&["run", "--json"])["launch"]["n"], 4);
+}
+
+#[test]
+fn branch_changes_resume_same_checkout_and_cannot_bypass_lock() {
+    let f = Fixture::new();
+    let first = f.json(&["run", "--skill", "x", "--json"]);
+    let pointer = f.pointer();
+    let out = f
+        .command_at(&f.workspace, &["switch", "-c", "renamed"], "git")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let resumed = f.json(&["run", "--json"]);
+    assert_eq!(resumed["run"]["id"], first["run"]["id"]);
+    assert_eq!(resumed["run"]["sessionId"], first["run"]["sessionId"]);
+    assert_eq!(f.pointer(), pointer);
+    let child = running(&f, &["run", "--json"]);
+    wait_for_file(&f.root.join("pids"));
+    let out = f
+        .command_at(&f.workspace, &["switch", "--detach"], "git")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_error(
+        f.run(&["run", "--skill", "cannot bypass", "--json"]),
+        4,
+        "lock",
+    );
+    send(child.0.as_ref().unwrap().id(), 2);
+    assert_eq!(child.finish().status.code(), Some(130));
+    let out = f
+        .command_at(
+            &f.workspace,
+            &[
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "--allow-empty",
+                "-m",
+                "detached commit",
+            ],
+            "git",
+        )
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(
+        f.json(&["run", "--json"])["run"]["sessionId"],
+        first["run"]["sessionId"]
+    );
+}
+
+#[test]
+fn detached_worktrees_at_same_commit_have_distinct_sessions_and_locks() {
+    let f = Fixture::new();
+    let out = f
+        .command_at(&f.workspace, &["switch", "--detach"], "git")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let first = f.json(&["run", "--skill", "x", "--json"]);
+    let second = f.root.join("second");
+    f.git(&[
+        "worktree",
+        "add",
+        "--detach",
+        second.to_str().unwrap(),
+        "main",
+    ]);
+    let child = running(&f, &["run", "--json"]);
+    wait_for_file(&f.root.join("pids"));
+    let out = f
+        .command(&["run", "--skill", "y", "--json"])
+        .current_dir(&second)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let other: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        first["run"]["workspace"]["name"],
+        other["data"]["run"]["workspace"]["name"]
+    );
+    assert_ne!(first["run"]["id"], other["data"]["run"]["id"]);
+    assert_ne!(first["run"]["sessionId"], other["data"]["run"]["sessionId"]);
+    send(child.0.as_ref().unwrap().id(), 2);
+    assert_eq!(child.finish().status.code(), Some(130));
+    assert_eq!(
+        f.json(&["run", "--json"])["run"]["sessionId"],
+        first["run"]["sessionId"]
+    );
+}
+
+#[test]
 fn broken_session_never_launches_and_mismatched_thread_is_recorded() {
     let f = Fixture::new();
     f.json(&["run", "--skill", "x", "--json"]);
@@ -557,12 +731,106 @@ fn concurrent_run_refused_and_dead_pid_lock_taken_over() {
     fs::write(&lock, format!("{pid}\n")).unwrap();
     f.json(&["run", "--json"]);
     f.assert_unlocked();
-    for contents in [format!("{}\n", std::process::id()), "unverifiable".into()] {
+    for contents in [
+        format!("{}\n", std::process::id()),
+        format!("{pid} 0\n"), // Launcher died before the spawned group could be recorded.
+        "unverifiable".into(),
+    ] {
         fs::write(&lock, &contents).unwrap();
         assert_error(f.run(&["run", "--json"]), 4, "lock");
         assert_eq!(fs::read_to_string(&lock).unwrap(), contents);
     }
     fs::remove_file(lock).unwrap();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn killed_launcher_keeps_lock_until_codex_process_group_is_gone() {
+    let f = Fixture::new();
+    let first = f.json(&["run", "--skill", "x", "--json"]);
+    // A separate subreaper owns only this test's orphaned processes. Reaping
+    // them explicitly makes kill(-pgid, 0) independent of container PID 1.
+    let script = r#"
+import ctypes, json, os, pathlib, signal, subprocess, sys, time
+assert ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0
+root = pathlib.Path(os.environ['FAKE_ROOT'])
+lock = pathlib.Path(sys.argv[2])
+def until(probe):
+    deadline = time.monotonic() + 10
+    while True:
+        result = probe()
+        if result:
+            return result
+        assert time.monotonic() < deadline, 'timed out waiting for process handshake'
+        time.sleep(.01)
+env = dict(os.environ, FAKE_BLOCK='1')
+launcher = subprocess.Popen([sys.argv[1], 'run', '--json'], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+pgid = None
+try:
+    pids = until(lambda: (root/'pids').read_text().split() if (root/'pids').exists() else None)
+    pgid = int(pids[0])
+    until(lambda: lock.read_text().split() == [str(launcher.pid), str(pgid)])
+    launcher.kill()
+    launcher.communicate(timeout=10)
+    assert launcher.returncode == -signal.SIGKILL
+    os.killpg(pgid, 0)
+    second = subprocess.run([sys.argv[1], 'run', '--json'], capture_output=True, timeout=10)
+    assert second.returncode == 4, (second.stdout, second.stderr)
+    assert b'lock' in second.stdout
+    # Reap the group leader first: the lock must also protect surviving
+    # descendants when the original Codex pid itself no longer exists.
+    os.kill(pgid, signal.SIGKILL)
+    assert os.waitpid(pgid, 0)[0] == pgid
+    os.killpg(pgid, 0)
+    second = subprocess.run([sys.argv[1], 'run', '--json'], capture_output=True, timeout=10)
+    assert second.returncode == 4, (second.stdout, second.stderr)
+finally:
+    if launcher.poll() is None:
+        launcher.kill()
+        launcher.communicate(timeout=10)
+    if pgid is not None:
+        try: os.killpg(pgid, signal.SIGKILL)
+        except ProcessLookupError: pass
+        for pid in pids:
+            try: os.waitpid(int(pid), 0)
+            except ChildProcessError: pass
+    try:
+        os.killpg(pgid, 0)
+        raise AssertionError('group survived reaping')
+    except ProcessLookupError: pass
+resumed = subprocess.run([sys.argv[1], 'run', '--json'], capture_output=True, timeout=10)
+assert resumed.returncode == 0, (resumed.stdout, resumed.stderr)
+print(resumed.stdout.decode(), end='')
+"#;
+    let pointer = f.pointer();
+    let lock = pointer.with_file_name(format!(
+        "{}.lock",
+        pointer.file_name().unwrap().to_string_lossy()
+    ));
+    let out = f
+        .command_at(
+            &f.workspace,
+            &[
+                "-c",
+                script,
+                env!("CARGO_BIN_EXE_rabi"),
+                lock.to_str().unwrap(),
+            ],
+            "python3",
+        )
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{} {}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(doc["data"]["run"]["id"], first["run"]["id"]);
+    assert_eq!(doc["data"]["run"]["sessionId"], first["run"]["sessionId"]);
+    assert_eq!(f.calls(), 3);
+    f.assert_unlocked();
 }
 #[test]
 fn skill_list_orders_sources_and_names_and_keeps_duplicates_without_parsing() {
