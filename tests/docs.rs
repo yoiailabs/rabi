@@ -2,6 +2,16 @@ const README: &str = include_str!("../README.md");
 const README_JA: &str = include_str!("../README.ja.md");
 
 #[test]
+fn user_skill_has_matching_name_frontmatter() {
+    let skill = include_str!("../skills/rabi/SKILL.md");
+    let mut lines = skill.lines();
+    assert_eq!(lines.next(), Some("---"));
+    let frontmatter: Vec<_> = lines.by_ref().take_while(|line| *line != "---").collect();
+    assert!(frontmatter.contains(&"name: rabi"));
+    assert!(lines.next().is_some(), "Skill body is missing");
+}
+
+#[test]
 fn product_and_package_are_named_rabi() {
     for document in [README, README_JA] {
         assert_eq!(document.lines().next(), Some("# rabi"));
