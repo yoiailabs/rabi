@@ -117,6 +117,17 @@ Use `--json` or `--output json` for one schema 2 envelope: `schema`, `command`, 
 
 See [JSON objects and per-command data](docs/json.md) and [exit codes and recovery](docs/exit-codes.md).
 
+## Agent skill
+
+Install the [rabi usage skill](skills/rabi/SKILL.md) for Codex, Claude Code, and Cursor with Node.js/npm:
+
+```sh
+npx skills add yoiailabs/rabi --skill rabi -a codex -a claude-code -a cursor -g -y
+npx skills update rabi
+```
+
+`-g` installs globally; add `-g` to the update command to explicitly target global scope. Use `-a '*'` instead of the named agents to install to all supported agents. Keep `--skill rabi`: this repository also contains checkout-local contributor skills under `.codex/skills`. The skill teaches CLI usage; install the rabi binary separately as described above.
+
 ## Parent sessions and skills
 
 `rabi run --skill rabi-dev "Fix issue #123"` starts one Codex parent session in the current workspace. The parent manages progress, delegates to its own subagents, gathers evidence and decides completion. Run `rabi run` again to resume the same parent; `--fresh --skill VALUE` starts over and retains old records. `--skill` passes a verbatim instruction without resolving files. `--timeout 30m` changes the per-launch limit (default `2h`). Trust is required; create a workspace before running. See [commands](docs/commands.md).

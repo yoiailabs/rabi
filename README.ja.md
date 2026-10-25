@@ -117,6 +117,17 @@ rabi remove task/auth
 
 [JSON オブジェクトとコマンド別データ](docs/json.md)、[終了コードと復旧](docs/exit-codes.md)を参照してください。
 
+## エージェントスキル
+
+Node.js/npm を使って、Codex、Claude Code、Cursor 向けに [rabi の使い方を学ぶスキル](skills/rabi/SKILL.md)をインストールできます。
+
+```sh
+npx skills add yoiailabs/rabi --skill rabi -a codex -a claude-code -a cursor -g -y
+npx skills update rabi
+```
+
+`-g` はグローバルにインストールします。更新コマンドにも `-g` を付けると、グローバルを明示的に指定できます。対応するすべてのエージェントにインストールするには、個別のエージェント指定の代わりに `-a '*'` を使ってください。このリポジトリには `.codex/skills` 配下にチェックアウト内の開発者向けスキルもあるため、`--skill rabi` が必要です。スキルは CLI の使い方を説明するものです。rabi バイナリは上記の手順で別途インストールしてください。
+
 ## 親セッションとスキル
 
 `rabi run --skill rabi-dev "Fix issue #123"` は現在のワークスペースで Codex の親セッションを1つ起動します。親が進行管理、subagent への委任、証拠収集、完了判断を担当します。次の `rabi run` は同じ親を再開し、`--fresh --skill VALUE` は古い記録を残して新しく開始します。`--skill` はファイルを解決せず値をそのまま指示に渡します。`--timeout 30m` で起動ごとの制限時間を変更できます（既定 `2h`）。リポジトリの信頼が必要です。先にワークスペースを作成してください。[コマンド](docs/commands.md)を参照。
