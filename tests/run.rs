@@ -4,7 +4,7 @@ mod test_git;
 use serde_json::Value;
 use std::fs;
 use std::io::Write;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
@@ -63,27 +63,62 @@ impl Fixture {
         fs::create_dir(f.root.join("bin")).unwrap();
         let script = f.root.join("bin/codex");
         fs::write(&script, r#"#!/usr/bin/env python3
-import json, os, pathlib, signal, subprocess, sys, uuid
+import json, os, pathlib, signal, subprocess, sys, time, uuid
 args = sys.argv[1:]
 root = pathlib.Path(os.environ['FAKE_ROOT'])
 with (root/'argv.jsonl').open('a') as f: f.write(json.dumps(args)+'\n')
 (root/'input').write_text(sys.stdin.read())
 sid = args[args.index('resume')+1] if 'resume' in args else str(uuid.uuid4())
 sid = os.environ.get('FAKE_OTHER_ID', sid)
-if not os.environ.get('FAKE_NO_THREAD'):
-    print(json.dumps({'type':'thread.started','thread_id':sid}), flush=True)
-    rollout = pathlib.Path(os.environ['CODEX_HOME'])/'sessions/2026/10/25'/('rollout-test-'+sid+'.jsonl')
-    rollout.parent.mkdir(parents=True, exist_ok=True)
-    rollout.write_text('{}\n')
-pathlib.Path(args[args.index('-o')+1]).write_text(os.environ.get('FAKE_ANSWER', 'Parent final answer.\n'))
-print('fake stderr', file=sys.stderr, flush=True)
 if os.environ.get('FAKE_BLOCK'):
     signal.signal(signal.SIGTERM, signal.SIG_DFL if os.environ.get('FAKE_PARENT_TERM_DEFAULT') else signal.SIG_IGN)
     child = subprocess.Popen([sys.executable, '-c', 'import os,signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); os.write(1,b"ready\\n"); time.sleep(600)'], stdout=subprocess.PIPE)
     assert child.stdout.readline() == b'ready\n'
     (root/'pids').write_text(str(os.getpid())+' '+str(child.pid))
-    import time
+if os.environ.get('FAKE_WAIT_THREAD'):
+    (root/'thread-ready').write_text('ready')
+    while not (root/'emit-thread').exists(): time.sleep(.01)
+if os.environ.get('FAKE_SESSION_DELAY'):
+    time.sleep(float(os.environ['FAKE_SESSION_DELAY']))
+if os.environ.get('FAKE_BAD_BYTES'):
+    os.write(sys.stdout.fileno(), b'\xff\n')
+if os.environ.get('FAKE_NOISE'):
+    chunk = b'{"type":"noise"}\n' * 4096 if os.environ['FAKE_NOISE'] == 'json' else b'x' * 65536
+    # Bound the fixture even if cancellation regresses; the reader unit test
+    # supplies truly endless output to prove its per-poll limit deterministically.
+    deadline = time.monotonic() + 5
+    written = 0
+    while written < 16 * 1024 * 1024 and time.monotonic() < deadline:
+        written += os.write(sys.stdout.fileno(), chunk)
+        if written >= 256 * 1024 and not (root/'noise-ready').exists():
+            (root/'noise-ready').write_text('ready')
     time.sleep(600)
+if not os.environ.get('FAKE_NO_THREAD'):
+    event = {'type':'thread.started','thread_id':sid}
+    if os.environ.get('FAKE_PADDED_THREAD'):
+        event['padding'] = 'x' * 131072
+    event = json.dumps(event)
+    if os.environ.get('FAKE_SPLIT_THREAD'):
+        middle = len(event)//2
+        print(event[:middle], end='', flush=True)
+        (root/'partial-thread').write_text('ready')
+        while not (root/'complete-thread').exists(): time.sleep(.01)
+        event = event[middle:]
+    print(event, end='' if os.environ.get('FAKE_NO_NEWLINE') else '\n', flush=True)
+    if os.environ.get('FAKE_SECOND_ID'):
+        print(json.dumps({'type':'thread.started','thread_id':'ignored-second-thread'}), flush=True)
+    rollout = pathlib.Path(os.environ['CODEX_HOME'])/'sessions/2026/10/25'/('rollout-test-'+sid+'.jsonl')
+    rollout.parent.mkdir(parents=True, exist_ok=True)
+    rollout.write_text('{}\n')
+    (root/'session-ready').write_text(str(os.getpid()))
+pathlib.Path(args[args.index('-o')+1]).write_text(os.environ.get('FAKE_ANSWER', 'Parent final answer.\n'))
+print('fake stderr', file=sys.stderr, flush=True)
+if os.environ.get('FAKE_BLOCK'):
+    time.sleep(600)
+if os.environ.get('FAKE_WAIT_FINISH'):
+    (root/'waiting-finish').write_text('ready')
+    while not (root/'finish').exists(): time.sleep(.01)
+(root/'completed').write_text('done')
 sys.exit(int(os.environ.get('FAKE_EXIT','0')))
 "#).unwrap();
         fs::set_permissions(script, fs::Permissions::from_mode(0o755)).unwrap();
@@ -240,6 +275,267 @@ fn parent_resumes_same_session_and_fresh_retains_old_record() {
     assert_eq!(fs::read(dir.join("state.json")).unwrap(), old_bytes);
     assert_eq!(fresh["run"]["launches"].as_array().unwrap().len(), 1);
     f.assert_unlocked();
+}
+
+#[test]
+fn session_id_is_saved_once_while_first_fresh_and_resumed_parents_are_running() {
+    for mode in ["first", "fresh", "resume", "mismatch"] {
+        let f = Fixture::new();
+        let previous = (mode != "first").then(|| f.json(&["run", "--skill", "x", "--json"]));
+        let expected = if mode == "resume" {
+            previous.as_ref().unwrap()["run"]["sessionId"]
+                .as_str()
+                .unwrap()
+        } else {
+            "mid-launch-thread"
+        };
+        let args = match mode {
+            "first" => vec!["run", "--skill", "x", "--json"],
+            "fresh" => vec!["run", "--fresh", "--skill", "x", "--json"],
+            _ => vec!["run", "--json"],
+        };
+        let mut child = Running(Some(
+            f.command(&args)
+                .env("FAKE_OTHER_ID", expected)
+                .env("FAKE_SECOND_ID", "1")
+                .env("FAKE_SPLIT_THREAD", "1")
+                .env("FAKE_WAIT_FINISH", "1")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        ));
+        wait_for_file(&f.root.join("partial-thread"));
+        let partial = f.state();
+        assert!(partial["launches"].as_array().unwrap().last().unwrap()["sessionId"].is_null());
+        fs::write(f.root.join("complete-thread"), "continue").unwrap();
+        wait_for_file(&f.root.join("waiting-finish"));
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let state = loop {
+            let state = f.state();
+            if state["launches"].as_array().unwrap().last().unwrap()["sessionId"] == expected {
+                break state;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "session id was not saved during {mode}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        };
+        let launch = state["launches"].as_array().unwrap().last().unwrap();
+        assert_eq!(state["state"], "running");
+        assert!(launch["finishedAt"].is_null());
+        assert!(launch["stopReason"].is_null());
+        assert!(child.0.as_mut().unwrap().try_wait().unwrap().is_none());
+        if mode == "mismatch" {
+            assert_eq!(
+                state["sessionId"],
+                previous.as_ref().unwrap()["run"]["sessionId"]
+            );
+            assert!(launch["message"]
+                .as_str()
+                .unwrap()
+                .contains("different thread id"));
+        } else {
+            assert_eq!(state["sessionId"], expected);
+        }
+        // Atomic writes replace the inode. Further polls and duplicate events
+        // must leave the first observation intact until finalization.
+        let path = f.run_dir().join("state.json");
+        let inode = fs::metadata(&path).unwrap().ino();
+        std::thread::sleep(Duration::from_millis(60));
+        assert_eq!(fs::metadata(&path).unwrap().ino(), inode);
+        assert_eq!(f.state(), state);
+        assert_error(f.run(&["run", "--json"]), 4, "lock");
+        fs::write(f.root.join("finish"), "finish").unwrap();
+        let out = child.finish();
+        assert_eq!(
+            out.status.code(),
+            Some(if mode == "mismatch" { 1 } else { 0 })
+        );
+        let finished = f.state();
+        assert_eq!(finished["sessionId"], state["sessionId"]);
+        assert_eq!(
+            finished["launches"].as_array().unwrap().last().unwrap()["sessionId"],
+            expected
+        );
+        f.assert_unlocked();
+    }
+}
+
+#[test]
+fn final_unterminated_thread_event_still_records_a_session() {
+    let f = Fixture::new();
+    let out = f
+        .command(&["run", "--skill", "x", "--json"])
+        .env("FAKE_NO_NEWLINE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let state = f.state();
+    assert!(state["sessionId"].is_string());
+    assert_eq!(state["launches"][0]["sessionId"], state["sessionId"]);
+    f.assert_unlocked();
+}
+
+#[test]
+fn mid_launch_session_save_failure_stops_and_reaps_the_child_group() {
+    let f = Fixture::new();
+    let child = Running(Some(
+        f.command(&["run", "--skill", "x", "--json"])
+            .env("FAKE_WAIT_THREAD", "1")
+            .env("FAKE_BLOCK", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    ));
+    let pids = wait_for_file(&f.root.join("pids"));
+    wait_for_file(&f.root.join("thread-ready"));
+    let state = f.run_dir().join("state.json");
+    fs::remove_file(&state).unwrap();
+    fs::create_dir(&state).unwrap();
+    fs::write(f.root.join("emit-thread"), "continue").unwrap();
+    assert_error(child.finish(), 1, "Failed to persist Codex session id");
+    for pid in pids.split_whitespace() {
+        assert_dead(pid.parse().unwrap());
+    }
+    // A reaped direct child has no pid, even on systems that retain orphan
+    // grandchildren as zombies. Group::drop must wait before releasing lock.
+    let parent: i32 = pids.split_whitespace().next().unwrap().parse().unwrap();
+    assert_eq!(unsafe { kill(parent, 0) }, -1);
+    f.assert_unlocked();
+}
+
+#[test]
+fn malformed_event_bytes_do_not_stop_parent_or_replace_its_failure_status() {
+    for parent_exit in [0, 42] {
+        let f = Fixture::new();
+        let mut child = Running(Some(
+            f.command(&["run", "--skill", "x", "--json"])
+                .env("FAKE_BAD_BYTES", "1")
+                .env("FAKE_WAIT_FINISH", "1")
+                .env("FAKE_EXIT", parent_exit.to_string())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        ));
+        wait_for_file(&f.root.join("waiting-finish"));
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(child.0.as_mut().unwrap().try_wait().unwrap().is_none());
+        assert!(f.state()["sessionId"].is_null());
+        fs::write(f.root.join("finish"), "finish").unwrap();
+        let out = child.finish();
+        assert_eq!(
+            out.status.code(),
+            Some(if parent_exit == 0 { 1 } else { parent_exit })
+        );
+        assert_eq!(
+            fs::read_to_string(f.root.join("completed")).unwrap(),
+            "done"
+        );
+        let state = f.state();
+        assert_eq!(state["launches"][0]["exitCode"], parent_exit);
+        assert_eq!(
+            state["launches"][0]["stopReason"],
+            if parent_exit == 0 {
+                "error"
+            } else {
+                "parent_failed"
+            }
+        );
+        assert!(state["sessionId"].is_null());
+        f.assert_unlocked();
+    }
+}
+
+#[test]
+fn oversized_first_thread_event_defers_observation_without_trusting_later_ids() {
+    let f = Fixture::new();
+    let mut child = Running(Some(
+        f.command(&["run", "--skill", "x", "--json"])
+            .env("FAKE_OTHER_ID", "first-padded-thread")
+            .env("FAKE_PADDED_THREAD", "1")
+            .env("FAKE_SECOND_ID", "1")
+            .env("FAKE_WAIT_FINISH", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    ));
+    wait_for_file(&f.root.join("waiting-finish"));
+    std::thread::sleep(Duration::from_millis(100));
+    assert!(child.0.as_mut().unwrap().try_wait().unwrap().is_none());
+    let state = f.state();
+    assert!(state["sessionId"].is_null());
+    assert!(state["launches"][0]["sessionId"].is_null());
+    fs::write(f.root.join("finish"), "finish").unwrap();
+    let out = child.finish();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let state = f.state();
+    assert_eq!(state["sessionId"], "first-padded-thread");
+    assert_eq!(state["launches"][0]["sessionId"], "first-padded-thread");
+    f.assert_unlocked();
+}
+
+#[test]
+fn noisy_output_does_not_delay_timeout_or_interrupt() {
+    for noise in ["json", "unterminated"] {
+        for interrupt in [false, true] {
+            let f = Fixture::new();
+            let timeout = if interrupt { "30s" } else { "1s" };
+            let child = Running(Some(
+                f.command(&["run", "--skill", "x", "--timeout", timeout, "--json"])
+                    .env("FAKE_BLOCK", "1")
+                    .env("FAKE_NOISE", noise)
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap(),
+            ));
+            let pids = wait_for_file(&f.root.join("pids"));
+            wait_for_file(&f.root.join("noise-ready"));
+            let start = Instant::now();
+            if interrupt {
+                send(child.0.as_ref().unwrap().id(), 2);
+            }
+            let out = child.finish();
+            assert_eq!(
+                out.status.code(),
+                Some(if interrupt { 130 } else { 124 }),
+                "{}",
+                String::from_utf8_lossy(&out.stdout)
+            );
+            assert!(
+                start.elapsed() < Duration::from_secs(5),
+                "{noise} delayed cancellation"
+            );
+            for pid in pids.split_whitespace() {
+                assert_dead(pid.parse().unwrap());
+            }
+            let state = f.state();
+            assert_eq!(state["state"], "stopped");
+            assert_eq!(
+                state["launches"][0]["stopReason"],
+                if interrupt {
+                    "interrupted"
+                } else {
+                    "timed_out"
+                }
+            );
+            assert!(state["sessionId"].is_null());
+            f.assert_unlocked();
+        }
+    }
 }
 
 #[test]
@@ -413,7 +709,8 @@ fn branch_changes_resume_same_checkout_and_cannot_bypass_lock() {
     assert_eq!(resumed["run"]["sessionId"], first["run"]["sessionId"]);
     assert_eq!(f.pointer(), pointer);
     let child = running(&f, &["run", "--json"]);
-    wait_for_file(&f.root.join("pids"));
+    let pids = wait_for_file(&f.root.join("pids"));
+    wait_for_session(&f, &pids);
     let out = f
         .command_at(&f.workspace, &["switch", "--detach"], "git")
         .output()
@@ -468,7 +765,8 @@ fn detached_worktrees_at_same_commit_have_distinct_sessions_and_locks() {
         "main",
     ]);
     let child = running(&f, &["run", "--json"]);
-    wait_for_file(&f.root.join("pids"));
+    let pids = wait_for_file(&f.root.join("pids"));
+    wait_for_session(&f, &pids);
     let out = f
         .command(&["run", "--skill", "y", "--json"])
         .current_dir(&second)
@@ -603,6 +901,21 @@ fn wait_for_file(path: &Path) -> String {
         std::thread::sleep(Duration::from_millis(10));
     }
 }
+fn wait_for_session(f: &Fixture, pids: &str) {
+    let codex_pid = pids.split_whitespace().next().unwrap();
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        if fs::read_to_string(f.root.join("session-ready")).is_ok_and(|ready| ready == codex_pid) {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "session and rollout were not ready"
+        );
+        std::thread::sleep(Duration::from_millis(10));
+    }
+}
+
 struct Running(Option<Child>);
 impl Running {
     fn finish(mut self) -> Output {
@@ -674,12 +987,21 @@ fn timeout_and_interrupt_kill_group_release_lock_and_allow_resume() {
     for signal in [None, Some(2), Some(15)] {
         let f = Fixture::new();
         let args = if signal.is_none() {
-            vec!["run", "--skill", "x", "--timeout", "2s", "--json"]
+            vec!["run", "--skill", "x", "--timeout", "5s", "--json"]
         } else {
             vec!["run", "--skill", "x", "--json"]
         };
-        let child = running(&f, &args);
+        let child = Running(Some(
+            f.command(&args)
+                .env("FAKE_BLOCK", "1")
+                .env("FAKE_SESSION_DELAY", "0.25")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        ));
         let pids = wait_for_file(&f.root.join("pids"));
+        wait_for_session(&f, &pids);
         if let Some(signal) = signal {
             send(child.0.as_ref().unwrap().id(), signal);
         }
@@ -712,7 +1034,8 @@ fn timeout_and_interrupt_kill_group_release_lock_and_allow_resume() {
 fn concurrent_run_refused_and_dead_pid_lock_taken_over() {
     let f = Fixture::new();
     let child = running(&f, &["run", "--skill", "x", "--json"]);
-    wait_for_file(&f.root.join("pids"));
+    let pids = wait_for_file(&f.root.join("pids"));
+    wait_for_session(&f, &pids);
     for _ in 0..2 {
         assert_error(f.run(&["run", "--skill", "second", "--json"]), 4, "lock");
     }
@@ -747,14 +1070,13 @@ fn concurrent_run_refused_and_dead_pid_lock_taken_over() {
 #[test]
 fn killed_launcher_keeps_lock_until_codex_process_group_is_gone() {
     let f = Fixture::new();
-    let first = f.json(&["run", "--skill", "x", "--json"]);
     // A separate subreaper owns only this test's orphaned processes. Reaping
     // them explicitly makes kill(-pgid, 0) independent of container PID 1.
     let script = r#"
 import ctypes, json, os, pathlib, signal, subprocess, sys, time
 assert ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) == 0
 root = pathlib.Path(os.environ['FAKE_ROOT'])
-lock = pathlib.Path(sys.argv[2])
+current = pathlib.Path(sys.argv[2])
 def until(probe):
     deadline = time.monotonic() + 10
     while True:
@@ -764,12 +1086,19 @@ def until(probe):
         assert time.monotonic() < deadline, 'timed out waiting for process handshake'
         time.sleep(.01)
 env = dict(os.environ, FAKE_BLOCK='1')
-launcher = subprocess.Popen([sys.argv[1], 'run', '--json'], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+launcher = subprocess.Popen([sys.argv[1], 'run', '--skill', 'x', '--json'], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
 pgid = None
 try:
     pids = until(lambda: (root/'pids').read_text().split() if (root/'pids').exists() else None)
     pgid = int(pids[0])
+    lock = next(current.glob('*.lock'))
     until(lambda: lock.read_text().split() == [str(launcher.pid), str(pgid)])
+    pointer = next(path for path in current.iterdir() if path.suffix != '.lock')
+    state_path = current.parent/pointer.read_text()/'state.json'
+    until(lambda: (root/'session-ready').read_text() == str(pgid) if (root/'session-ready').exists() else None)
+    first = until(lambda: (state if state['sessionId'] and state['launches'][0]['sessionId'] else None) if (state := json.loads(state_path.read_text())) else None)
+    assert first['state'] == 'running'
+    assert first['launches'][0]['finishedAt'] is None
     launcher.kill()
     launcher.communicate(timeout=10)
     assert launcher.returncode == -signal.SIGKILL
@@ -800,13 +1129,13 @@ finally:
     except ProcessLookupError: pass
 resumed = subprocess.run([sys.argv[1], 'run', '--json'], capture_output=True, timeout=10)
 assert resumed.returncode == 0, (resumed.stdout, resumed.stderr)
+data = json.loads(resumed.stdout)['data']
+assert data['run']['id'] == first['id']
+assert data['run']['sessionId'] == first['sessionId']
+calls = [json.loads(line) for line in (root/'argv.jsonl').read_text().splitlines()]
+assert calls[-1][calls[-1].index('resume')+1] == first['sessionId']
 print(resumed.stdout.decode(), end='')
 "#;
-    let pointer = f.pointer();
-    let lock = pointer.with_file_name(format!(
-        "{}.lock",
-        pointer.file_name().unwrap().to_string_lossy()
-    ));
     let out = f
         .command_at(
             &f.workspace,
@@ -814,7 +1143,7 @@ print(resumed.stdout.decode(), end='')
                 "-c",
                 script,
                 env!("CARGO_BIN_EXE_rabi"),
-                lock.to_str().unwrap(),
+                f.current().to_str().unwrap(),
             ],
             "python3",
         )
@@ -827,9 +1156,9 @@ print(resumed.stdout.decode(), end='')
         String::from_utf8_lossy(&out.stderr)
     );
     let doc: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(doc["data"]["run"]["id"], first["run"]["id"]);
-    assert_eq!(doc["data"]["run"]["sessionId"], first["run"]["sessionId"]);
-    assert_eq!(f.calls(), 3);
+    assert!(doc["data"]["run"]["sessionId"].is_string());
+    assert_eq!(doc["data"]["run"]["launches"].as_array().unwrap().len(), 2);
+    assert_eq!(f.calls(), 2);
     f.assert_unlocked();
 }
 #[test]

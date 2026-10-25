@@ -142,6 +142,21 @@ fn broken(reason: impl std::fmt::Display) -> Error {
     Error::msg(format!("Cannot resume current run: {reason}. Start a new parent with `rabi run --fresh --skill <value>`."))
 }
 
+fn observe_session(record: &mut Record, id: String, resuming: bool) -> Result<bool> {
+    let launch = record
+        .launches
+        .last_mut()
+        .ok_or_else(|| Error::msg("Missing launch record"))?;
+    let mismatch = resuming && record.session_id.as_deref() != Some(&id);
+    if mismatch {
+        launch.message = Some(format!("Codex resumed a different thread id ({id}); expected {}. The recorded parent session was retained. Use `rabi run --fresh --skill <value>` to start over.", record.session_id.as_deref().unwrap_or_default()));
+    } else {
+        record.session_id = Some(id.clone());
+    }
+    launch.session_id = Some(id);
+    Ok(mismatch)
+}
+
 // Checkout paths stay stable across branch changes, including detached HEAD.
 fn workspace_key(path: &str) -> String {
     use sha2::{Digest, Sha256};
@@ -286,17 +301,31 @@ pub(crate) fn execute(
     }
     // Every fallible launch operation is enclosed so even spawn/protocol/IO failures
     // finalize the record, and the lifecycle guard reaps any live child first.
+    let session = if resuming {
+        record.session_id.clone()
+    } else {
+        None
+    };
     let launched = lifecycle::launch(
         Path::new(&tree.path),
         &launch_dir,
-        if resuming {
-            record.session_id.as_deref()
-        } else {
-            None
-        },
+        session.as_deref(),
         timeout,
         &mut lock,
+        |id| {
+            observe_session(&mut record, id, resuming)?;
+            save(&dir, &record)
+                .map_err(|e| Error::msg(format!("Failed to persist Codex session id: {e}")))
+        },
     );
+    // Fast exits and a final line without a newline still use the complete log.
+    // Once observed mid-launch, the first id is authoritative for this launch.
+    let session = record
+        .launches
+        .last()
+        .and_then(|launch| launch.session_id.clone())
+        .map(Ok)
+        .unwrap_or_else(|| crate::provider::session_id(&launch_dir.join("events.jsonl")));
     let launch = record
         .launches
         .last_mut()
@@ -314,15 +343,15 @@ pub(crate) fn execute(
             1
         }
     };
-    match crate::provider::session_id(&launch_dir.join("events.jsonl")) {
+    match session {
         Ok(id) => {
-            launch.session_id = Some(id.clone());
-            if resuming && record.session_id.as_deref() != Some(&id) {
-                launch.message = Some(format!("Codex resumed a different thread id ({id}); expected {}. The recorded parent session was retained. Use `rabi run --fresh --skill <value>` to start over.", record.session_id.as_deref().unwrap_or_default()));
-                launch.stop_reason = Some(StopReason::Error);
+            if observe_session(&mut record, id, resuming)? {
+                record
+                    .launches
+                    .last_mut()
+                    .ok_or_else(|| Error::msg("Missing launch record"))?
+                    .stop_reason = Some(StopReason::Error);
                 exit = 1;
-            } else {
-                record.session_id = Some(id);
             }
         }
         Err(e) if launch.message.is_none() && exit == 0 => {
@@ -332,6 +361,10 @@ pub(crate) fn execute(
         }
         _ => {}
     }
+    let launch = record
+        .launches
+        .last_mut()
+        .ok_or_else(|| Error::msg("Missing launch record"))?;
     if let Some(reason) = &launch.stop_reason {
         launch.message = match reason {
             StopReason::Interrupted => Some("Run interrupted".into()),
@@ -359,7 +392,10 @@ pub(crate) fn execute(
         _ => State::Error,
     };
     let launch = launch.clone();
-    save(&dir, &record)?;
+    save(&dir, &record).map_err(|e| match &launch.message {
+        Some(message) => Error::msg(format!("{message}; failed to save final run state: {e}")),
+        None => e,
+    })?;
     Ok(Report {
         run: record,
         launch,
