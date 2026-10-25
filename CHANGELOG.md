@@ -1,10 +1,18 @@
 # Changelog
 
-## Unreleased
+## v7.1.0 (2026-10-25)
 
 ### Changed (Breaking)
 
-- Removed `rabi workflow list/show/check`, `rabi run start/show` and the YAML workflow engine. Added `rabi run` with one resumable Codex parent per workspace, `--skill`, `--fresh`, and `--timeout`; skills are verbatim prompt instructions. Added independent `rabi skill list` discovery. Older run records and user workflow files are retained.
+- Removed `rabi workflow list/show/check`, `rabi run start/show` and the YAML workflow engine. Added `rabi run` with one resumable Codex parent per workspace, `--skill`, `--fresh`, and `--timeout`; skills are verbatim prompt instructions. Added independent `rabi skill list` discovery. Older run records and user workflow files are retained. (#908)
+
+### Added
+
+- Added an installable rabi usage skill at `skills/rabi/` for Codex, Claude Code, and Cursor. Install it with `npx skills add yoiailabs/rabi --skill rabi -a codex -a claude-code -a cursor -g -y` and update it with `npx skills update rabi`; see [README.md](README.md#agent-skill). Install the rabi binary separately. (#912)
+
+### Fixed
+
+- `rabi run` now persists the first observed Codex session id while the parent is still running, allowing an interrupted first launch to resume once the id is saved and the Codex session rollout is available. Session observation is best effort; fast exits and final events without a trailing newline are handled by the final log scan. (#910)
 
 ## v7.0.0 (2026-10-24)
 
