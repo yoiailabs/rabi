@@ -227,13 +227,13 @@ pub(super) fn launch(
     session: Option<&str>,
     timeout: Duration,
     lock: &mut Lock,
-    mut on_session: impl FnMut(String) -> Result<()>,
+    on_session: impl FnMut(String) -> Result<()>,
 ) -> Result<Outcome> {
     let mut cmd = crate::provider::codex(workspace, dir, session)?;
     cmd.stdout(io(File::create(dir.join("events.jsonl")))?)
         .stderr(io(File::create(dir.join("stderr.log")))?)
         .process_group(0);
-    let mut events = crate::provider::SessionIdReader::open(&dir.join("events.jsonl"))?;
+    let events = crate::provider::SessionIdReader::open(&dir.join("events.jsonl")).ok();
     if INTERRUPTED.load(Ordering::Relaxed) {
         return Ok(Outcome {
             parent_exit: 130,
@@ -244,13 +244,21 @@ pub(super) fn launch(
     // Fail closed if the launcher dies between spawning and publishing the
     // child's pgid. Zero is unverifiable, never evidence of a dead group.
     lock.record_group(0)?;
-    let mut group = Group(cmd.spawn().map_err(|e| Error::Spawn {
+    let group = Group(cmd.spawn().map_err(|e| Error::Spawn {
         command: "codex".into(),
         details: e.to_string(),
     })?);
     lock.record_group(group.0.id())?;
+    monitor(group, timeout, events, on_session)
+}
+
+fn monitor<R: std::io::Read>(
+    mut group: Group,
+    timeout: Duration,
+    mut events: Option<crate::provider::SessionIdReader<R>>,
+    mut on_session: impl FnMut(String) -> Result<()>,
+) -> Result<Outcome> {
     let start = Instant::now();
-    let mut observed_session = false;
     loop {
         let reason = if INTERRUPTED.load(Ordering::Relaxed) {
             Some((StopReason::Interrupted, 130))
@@ -268,12 +276,18 @@ pub(super) fn launch(
                 reason,
             });
         }
-        if !observed_session {
-            if let Some(id) = events.poll()? {
-                // Errors unwind through Group, stopping and reaping the child
-                // before the caller finalizes its failed launch record.
-                on_session(id)?;
-                observed_session = true;
+        if let Some(reader) = events.as_mut() {
+            match reader.poll() {
+                Ok(Some(id)) => {
+                    // Only persistence errors stop the child. Group still
+                    // stops and reaps it before launch finalization.
+                    on_session(id)?;
+                    events = None;
+                }
+                // Observation is best effort: defer unreadable or oversized
+                // events to the final scan, preserving parent work and status.
+                Err(_) => events = None,
+                Ok(None) => {}
             }
         }
         if let Some(status) = io(group.0.try_wait())? {
@@ -295,4 +309,50 @@ fn code(status: ExitStatus) -> i32 {
     status
         .code()
         .unwrap_or_else(|| 128 + status.signal().unwrap_or(0))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    #[test]
+    fn observer_read_failure_does_not_stop_child_or_change_its_status() {
+        struct FailedRead(Rc<Cell<usize>>);
+        impl std::io::Read for FailedRead {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                self.0.set(self.0.get() + 1);
+                Err(std::io::Error::other("injected event read failure"))
+            }
+        }
+        for exit in [0, 42] {
+            let path = std::env::temp_dir().join(format!("rabi-observer-{}", uuid::Uuid::new_v4()));
+            let child = std::process::Command::new("sh")
+                .args(["-c", &format!("sleep .05; printf finished; exit {exit}")])
+                .stdout(File::create(&path).unwrap())
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            let reads = Rc::new(Cell::new(0));
+            let result = monitor(
+                Group(child),
+                Duration::from_secs(5),
+                Some(crate::provider::SessionIdReader::new(FailedRead(
+                    reads.clone(),
+                ))),
+                |_| panic!("a failed observer must not report a session"),
+            )
+            .unwrap();
+            assert_eq!(reads.get(), 1, "failed observation must be disabled");
+            assert_eq!(result.parent_exit, exit);
+            assert_eq!(result.exit, exit);
+            assert!(matches!(
+                (exit, result.reason),
+                (0, StopReason::Completed) | (42, StopReason::ParentFailed)
+            ));
+            assert_eq!(fs::read_to_string(&path).unwrap(), "finished");
+            fs::remove_file(path).unwrap();
+        }
+    }
 }
