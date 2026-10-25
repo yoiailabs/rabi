@@ -1,6 +1,6 @@
 schema_version: 1
 name: security-review
-version: 3
+version: 4
 workspace: new
 agent: {provider: codex, model: gpt-6.1-sol, effort: high}
 start: prepare
@@ -81,5 +81,12 @@ steps:
       PR template with sections Summary / Testing / Risk / How to revert.
       Include check results, unverified items, and each review's verdict, reviewed
       HEAD and rounds. State that risk is not assessed by rabi unless the task says
-      otherwise. Use the task and reports to write the title and body; report the PR URL.
+      otherwise. Use the task and reports to write the title and body.
+      If the push or draft PR creation fails (including missing gh authentication),
+      stop without retrying endlessly or working around the failure with other tools.
+      Write the error to DRAFT_PULL_REQUEST_FAILED.txt at the workspace root and
+      leave it uncommitted and untracked. Do not commit it or add it to .gitignore.
+      Report the failure; never report success without a draft PR. The uncommitted
+      file makes this step fail through rabi's existing dirty-workspace rule.
+      Only on success report the PR URL.
     on: {ok: succeeded}

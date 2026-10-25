@@ -592,7 +592,7 @@ mod tests {
         let inspected = builtin().inspect();
         assert!(inspected.valid(), "{:?}", inspected.diagnostics);
         let definition = inspected.definition.unwrap();
-        assert_eq!(definition.version, 6);
+        assert_eq!(definition.version, 7);
         assert_eq!(definition.limits.max_steps, 15);
         assert_eq!(definition.loops["repair"], 2);
         assert_eq!(definition.steps.len(), 6);
