@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 extern "C" {
     fn kill(pid: i32, signal: i32) -> i32;
+    fn getpgrp() -> i32;
 }
 fn send(pid: u32, signal: i32) {
     unsafe {
@@ -68,6 +69,7 @@ args = sys.argv[1:]
 root = pathlib.Path(os.environ['FAKE_ROOT'])
 with (root/'argv.jsonl').open('a') as f: f.write(json.dumps(args)+'\n')
 (root/'input').write_text(sys.stdin.read())
+(root/'cwd').write_text(os.getcwd())
 sid = args[args.index('resume')+1] if 'resume' in args else str(uuid.uuid4())
 sid = os.environ.get('FAKE_OTHER_ID', sid)
 if os.environ.get('FAKE_BLOCK'):
@@ -639,6 +641,7 @@ fn untrusted_run_does_not_execute_fsmonitor() {
         assert_eq!(f.calls(), 0);
     }
     f.json(&["run", "--skill", "x", "--json"]);
+    f.json(&["list", "--json"]);
     assert!(
         f.root.join("fsmonitor-ran").exists(),
         "positive fsmonitor control"
@@ -1387,4 +1390,533 @@ fn new_help_and_completions_come_from_the_contract_without_retired_commands() {
     assert!(out.status.success());
     assert!(String::from_utf8_lossy(&out.stdout).contains("[TASK | -]"));
     assert_eq!(f.calls(), 0);
+}
+
+#[test]
+fn selector_runs_from_primary_and_shares_in_workspace_resumes() {
+    let f = Fixture::new();
+    let first = f
+        .command_at(
+            &f.repo,
+            &[
+                "run",
+                "feat/parent",
+                "--skill",
+                "x",
+                "--json",
+                "--",
+                "outside task",
+            ],
+            env!("CARGO_BIN_EXE_rabi"),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        first.status.success(),
+        "{}",
+        String::from_utf8_lossy(&first.stderr)
+    );
+    let first: Value = serde_json::from_slice(&first.stdout).unwrap();
+    assert_eq!(
+        fs::read_to_string(f.root.join("cwd")).unwrap(),
+        f.workspace.to_str().unwrap()
+    );
+    assert!(fs::read_to_string(f.root.join("input"))
+        .unwrap()
+        .contains("outside task"));
+    let second = f.json(&["run", "--json"]);
+    assert_eq!(first["data"]["run"]["id"], second["run"]["id"]);
+    assert_eq!(
+        first["data"]["run"]["sessionId"],
+        second["run"]["sessionId"]
+    );
+    let third = f
+        .command_at(
+            &f.repo,
+            &["run", "feat/parent", "--json", "--"],
+            env!("CARGO_BIN_EXE_rabi"),
+        )
+        .output()
+        .unwrap();
+    assert!(third.status.success());
+    assert_eq!(
+        fs::read_to_string(f.root.join("input")).unwrap(),
+        "Continue."
+    );
+    assert_eq!(f.state()["launches"].as_array().unwrap().len(), 3);
+}
+
+#[test]
+fn selector_with_repo_from_outside_and_refusals() {
+    let f = Fixture::new();
+    let repo = f.repo.to_str().unwrap();
+    let out = f
+        .command_at(
+            &f.root,
+            &["-R", repo, "run", "--skill=x", "feat/parent", "--", "task"],
+            env!("CARGO_BIN_EXE_rabi"),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        fs::read_to_string(f.root.join("cwd")).unwrap(),
+        f.workspace.to_str().unwrap()
+    );
+    for args in [
+        vec!["-R", repo, "run"],
+        vec!["run", "-R", repo, "--", "task"],
+        vec!["run", "-R", repo, "task"],
+    ] {
+        assert_error(
+            f.command_at(&f.root, &args, env!("CARGO_BIN_EXE_rabi"))
+                .output()
+                .unwrap(),
+            2,
+            "SEL --",
+        );
+    }
+    assert_error(f.run(&["run", repo, "--"]), 2, "rabi create");
+    let out = f.run(&["run", "missing-workspace", "--json", "--"]);
+    assert_error(out, 3, "not_found");
+    f.json(&["adopt", f.workspace.to_str().unwrap(), "--json"]);
+    fs::remove_dir_all(&f.workspace).unwrap();
+    assert_error(
+        f.command_at(
+            &f.repo,
+            &["run", "feat/parent", "--"],
+            env!("CARGO_BIN_EXE_rabi"),
+        )
+        .output()
+        .unwrap(),
+        1,
+        "orphaned",
+    );
+}
+
+#[test]
+fn task_forms_and_option_values_keep_their_meaning() {
+    let f = Fixture::new();
+    for (args, skill, task) in [
+        (
+            vec!["run", "plain task", "--skill", "--"],
+            "--",
+            "plain task",
+        ),
+        (
+            vec!["run", "--fresh", "--skill=--", "--", "boundary task"],
+            "--",
+            "boundary task",
+        ),
+        (
+            vec![
+                "run",
+                "feat/parent",
+                "--fresh",
+                "--skill",
+                "--",
+                "--timeout",
+                "1m",
+                "--",
+                "selected task",
+            ],
+            "--",
+            "selected task",
+        ),
+        (
+            vec!["run", "--fresh", "--skill", "x", "literal task"],
+            "x",
+            "literal task",
+        ),
+    ] {
+        let out = f.run(&args);
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(f.state()["skill"], skill);
+        assert!(fs::read_to_string(f.root.join("input"))
+            .unwrap()
+            .ends_with(task));
+    }
+    assert_error(f.run(&["run", "--timeout", "--"]), 2, "--timeout");
+    assert_error(f.run(&["run", "one", "two", "--"]), 2, "Usage");
+    assert_error(
+        f.run(&["run", "feat/parent", "--", "one", "two"]),
+        2,
+        "at most one task",
+    );
+}
+
+#[test]
+fn selected_repository_must_be_trusted_before_status_inspection() {
+    let f = Fixture::new();
+    let monitor = f.root.join("bin/monitor-selected");
+    fs::write(&monitor, "#!/usr/bin/env python3\nimport os,pathlib\n(pathlib.Path(os.environ['FAKE_ROOT'])/'selected-monitor-ran').touch()\n").unwrap();
+    fs::set_permissions(&monitor, fs::Permissions::from_mode(0o755)).unwrap();
+    f.git(&["config", "core.fsmonitor", monitor.to_str().unwrap()]);
+    let out = f
+        .command_at(
+            &f.root,
+            &[
+                "run",
+                "-R",
+                f.repo.to_str().unwrap(),
+                "--skill",
+                "x",
+                "feat/parent",
+                "--",
+            ],
+            env!("CARGO_BIN_EXE_rabi"),
+        )
+        .env("RABI_TRUST_ALL", "0")
+        .output()
+        .unwrap();
+    assert_error(out, 4, "trust");
+    assert!(!f.root.join("selected-monitor-ran").exists());
+    assert_eq!(f.calls(), 0);
+}
+
+fn observed_run(f: &Fixture, command: &str) -> Value {
+    let data = f.json(&[command, "--json"]);
+    if command == "show" {
+        data["workspace"]["run"].clone()
+    } else {
+        data["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|tree| tree["path"] == f.workspace.to_str().unwrap())
+            .unwrap()["run"]
+            .clone()
+    }
+}
+
+fn snapshot_run_files(path: &Path) -> Vec<(PathBuf, Vec<u8>, u64, i64, i64)> {
+    let mut snapshot = Vec::new();
+    for entry in fs::read_dir(path).unwrap() {
+        let path = entry.unwrap().path();
+        if path.is_dir() {
+            snapshot.extend(snapshot_run_files(&path));
+        } else {
+            let metadata = fs::metadata(&path).unwrap();
+            snapshot.push((
+                path.clone(),
+                fs::read(&path).unwrap(),
+                metadata.ino(),
+                metadata.mtime(),
+                metadata.mtime_nsec(),
+            ));
+        }
+    }
+    snapshot.sort_by(|a, b| a.0.cmp(&b.0));
+    snapshot
+}
+
+#[test]
+fn list_show_run_summary_is_read_only_and_exposes_latest_paths() {
+    let f = Fixture::new();
+    for command in ["list", "show"] {
+        assert!(observed_run(&f, command).is_null());
+    }
+    assert!(!f.current().exists());
+    let run = f.json(&["run", "--skill", "x", "--json"])["run"].clone();
+    let before = snapshot_run_files(&f.repo.join(".git/rabi/runs"));
+    for command in ["list", "show"] {
+        let summary = observed_run(&f, command);
+        assert_eq!(summary["id"], run["id"]);
+        assert_eq!(summary["state"], "idle");
+        assert_eq!(summary["sessionId"], run["sessionId"]);
+        assert_eq!(summary["skill"], "x");
+        assert_eq!(summary["launches"], 1);
+        assert_eq!(summary["lastLaunch"]["n"], 1);
+        assert_eq!(summary["lastLaunch"]["stopReason"], "completed");
+        for key in [
+            "dir",
+            "promptPath",
+            "eventsPath",
+            "stderrPath",
+            "answerPath",
+        ] {
+            let path = Path::new(summary["lastLaunch"][key].as_str().unwrap());
+            assert!(path.is_absolute() && path.exists(), "{key}");
+        }
+    }
+    assert_eq!(before, snapshot_run_files(&f.repo.join(".git/rabi/runs")));
+    let text = String::from_utf8(f.run(&["show"]).stdout).unwrap();
+    for expected in [
+        "Run: idle (run_",
+        "Session: ",
+        "Last launch: 1 completed",
+        "Answer: ",
+        "Log: ",
+    ] {
+        assert!(text.contains(expected), "{text}");
+    }
+    assert!(String::from_utf8(f.run(&["list"]).stdout)
+        .unwrap()
+        .contains("run:idle"));
+    for flag in ["--names", "--paths"] {
+        assert!(!String::from_utf8(f.run(&["list", flag]).stdout)
+            .unwrap()
+            .contains("run:"));
+    }
+}
+
+#[test]
+fn run_probe_handles_dead_live_missing_locks_and_corrupt_state() {
+    let f = Fixture::new();
+    f.json(&["run", "--skill", "x", "--json"]);
+    let state_path = f.run_dir().join("state.json");
+    let mut state = f.state();
+    state["state"] = "running".into();
+    fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+    let lock = f.pointer().with_extension("lock");
+    for (holder, expected) in [
+        (None, "stopped"),
+        (Some("2147483647".to_owned()), "stopped"),
+        (Some(std::process::id().to_string()), "running"),
+        (Some(format!("{} 0", std::process::id())), "running"),
+        (Some("2147483647 0".to_owned()), "stopped"),
+        (
+            Some(format!("2147483647 {}", unsafe { getpgrp() })),
+            "running",
+        ),
+    ] {
+        if let Some(pid) = holder.as_deref() {
+            fs::write(&lock, pid).unwrap();
+        }
+        let before = snapshot_run_files(&f.repo.join(".git/rabi/runs"));
+        for command in ["list", "show"] {
+            assert_eq!(observed_run(&f, command)["state"], expected);
+        }
+        assert_eq!(before, snapshot_run_files(&f.repo.join(".git/rabi/runs")));
+    }
+    fs::remove_file(f.run_dir().join("launches/1/answer.md")).unwrap();
+    assert!(observed_run(&f, "show")["lastLaunch"]["answerPath"].is_null());
+    let pointer = f.pointer();
+    let id = fs::read(&pointer).unwrap();
+    for (path, invalid) in [
+        (&lock, "not-a-pid"),
+        (&lock, "0"),
+        (&lock, "1 2 3"),
+        (&pointer, "../../outside"),
+    ] {
+        fs::write(path, invalid).unwrap();
+        let before = snapshot_run_files(&f.repo.join(".git/rabi/runs"));
+        for command in ["list", "show"] {
+            let out = f.run(&[command, "--json"]);
+            assert!(out.status.success());
+            let envelope: Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(envelope["warnings"][0]["code"], "run_read");
+            assert!(observed_run(&f, command).is_null());
+        }
+        assert_eq!(before, snapshot_run_files(&f.repo.join(".git/rabi/runs")));
+        fs::write(&pointer, &id).unwrap();
+        fs::write(&lock, std::process::id().to_string()).unwrap();
+    }
+    fs::write(&state_path, b"{ broken").unwrap();
+    let before = snapshot_run_files(&f.repo.join(".git/rabi/runs"));
+    for command in ["list", "show"] {
+        let out = f.run(&[command, "--json"]);
+        assert!(out.status.success());
+        let envelope: Value = serde_json::from_slice(&out.stdout).unwrap();
+        assert_eq!(envelope["warnings"][0]["code"], "run_read");
+        assert!(observed_run(&f, command).is_null());
+    }
+    assert_eq!(before, snapshot_run_files(&f.repo.join(".git/rabi/runs")));
+}
+
+#[test]
+fn observing_live_run_does_not_take_its_lock() {
+    let f = Fixture::new();
+    let mut parent = Running(Some(
+        f.command(&["run", "--skill", "x", "--json"])
+            .env("FAKE_WAIT_FINISH", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    ));
+    wait_for_file(&f.root.join("waiting-finish"));
+    let lock = f.pointer().with_extension("lock");
+    let body = fs::read(&lock).unwrap();
+    let before = fs::metadata(&lock).unwrap();
+    for command in ["list", "show"] {
+        assert_eq!(observed_run(&f, command)["state"], "running");
+    }
+    assert_eq!(fs::read(&lock).unwrap(), body);
+    assert_eq!(fs::metadata(&lock).unwrap().ino(), before.ino());
+    fs::write(f.root.join("finish"), "done").unwrap();
+    assert!(parent.0.as_mut().unwrap().id() > 0);
+    assert!(parent.finish().status.success());
+    assert_eq!(observed_run(&f, "show")["state"], "idle");
+    assert!(f.run(&["run"]).status.success());
+}
+
+#[test]
+fn run_refuses_foreign_replacement_and_skips_foreign_sibling_monitors() {
+    let f = Fixture::new();
+    f.json(&["trust", "add", "--json"]);
+    fs::rename(&f.workspace, f.root.join("original-workspace")).unwrap();
+    fs::create_dir(&f.workspace).unwrap();
+    let init = f
+        .command_at(
+            &f.workspace,
+            &["init", "--template=", "-b", "foreign"],
+            "git",
+        )
+        .output()
+        .unwrap();
+    assert!(init.status.success());
+    let monitor = f.root.join("bin/foreign-monitor");
+    fs::write(&monitor, "#!/usr/bin/env python3\nimport os,pathlib\n(pathlib.Path(os.environ['FAKE_ROOT'])/'foreign-monitor-ran').touch()\n").unwrap();
+    fs::set_permissions(&monitor, fs::Permissions::from_mode(0o755)).unwrap();
+    assert!(f
+        .command_at(
+            &f.workspace,
+            &["config", "core.fsmonitor", monitor.to_str().unwrap()],
+            "git"
+        )
+        .output()
+        .unwrap()
+        .status
+        .success());
+    let target = f
+        .command_at(
+            &f.root,
+            &[
+                "run",
+                "-R",
+                f.repo.to_str().unwrap(),
+                "--skill",
+                "x",
+                "feat/parent",
+                "--",
+            ],
+            env!("CARGO_BIN_EXE_rabi"),
+        )
+        .env("RABI_TRUST_ALL", "0")
+        .output()
+        .unwrap();
+    assert_error(target, 1, "does not belong");
+    assert!(!f.root.join("foreign-monitor-ran").exists());
+    assert_eq!(f.calls(), 0);
+    assert!(!f.current().exists());
+    let foreign = f.root.join("foreign");
+    fs::rename(&f.workspace, &foreign).unwrap();
+    std::os::unix::fs::symlink(&foreign, &f.workspace).unwrap();
+    assert_error(
+        f.command_at(
+            &f.repo,
+            &["run", "--skill", "x", "feat/parent", "--"],
+            env!("CARGO_BIN_EXE_rabi"),
+        )
+        .env("RABI_TRUST_ALL", "0")
+        .output()
+        .unwrap(),
+        1,
+        "symlink",
+    );
+    assert!(!f.root.join("foreign-monitor-ran").exists());
+    assert_eq!(f.calls(), 0);
+    let sibling = f.root.join("safe-sibling");
+    f.git(&[
+        "worktree",
+        "add",
+        "-b",
+        "safe-sibling",
+        sibling.to_str().unwrap(),
+    ]);
+    for (cwd, args) in [
+        (&f.repo, vec!["run", "safe-sibling", "--skill", "x", "--"]),
+        (&sibling, vec!["run"]),
+    ] {
+        let out = f
+            .command_at(cwd, &args, env!("CARGO_BIN_EXE_rabi"))
+            .env("RABI_TRUST_ALL", "0")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!f.root.join("foreign-monitor-ran").exists());
+    }
+    // Positive control: status in the foreign checkout would execute the monitor.
+    assert!(f
+        .command_at(&f.workspace, &["status", "--porcelain"], "git")
+        .output()
+        .unwrap()
+        .status
+        .success());
+    assert!(f.root.join("foreign-monitor-ran").exists());
+}
+
+#[test]
+fn run_read_diagnostics_escape_control_characters_from_invalid_records() {
+    let f = Fixture::new();
+    f.json(&["run", "--skill", "x", "--json"]);
+    let state_path = f.run_dir().join("state.json");
+    let original = f.state();
+    let controls = "\u{1b}[2J\r\n\t\u{7}\u{202e}";
+    for field in ["state", "stopReason", "launchNumber", "schema"] {
+        let mut state = original.clone();
+        match field {
+            "state" => state["state"] = controls.into(),
+            "stopReason" => state["launches"][0]["stopReason"] = controls.into(),
+            "launchNumber" => state["launches"][0]["n"] = controls.into(),
+            "schema" => state["schema"] = controls.into(),
+            _ => unreachable!(),
+        }
+        fs::write(&state_path, serde_json::to_vec(&state).unwrap()).unwrap();
+        for command in ["list", "show"] {
+            for json in [false, true] {
+                let args = if json {
+                    vec![command, "--json"]
+                } else {
+                    vec![command]
+                };
+                let out = f.run(&args);
+                assert!(out.status.success());
+                let stderr = String::from_utf8(out.stderr).unwrap();
+                assert!(stderr.contains("Cannot read workspace run"));
+                assert_eq!(stderr.lines().count(), 1, "{field}: {stderr:?}");
+                assert!(
+                    stderr.chars().all(|ch| !ch.is_control() || ch == '\n'),
+                    "{field}: {stderr:?}"
+                );
+                assert!(!stderr.contains('\u{202e}'), "{field}: {stderr:?}");
+                if json {
+                    let envelope: Value = serde_json::from_slice(&out.stdout).unwrap();
+                    let warning = &envelope["warnings"][0];
+                    assert_eq!(warning["code"], "run_read");
+                    let message = warning["message"].as_str().unwrap();
+                    assert!(message.chars().all(|ch| !ch.is_control()));
+                    assert!(!message.contains('\u{202e}'));
+                    let run = if command == "show" {
+                        &envelope["data"]["workspace"]["run"]
+                    } else {
+                        &envelope["data"]["workspaces"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|tree| tree["path"] == f.workspace.to_str().unwrap())
+                            .unwrap()["run"]
+                    };
+                    assert!(run.is_null());
+                } else {
+                    let stdout = String::from_utf8(out.stdout).unwrap();
+                    assert!(!stdout.contains("Run:"));
+                    assert!(!stdout.contains("run:"));
+                }
+            }
+        }
+    }
 }

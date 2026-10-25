@@ -129,8 +129,11 @@ format check; CI uses the all-workspace form above.
 
 ## Starting and Resuming
 
-From a trusted linked workspace, users start with
-`rabi run --skill rabi-dev "task"`. Primary checkouts are refused; repository
+Users start with `rabi run --skill rabi-dev "task"` inside a trusted linked
+workspace, or `rabi run --skill rabi-dev SEL -- "task"` to select it without cd.
+Use `-R REPO` with SEL from outside the repository; without SEL, `-R` is refused.
+`rabi list` and `rabi show` expose the parent run state and latest launch paths.
+Primary and orphaned checkouts are refused; repository
 trust is required without prompting. See docs/commands.md for trust details.
 `rabi run` resumes the same parent; `rabi run "additional instructions"` resumes
 with a message. `rabi run --fresh --skill rabi-dev "task"` starts a new session

@@ -280,6 +280,10 @@ and [exit codes and recovery](https://github.com/yoiailabs/rabi/blob/main/docs/e
 when automating error handling.
 
 `rabi run` optionally launches or resumes a trusted Codex session in the current
-workspace; a first/fresh run requires `--skill VALUE`. `rabi skill list` lists
+workspace; use `rabi run SEL -- [TASK | -]` to select a workspace without cd and
+`-R REPO` with SEL to select its repository. Without `--`, a single positional
+remains task text. `list` and `show` expose the current parent run state, session
+id, and latest launch paths; inspection never changes run files or locks.
+A first/fresh run requires `--skill VALUE`. `rabi skill list` lists
 checkout and user skill directories independently of run. See the command
 reference for those optional features.

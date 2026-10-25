@@ -311,7 +311,8 @@
         "Includes orphaned records, marked [orphaned] and orphaned:true in JSON.",
         "--names and --paths select text output even with RABI_OUTPUT=json. They cannot be combined with each other or explicit JSON.",
         "All JSON uses schema 2: {schema:2, command, ok, data, warnings:[{code,message}], error:null|{code,message,details?}}. data preserves partial results and has no top-level version/schema. Parsers must ignore unknown fields. Exit codes: 0 success, 1 operational failure, 2 usage/ambiguous, 3 not found/not repository, 4 safety refusal (dirty/unpreserved/published/exists/exists_remote/untrusted; refused when the cause is unknown), 5 sync conflict, 6 partial persistent changes. Standalone exec preserves child statuses",
-        "Workspace JSON includes setup {state, at, error}, or null when unrecorded. Text lists show setup:STATE whenever state is not ok. Interrupted is an observation only, with no locking or in-use detection."
+        "Workspace JSON includes setup {state, at, error}, or null when unrecorded. Text lists show setup:STATE whenever state is not ok. Interrupted is an observation only, with no locking or in-use detection.",
+        "Workspace JSON includes run: null or {id,state,sessionId,skill,launches,lastLaunch}; latest launch details include existing absolute log/answer paths. Text adds run:STATE. Inspection never writes run files or locks; stale running records display stopped. Invalid run data produces run:null and a run_read warning. --names/--paths are unchanged."
       ]
     },
     "gc": {
@@ -1343,8 +1344,9 @@
       "notes": [
         "SEL is a name, . (the checkout containing cwd), pr:N, issue:N, a PR/issue URL, or an absolute path / path starting with ./ or ../. PR and issue selectors find already-linked workspaces only. No match exits 3; multiple matches exit 2 (ambiguous). A dot selector with a different --repo exits 2. Outside any repository exits 3.",
         "SEL defaults to .; the primary checkout and other unrecorded checkouts report managed:false. Reads never rewrite workspace records.",
-        "JSON returns data.workspace with id, name, kind, path, current, repo, managed, orphaned, branch, head, detached, dirty, base, createdFrom, upstream, purpose, links, setup, createdAt and updatedAt. Unknown values are null.",
-        "All JSON uses schema 2: {schema:2, command, ok, data, warnings:[{code,message}], error:null|{code,message,details?}}. data preserves partial results and has no top-level version/schema. Parsers must ignore unknown fields. Exit codes: 0 success, 1 operational failure, 2 usage/ambiguous, 3 not found/not repository, 4 safety refusal (dirty/unpreserved/published/exists/exists_remote/untrusted; refused when the cause is unknown), 5 sync conflict, 6 partial persistent changes. Standalone exec preserves child statuses"
+        "JSON returns data.workspace with id, name, kind, path, current, repo, managed, orphaned, branch, head, detached, dirty, base, createdFrom, upstream, purpose, links, setup, run, createdAt and updatedAt. Unknown values are null.",
+        "All JSON uses schema 2: {schema:2, command, ok, data, warnings:[{code,message}], error:null|{code,message,details?}}. data preserves partial results and has no top-level version/schema. Parsers must ignore unknown fields. Exit codes: 0 success, 1 operational failure, 2 usage/ambiguous, 3 not found/not repository, 4 safety refusal (dirty/unpreserved/published/exists/exists_remote/untrusted; refused when the cause is unknown), 5 sync conflict, 6 partial persistent changes. Standalone exec preserves child statuses",
+        "Run is null without a current parent or with invalid data (run_read warning). Otherwise it includes state, sessionId, skill, launch count and latest launch details with existing absolute paths. Running requires a running record and a live lock pid or process group; stale running displays stopped. Text adds Run, Session, Last launch, Answer and Log when available. Inspection never writes run files or locks."
       ]
     },
     "path": {
@@ -1839,9 +1841,16 @@
     },
     "run": {
       "name": "run",
-      "description": "Launch or resume one Codex parent session in the current workspace",
-      "usage": "rabi run [--skill VALUE] [--fresh] [--timeout DURATION] [TASK | -]",
+      "description": "Launch or resume one Codex parent session in a workspace",
+      "usage": "rabi run [--skill VALUE] [--fresh] [--timeout DURATION] [SEL --] [TASK | -]",
       "options": [
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Repository to select with SEL; refused without an explicit workspace selector. Accepts the same references as other --repo options.",
+          "example": "--repo owner/repo"
+        },
         {
           "name": "skill",
           "type": "string",
@@ -1880,7 +1889,8 @@
         }
       ],
       "notes": [
-        "Uses the checkout containing cwd; primary checkouts and -R/--repo are refused. Repository trust is required without prompting.",
+        "Uses the checkout containing cwd, or SEL before an explicit --. -R/--repo requires SEL. Primary and orphaned checkouts are refused. The selected repository must be trusted, without prompting, before status inspection.",
+        "SEL uses the shared workspace selector rules. At most one positional may precede -- (SEL), and one may follow (TASK). Without --, a single positional remains TASK. Option values, including --skill --, are not separators. Codex cwd and session identity use the selected checkout path.",
         "TASK is optional text; - reads stdin. Later launches resume the recorded parent session; with no message, send Continue. Missing sessions stop with a --fresh hint.",
         "Codex manages progress and its own subagents. Parent exit 0 returns 0 without claiming task completion; other parent statuses pass through. Timeout exits 124; SIGINT/SIGTERM exits 130. The process group is terminated and reaped.",
         "Text prints the final parent answer. JSON data is {run,launch,answer}; raw stdout and stderr are saved per launch."
@@ -1893,6 +1903,14 @@
         {
           "command": "rabi run",
           "description": "Resume the same parent with Continue."
+        },
+        {
+          "command": "rabi run --skill rabi-dev task/auth -- \"Fix authentication\"",
+          "description": "Start a parent in a selected trusted workspace without cd"
+        },
+        {
+          "command": "rabi -R /path/to/repo run task/auth --",
+          "description": "Resume a selected workspace from outside the repository"
         }
       ]
     },
@@ -2036,7 +2054,8 @@
     "setup",
     "default_branch_unavailable",
     "pull_request_unavailable",
-    "published_rewritten"
+    "published_rewritten",
+    "run_read"
   ],
   "schemaVersion": 2
 }
