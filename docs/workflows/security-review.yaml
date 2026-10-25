@@ -1,6 +1,6 @@
 schema_version: 1
 name: security-review
-version: 4
+version: 5
 workspace: new
 agent: {provider: codex, model: gpt-6.1-sol, effort: high}
 start: prepare
@@ -86,7 +86,12 @@ steps:
       stop without retrying endlessly or working around the failure with other tools.
       Write the error to DRAFT_PULL_REQUEST_FAILED.txt at the workspace root and
       leave it uncommitted and untracked. Do not commit it or add it to .gitignore.
+      Confirm that DRAFT_PULL_REQUEST_FAILED.txt appears in `git status --porcelain`.
+      If it does not appear (for example, repository or global excludes ignore it),
+      instead leave the error as an uncommitted modification of an existing tracked
+      file, such as appending it to that file. Do not commit the fallback change.
+      Verify with `git status --porcelain` that a non-ignored, uncommitted change remains.
       Report the failure; never report success without a draft PR. The uncommitted
-      file makes this step fail through rabi's existing dirty-workspace rule.
+      change makes this step fail through rabi's existing dirty-workspace rule.
       Only on success report the PR URL.
     on: {ok: succeeded}

@@ -21175,7 +21175,12 @@ fn assert_draft_pull_request_failure_instruction(prompt: &str) {
         "Write the error to DRAFT_PULL_REQUEST_FAILED.txt at the workspace root",
         "leave it uncommitted and untracked. Do not commit it or add it to .gitignore.",
         "Report the failure; never report success without a draft PR.",
-        "file makes this step fail through rabi's existing dirty-workspace rule.",
+        "Confirm that DRAFT_PULL_REQUEST_FAILED.txt appears in `git status --porcelain`.",
+        "If it does not appear (for example, repository or global excludes ignore it)",
+        "instead leave the error as an uncommitted modification of an existing tracked file",
+        "Do not commit the fallback change.",
+        "Verify with `git status --porcelain` that a non-ignored, uncommitted change remains.",
+        "change makes this step fail through rabi's existing dirty-workspace rule.",
         "Only on success report the PR URL.",
     ] {
         assert!(prompt.contains(expected), "Missing {expected:?}: {prompt}");
@@ -21256,7 +21261,7 @@ fn workflow_inspection_lists_sources_and_shows_the_complete_json_contract_withou
         assert_eq!(workflow["source"], source);
         assert_eq!(workflow["path"], path_value);
         assert_eq!(workflow["schemaVersion"], 1);
-        assert_eq!(workflow["version"], 7);
+        assert_eq!(workflow["version"], 8);
         assert_eq!(workflow["definition"]["start"], "prepare");
         let draft = &workflow["definition"]["steps"]["draft-pull-request"];
         assert_eq!(draft["allow_dirty"], false);
@@ -21283,7 +21288,7 @@ fn workflow_inspection_lists_sources_and_shows_the_complete_json_contract_withou
     }
     let shown = repo.rabi(&["workflow", "show", "custom"]);
     let shown = text(&shown.stdout);
-    assert!(shown.contains("Workflow: custom (repository), version 7"));
+    assert!(shown.contains("Workflow: custom (repository), version 8"));
     assert!(shown.contains("name: embedded-name"));
     assert!(shown.contains("Agent implement:"));
     assert!(!repo.repo.join("hook-ran").exists());
@@ -21668,6 +21673,9 @@ if [ "$readonly" = yes ]; then
 elif head -n 1 "$RUN_TEST_ROOT/prompt" | command grep -q 'Push only the run branch to origin'; then
     if [ -n "${RUN_TEST_DRAFT_PR_ERROR:-}" ]; then
         printf '%s\n' "$RUN_TEST_DRAFT_PR_ERROR" > DRAFT_PULL_REQUEST_FAILED.txt
+        if ! git status --porcelain | command grep -q '?? DRAFT_PULL_REQUEST_FAILED.txt$'; then
+            printf '%s\n' "$RUN_TEST_DRAFT_PR_ERROR" >> README.md
+        fi
         printf 'Draft PR failed: %s\n' "$RUN_TEST_DRAFT_PR_ERROR" > "$answer"
         exit 0
     fi
@@ -21774,7 +21782,24 @@ fn run_start_completes_agent_draft_pull_request_and_show_reads_without_rewriting
 
 #[test]
 fn run_start_stops_on_draft_pull_request_failure_file_even_when_agent_exits_zero() {
+    assert_draft_pull_request_failure_stops_run(false);
+}
+
+#[test]
+fn run_start_stops_on_tracked_fallback_when_draft_pull_request_failure_file_is_ignored() {
+    assert_draft_pull_request_failure_stops_run(true);
+}
+
+fn assert_draft_pull_request_failure_stops_run(ignore_marker: bool) {
     let repo = Repo::new();
+    if ignore_marker {
+        // Track the implementation fixture before adding the existing ignore rule.
+        fs::write(repo.repo.join("change.txt"), "initial\n").unwrap();
+        repo.git(&["add", "change.txt"]);
+        fs::write(repo.repo.join(".gitignore"), "*.txt\n").unwrap();
+        repo.git(&["add", ".gitignore"]);
+        repo.git(&["commit", "-m", "test: ignore text files"]);
+    }
     fs::write(repo.repo.join("task.md"), "# Implement sample\nA task.\n").unwrap();
     let path = run_tools(&repo);
     let error = "gh pr create failed: not logged in";
@@ -21805,10 +21830,13 @@ fn run_start_stops_on_draft_pull_request_failure_file_even_when_agent_exits_zero
     assert_eq!(run["state"], "stopped");
     assert_eq!(run["stepsStarted"], 5);
     assert_eq!(run["stopReason"]["kind"], "dirty_workspace");
-    assert_eq!(
-        run["stopReason"]["message"],
-        "Uncommitted workspace paths: DRAFT_PULL_REQUEST_FAILED.txt"
-    );
+    let dirty_path = if ignore_marker {
+        "README.md"
+    } else {
+        "DRAFT_PULL_REQUEST_FAILED.txt"
+    };
+    let stop_message = format!("Uncommitted workspace paths: {dirty_path}");
+    assert_eq!(run["stopReason"]["message"], stop_message);
     let workspace = Path::new(run["workspace"]["path"].as_str().unwrap());
     assert_eq!(
         fs::read_to_string(workspace.join("DRAFT_PULL_REQUEST_FAILED.txt")).unwrap(),
@@ -21820,7 +21848,22 @@ fn run_start_stops_on_draft_pull_request_failure_file_even_when_agent_exits_zero
         .output()
         .unwrap();
     assert!(status.status.success());
-    assert_eq!(text(&status.stdout), "?? DRAFT_PULL_REQUEST_FAILED.txt");
+    if ignore_marker {
+        assert_eq!(text(&status.stdout), " M README.md");
+        assert_eq!(
+            fs::read_to_string(workspace.join("README.md")).unwrap(),
+            format!("# phantom\n{error}\n")
+        );
+        let ignored = repo
+            .command("git", &["check-ignore", "DRAFT_PULL_REQUEST_FAILED.txt"])
+            .current_dir(workspace)
+            .output()
+            .unwrap();
+        assert!(ignored.status.success());
+        assert_eq!(text(&ignored.stdout), "DRAFT_PULL_REQUEST_FAILED.txt");
+    } else {
+        assert_eq!(text(&status.stdout), "?? DRAFT_PULL_REQUEST_FAILED.txt");
+    }
     let directory = Path::new(run["directory"].as_str().unwrap());
     let attempt_directory = directory.join("steps/005-draft-pull-request");
     let attempt: serde_json::Value =
@@ -21838,7 +21881,7 @@ fn run_start_stops_on_draft_pull_request_failure_file_even_when_agent_exits_zero
     assert!(shown.status.success());
     for expected in [
         "State: stopped",
-        "Stopped (dirty_workspace): Uncommitted workspace paths: DRAFT_PULL_REQUEST_FAILED.txt",
+        &format!("Stopped (dirty_workspace): {stop_message}"),
     ] {
         assert!(
             text(&shown.stdout).contains(expected),
@@ -21982,7 +22025,7 @@ fn documented_security_review_workflow_passes_public_check() {
     assert!(output.status.success(), "{}", text(&output.stdout));
     let shown = repo.rabi(&["workflow", "show", "security-review", "--json"]);
     let workflow = assert_envelope(&shown, "workflow show");
-    assert_eq!(workflow["data"]["workflow"]["version"], 4);
+    assert_eq!(workflow["data"]["workflow"]["version"], 5);
     let draft = &workflow["data"]["workflow"]["definition"]["steps"]["draft-pull-request"];
     assert_eq!(draft["allow_dirty"], false);
     assert_draft_pull_request_failure_instruction(draft["instruction"].as_str().unwrap());
