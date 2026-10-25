@@ -30,15 +30,55 @@ pub(crate) fn codex(workspace: &Path, dir: &Path, session: Option<&str>) -> Resu
 pub(crate) fn session_id(stdout: &Path) -> Result<String> {
     for line in BufReader::new(fs::File::open(stdout).map_err(io_error)?).lines() {
         let line = line.map_err(io_error)?;
-        if let Ok(event) = serde_json::from_str::<serde_json::Value>(&line) {
-            if event["type"] == "thread.started" {
-                if let Some(id) = event["thread_id"].as_str().filter(|s| !s.is_empty()) {
-                    return Ok(id.to_owned());
-                }
-            }
+        if let Some(id) = thread_id(&line) {
+            return Ok(id);
         }
     }
     Err(Error::msg("Codex did not report thread.started.thread_id"))
+}
+
+fn thread_id(line: &str) -> Option<String> {
+    let event = serde_json::from_str::<serde_json::Value>(line).ok()?;
+    if event["type"] == "thread.started" {
+        event["thread_id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .map(str::to_owned)
+    } else {
+        None
+    }
+}
+
+/// Tail stdout without rereading prior events or parsing incomplete JSON lines.
+pub(crate) struct SessionIdReader {
+    reader: BufReader<fs::File>,
+    partial: Vec<u8>,
+}
+impl SessionIdReader {
+    pub fn open(stdout: &Path) -> Result<Self> {
+        Ok(Self {
+            reader: BufReader::new(fs::File::open(stdout).map_err(io_error)?),
+            partial: Vec::new(),
+        })
+    }
+
+    pub fn poll(&mut self) -> Result<Option<String>> {
+        loop {
+            let read = self
+                .reader
+                .read_until(b'\n', &mut self.partial)
+                .map_err(io_error)?;
+            if read == 0 || !self.partial.ends_with(b"\n") {
+                return Ok(None);
+            }
+            let line = std::str::from_utf8(&self.partial).map_err(|e| Error::msg(e.to_string()))?;
+            let id = thread_id(line);
+            self.partial.clear();
+            if id.is_some() {
+                return Ok(id);
+            }
+        }
+    }
 }
 
 pub(crate) fn codex_home() -> Result<PathBuf> {
@@ -77,4 +117,33 @@ pub(crate) fn has_rollout(session: &str) -> Result<bool> {
 
 fn io_error(error: std::io::Error) -> Error {
     Error::msg(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::Write;
+
+    #[test]
+    fn session_reader_retains_partial_lines_and_reads_only_new_events() {
+        let path = std::env::temp_dir().join(format!("rabi-events-{}", uuid::Uuid::new_v4()));
+        let mut writer = fs::File::create(&path).unwrap();
+        writer.write_all(b"not json\n{\"type\":\"thread.started\",\"thread_id\":\"\"}\n{\"type\":\"thread.started\",\"thread_id\":\"").unwrap();
+        let mut reader = SessionIdReader::open(&path).unwrap();
+        assert_eq!(reader.poll().unwrap(), None);
+        assert_eq!(reader.poll().unwrap(), None);
+        let id = "session-二";
+        let bytes = id.as_bytes();
+        writer.write_all(&bytes[..bytes.len() - 1]).unwrap();
+        assert_eq!(reader.poll().unwrap(), None);
+        writer.write_all(&bytes[bytes.len() - 1..]).unwrap();
+        writer.write_all(b"\"}\n").unwrap();
+        assert_eq!(reader.poll().unwrap().as_deref(), Some(id));
+        assert_eq!(reader.poll().unwrap(), None);
+        writer
+            .write_all(b"{\"type\":\"thread.started\",\"thread_id\":\"next\"}\n")
+            .unwrap();
+        assert_eq!(reader.poll().unwrap().as_deref(), Some("next"));
+        fs::remove_file(path).unwrap();
+    }
 }

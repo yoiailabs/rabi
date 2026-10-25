@@ -227,11 +227,13 @@ pub(super) fn launch(
     session: Option<&str>,
     timeout: Duration,
     lock: &mut Lock,
+    mut on_session: impl FnMut(String) -> Result<()>,
 ) -> Result<Outcome> {
     let mut cmd = crate::provider::codex(workspace, dir, session)?;
     cmd.stdout(io(File::create(dir.join("events.jsonl")))?)
         .stderr(io(File::create(dir.join("stderr.log")))?)
         .process_group(0);
+    let mut events = crate::provider::SessionIdReader::open(&dir.join("events.jsonl"))?;
     if INTERRUPTED.load(Ordering::Relaxed) {
         return Ok(Outcome {
             parent_exit: 130,
@@ -248,6 +250,7 @@ pub(super) fn launch(
     })?);
     lock.record_group(group.0.id())?;
     let start = Instant::now();
+    let mut observed_session = false;
     loop {
         let reason = if INTERRUPTED.load(Ordering::Relaxed) {
             Some((StopReason::Interrupted, 130))
@@ -264,6 +267,14 @@ pub(super) fn launch(
                 exit,
                 reason,
             });
+        }
+        if !observed_session {
+            if let Some(id) = events.poll()? {
+                // Errors unwind through Group, stopping and reaping the child
+                // before the caller finalizes its failed launch record.
+                on_session(id)?;
+                observed_session = true;
+            }
         }
         if let Some(status) = io(group.0.try_wait())? {
             let exit = code(status);
