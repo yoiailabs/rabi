@@ -1,7 +1,7 @@
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::io::Read;
 use std::marker::PhantomData;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 use std::rc::Rc;
 use std::time::Duration;
@@ -9,25 +9,7 @@ use std::time::Duration;
 use crate::error::{Error, Result};
 
 thread_local! {
-    static INHERITED_LOGS: RefCell<Option<PathBuf>> = const { RefCell::new(None) };
     static GIT_HOOK_SUPPRESSION: Cell<usize> = const { Cell::new(0) };
-}
-
-// Internal allocation callers can retain setup-hook output in their attempt.
-// Ordinary CLI callers continue to inherit the terminal exactly as before.
-pub(crate) struct InheritedLogs(Option<PathBuf>, PhantomData<Rc<()>>);
-
-pub(crate) fn log_inherited_output(dir: &Path) -> InheritedLogs {
-    InheritedLogs(
-        INHERITED_LOGS.with(|logs| logs.replace(Some(dir.to_path_buf()))),
-        PhantomData,
-    )
-}
-
-impl Drop for InheritedLogs {
-    fn drop(&mut self) {
-        INHERITED_LOGS.with(|logs| logs.replace(self.0.take()));
-    }
 }
 
 // A scoped setting also covers Git calls made by shared worktree/git helpers.
@@ -185,18 +167,6 @@ pub fn inherit(
         cmd.stdout(Stdio::from(std::io::stderr()));
     } else {
         cmd.stdout(Stdio::inherit());
-    }
-    if let Some(dir) = INHERITED_LOGS.with(|logs| logs.borrow().clone()) {
-        let log = |name: &str| {
-            std::fs::OpenOptions::new()
-                .append(true)
-                .create(true)
-                .open(dir.join(name))
-                .map_err(|error| Error::msg(error.to_string()))
-        };
-        cmd.stdout(log("stdout.log")?)
-            .stderr(log("stderr.log")?)
-            .stdin(Stdio::null());
     }
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);

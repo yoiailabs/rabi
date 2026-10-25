@@ -73,7 +73,8 @@ impl Error {
         exit_for_code(self.json_code(GENERAL))
     }
 
-    /// Only standalone exec passes child statuses through.
+    /// Standalone exec passes child statuses through via this helper.
+    /// Run reports its parent status separately from launcher failures.
     pub fn child_exit_code(&self) -> i32 {
         match self {
             Self::CommandFailed { code, .. } => *code,

@@ -78,15 +78,11 @@ Read [removal safety and retries](docs/safety.md) and [sync strategies](docs/syn
 | `rabi repo list` | List registered and discovered repositories |
 | `rabi repo show` | Inspect a repository |
 | `rabi repo forget` | Drop a registration |
-| `rabi run` | Workflow execution commands |
-| `rabi run start` | Run a trusted workflow in a new workspace |
-| `rabi run show` | Read progress, PR and stop reason |
-| `rabi workflow` | Workflow definition commands |
-| `rabi workflow list` | List built-in and repository definitions |
-| `rabi workflow show` | Show YAML and resolved agent settings |
-| `rabi workflow check` | Validate definitions without executing them |
-| `rabi trust` | Hook and workflow execution trust |
-| `rabi trust add` | Show hooks/workflows and grant trust without prompting |
+| `rabi run` | Launch or resume the workspace parent session |
+| `rabi skill` | Skill discovery |
+| `rabi skill list` | List skill names, sources and paths |
+| `rabi trust` | Hook and run execution trust |
+| `rabi trust add` | Show hooks and grant trust without prompting |
 | `rabi trust remove` | Revoke trust |
 | `rabi trust list` | List trusted Git common directories |
 | `rabi config` | User configuration commands |
@@ -99,7 +95,7 @@ Read [removal safety and retries](docs/safety.md) and [sync strategies](docs/syn
 | `rabi shell-init` | Generate the shell helper for `rabi cd` |
 | `rabi --version` | Print the application version (`-v` also works) |
 
-Global options: `-R/--repo REF`, `--json`, `--output text|json`, `--no-input`, `-h/--help`, and `-v/--version`. For `exec`, put rabi options before the selector and the child command after `--`. See [all options and workflows](docs/commands.md).
+Global options (`run` and `skill` use the current checkout and do not accept `-R`): `-R/--repo REF`, `--json`, `--output text|json`, `--no-input`, `-h/--help`, and `-v/--version`. For `exec`, put rabi options before the selector and the child command after `--`. See [all options and examples](docs/commands.md).
 
 ## For agents
 
@@ -116,19 +112,22 @@ Use `--json` or `--output json` for one schema 2 envelope: `schema`, `command`, 
 | 4 | Safety refusal |
 | 5 | Sync conflict |
 | 6 | Partial persistent changes |
+| 124 | Run timed out |
+| 130 | Run interrupted |
 
 See [JSON objects and per-command data](docs/json.md) and [exit codes and recovery](docs/exit-codes.md).
 
-## Workflow definitions
+## Parent sessions and skills
 
-`rabi workflow list`, `rabi workflow show NAME`, and `rabi workflow check [NAME]` inspect the built-in `default` and `.rabi/workflows/<name>.yaml` without executing them or requiring trust. `-R` uses the selected primary checkout; otherwise definitions come from the invoking checkout. `rabi trust add` lists repository workflows alongside hooks and grants the same repository execution trust. See [workflow definitions](docs/workflows.md).
+`rabi run --skill rabi-dev "Fix issue #123"` starts one Codex parent session in the current workspace. The parent manages progress, delegates to its own subagents, gathers evidence and decides completion. Run `rabi run` again to resume the same parent; `--fresh --skill VALUE` starts over and retains old records. `--skill` passes a verbatim instruction without resolving files. `--timeout 30m` changes the per-launch limit (default `2h`). Trust is required; create a workspace before running. See [commands](docs/commands.md).
 
-`rabi run start TASK --name NAME --base REF --check CMD` executes a trusted workflow in the foreground. Agents commit, then a final `draft-pull-request` agent step pushes to origin and opens a draft PR. On push or draft PR failure, the prompt tells the agent to leave an uncommitted, untracked `DRAFT_PULL_REQUEST_FAILED.txt` and verify it appears in `git status --porcelain`. If ignored, the agent must leave the error as an uncommitted change to a tracked file instead. The dirty-workspace rule stops the run and `run show` names the changed path. rabi does not check PR existence; reports stay in the agent logs. Inspect saved results with `rabi run show RUN_ID`. Only Codex runs today. Provider/model overrides apply to all agent steps. See [workflow execution](docs/workflows.md).
+`rabi skill list` lists direct child skills from checkout and user skill directories, including duplicates. It is independent of `rabi run`.
 
 ```sh
-rabi trust add
-rabi run start task.md --name fix/example --base origin/main --check 'cargo test --locked'
-rabi run show run_<uuid>
+rabi skill list
+rabi run --skill rabi-dev "Fix issue #123"
+rabi run "Address the review findings"
+rabi run --fresh --skill rabi-dev - < task.md
 ```
 
 ## Configuration
@@ -137,7 +136,7 @@ rabi run show run_<uuid>
 
 ## Hooks and trust
 
-Repository `.rabi.toml` defines setup and pre-remove hooks; `.worktreeinclude` selects ignored files to copy from primary. Review hooks and workflow definitions before granting trust with `rabi trust add`. Trust applies to the Git common-directory path and survives a re-clone at that path until revoked. See [hooks, trust, and setup retries](docs/hooks.md).
+Repository `.rabi.toml` defines setup and pre-remove hooks; `.worktreeinclude` selects ignored files to copy from primary. Review hooks and parent instructions before granting trust with `rabi trust add`. Trust applies to the Git common-directory path and survives a re-clone at that path until revoked. See [hooks, trust, and setup retries](docs/hooks.md).
 
 ## FAQ
 

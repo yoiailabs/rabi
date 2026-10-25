@@ -54,3 +54,35 @@ fn user_documentation_has_no_temporary_phase_promises() {
         }
     }
 }
+
+#[test]
+fn parent_session_guidance_and_discovery_replace_the_workflow_contract() {
+    let help: serde_json::Value = serde_json::from_str(include_str!("../help-data.json")).unwrap();
+    for name in [
+        "workflow",
+        "workflow list",
+        "workflow show",
+        "workflow check",
+        "run start",
+        "run show",
+    ] {
+        assert!(help["helps"].get(name).is_none());
+    }
+    for document in [README, README_JA, include_str!("../docs/commands.md")] {
+        for flag in ["--skill", "--fresh", "--timeout"] {
+            assert!(document.contains(flag));
+        }
+        assert!(document.contains("rabi skill list"));
+        for old in [
+            "rabi workflow",
+            "rabi run start",
+            "rabi run show",
+            "docs/workflows.md",
+        ] {
+            assert!(!document.contains(old));
+        }
+    }
+    for code in ["124", "130"] {
+        assert!(help["exitCodes"][code].is_string());
+    }
+}
