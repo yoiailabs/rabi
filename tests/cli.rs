@@ -21241,9 +21241,9 @@ fn workflow_inspection_lists_sources_and_shows_the_complete_json_contract_withou
         assert_eq!(workflow["source"], source);
         assert_eq!(workflow["path"], path_value);
         assert_eq!(workflow["schemaVersion"], 1);
-        assert_eq!(workflow["version"], 5);
+        assert_eq!(workflow["version"], 6);
         assert_eq!(workflow["definition"]["start"], "prepare");
-        for name in ["implement", "fix", "review", "publish"] {
+        for name in ["implement", "fix", "review", "draft-pull-request"] {
             assert_eq!(
                 workflow["agents"][name],
                 serde_json::json!({"provider":"codex","model":"gpt-6.1-sol","effort":"high"})
@@ -21265,7 +21265,7 @@ fn workflow_inspection_lists_sources_and_shows_the_complete_json_contract_withou
     }
     let shown = repo.rabi(&["workflow", "show", "custom"]);
     let shown = text(&shown.stdout);
-    assert!(shown.contains("Workflow: custom (repository), version 5"));
+    assert!(shown.contains("Workflow: custom (repository), version 6"));
     assert!(shown.contains("name: embedded-name"));
     assert!(shown.contains("Agent implement:"));
     assert!(!repo.repo.join("hook-ran").exists());
@@ -21647,8 +21647,8 @@ cat > "$RUN_TEST_ROOT/prompt"
 printf '{"type":"thread.started","thread_id":"test-thread"}\n'
 if [ "$readonly" = yes ]; then
     printf '0 actionable findings (Important: 0 / Nit: 0 / Pre-existing: 0).\n判定: 問題なし\n' > "$answer"
-elif head -n 1 "$RUN_TEST_ROOT/prompt" | command grep -q 'Publish the completed run'; then
-    printf 'Published: https://github.com/example/repo/pull/23\n' > "$answer"
+elif head -n 1 "$RUN_TEST_ROOT/prompt" | command grep -q 'Push only the run branch to origin'; then
+    printf 'Draft PR: https://github.com/example/repo/pull/23\n' > "$answer"
 else
     printf 'implemented\n' >> change.txt
     git add change.txt
@@ -21662,7 +21662,7 @@ fi
 }
 
 #[test]
-fn run_start_completes_agent_publish_and_show_reads_without_rewriting() {
+fn run_start_completes_agent_draft_pull_request_and_show_reads_without_rewriting() {
     let repo = Repo::new();
     fs::write(repo.repo.join("task.md"), "# Implement sample\nA task.\n").unwrap();
     let path = run_tools(&repo);
@@ -21703,7 +21703,7 @@ fn run_start_completes_agent_publish_and_show_reads_without_rewriting() {
     assert_eq!(run["state"], "succeeded");
     assert_eq!(run["stepsStarted"], 5);
     assert!(run["pr"].is_null());
-    assert!(text(&started.stderr).contains("starting publish (5/15)"));
+    assert!(text(&started.stderr).contains("starting draft-pull-request (5/15)"));
     assert!(!text(&started.stdout).contains("check-output"));
     assert!(fs::read_to_string(repo.root.join("codex-args"))
         .unwrap()
@@ -21728,7 +21728,7 @@ fn run_start_completes_agent_publish_and_show_reads_without_rewriting() {
     let directory = Path::new(run["directory"].as_str().unwrap());
     assert!(!directory.join("pr-body.md").exists());
     assert!(
-        fs::read_to_string(directory.join("steps/005-publish/answer.md"))
+        fs::read_to_string(directory.join("steps/005-draft-pull-request/answer.md"))
             .unwrap()
             .contains("https://github.com/example/repo/pull/23")
     );

@@ -2040,7 +2040,7 @@
         }
       ],
       "notes": [
-        "The default ends with an ordinary publish agent step. There is no automatic retry or resume."
+        "The default ends with an ordinary draft-pull-request agent step. There is no automatic retry or resume."
       ]
     },
     "run start": {
@@ -2110,7 +2110,7 @@
       "notes": [
         "TASK is a Markdown file read from the invoking directory. Trust and validation precede workspace creation. There is no --workspace flag.",
         "JSON is one schema 2 envelope with data.run; progress goes to stderr and child output is saved in attempt logs. A stopped run after persistent changes exits 6.",
-        "Agents commit; the final publish agent pushes only the run branch to origin without force or tags and opens a draft PR against the base branch. rabi advances on normal agent success and the dirty-workspace rule; it does not verify publication or extract PR URLs.",
+        "Agents commit; the final draft-pull-request agent pushes only the run branch to origin without force or tags and opens a draft PR against the base branch. rabi advances on normal agent success and the dirty-workspace rule; it does not verify publication or extract PR URLs.",
         "rabi passes branch/base/remote/check/review facts. The agent writes Summary / Testing / Risk / How to revert and reports the PR URL in its answer log; risk is not assessed by rabi unless the task says otherwise. Only prepare is a system action; removed push/draft-pr actions fail validation."
       ],
       "examples": [

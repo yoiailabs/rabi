@@ -1,6 +1,6 @@
 schema_version: 1
 name: default
-version: 5
+version: 6
 workspace: new
 agent: {provider: codex, model: gpt-6.1-sol, effort: high}
 start: prepare
@@ -48,15 +48,15 @@ steps:
       Review the task and diff without editing. Even when there are no findings,
       the final line must be exactly 判定: 問題なし or 判定: 要修正.
     on:
-      pass: publish
+      pass: draft-pull-request
       revise: {to: fix, loop: repair}
-  publish:
+  draft-pull-request:
     type: agent
     mode: edit
     output: report-v1
     context: fresh
     instruction: |
-      Publish the completed run. Push only the run branch to origin, without force,
+      Push only the run branch to origin, without force,
       tags, submodule pushes, mirror mode, or any other refs. Use an explicit branch
       refspec and override Git settings that would publish other refs.
       Then open a DRAFT PR against the provided base branch. Follow the repository's

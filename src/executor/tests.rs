@@ -30,7 +30,7 @@ fi
 printf 'diagnostic\n' >&2
 [ "$RABI_TEST_CASE" != nonzero ] || exit 9
 case "$prompt" in
-    PUBLISH*) printf 'Published: https://github.com/test/repo/pull/42\n' > "$answer" ;;
+    DRAFT_PULL_REQUEST*) printf 'Draft PR: https://github.com/test/repo/pull/42\n' > "$answer" ;;
     SUMMARY*) printf 'Final summary.\nVerification gap: integration checks were not run.\n' > "$answer" ;;
     REVIEW*)
         case "$RABI_TEST_CASE" in
@@ -193,18 +193,18 @@ fn ignored_files_are_clean() {
     scenario("ignored");
 }
 #[test]
-fn publish_is_an_ordinary_agent_step() {
-    scenario("publish");
+fn draft_pull_request_is_an_ordinary_agent_step() {
+    scenario("draft_pull_request");
 }
 
 #[test]
-fn read_only_final_report_reaches_publish_prompt() {
-    scenario("publish_summary");
+fn read_only_final_report_reaches_draft_pull_request_prompt() {
+    scenario("draft_pull_request_summary");
 }
 
 #[test]
-fn read_only_report_without_edit_reaches_publish_prompt() {
-    scenario("publish_summary_only");
+fn read_only_report_without_edit_reaches_draft_pull_request_prompt() {
+    scenario("draft_pull_request_summary_only");
 }
 
 #[test]
@@ -298,10 +298,10 @@ fn worker() {
     git::run(&["commit", "-qm", "docs: review guidance"], Some(&repo)).unwrap();
     let initial_head = git::head_commit(&repo).unwrap_or(initial_head);
     let context = crate::context::create_at(&repo).unwrap();
-    let yaml = if case.starts_with("publish") {
+    let yaml = if case.starts_with("draft_pull_request") {
         workflow::DEFAULT_YAML.to_string()
     } else {
-        workflow::DEFAULT_YAML.replace("pass: publish", "pass: succeeded")
+        workflow::DEFAULT_YAML.replace("pass: draft-pull-request", "pass: succeeded")
     };
     // Prefix the built-in instructions so the fake can distinguish the role.
     let mut definition: workflow::Definition = serde_norway::from_str(&yaml).unwrap();
@@ -312,13 +312,13 @@ fn worker() {
                 match id.as_str() {
                     "implement" => "IMPLEMENT",
                     "fix" => "FIX",
-                    "publish" => "PUBLISH",
+                    "draft-pull-request" => "DRAFT_PULL_REQUEST",
                     _ => "REVIEW",
                 }
             );
         }
     }
-    if case.starts_with("publish_summary") {
+    if case.starts_with("draft_pull_request_summary") {
         let mut summary = definition.steps["implement"].clone();
         if let StepKind::Agent {
             mode, instruction, ..
@@ -329,9 +329,9 @@ fn worker() {
         }
         summary
             .transitions
-            .insert("ok".into(), Target::Step("publish".into()));
+            .insert("ok".into(), Target::Step("draft-pull-request".into()));
         definition.steps.insert("summary".into(), summary);
-        let (previous, result) = if case == "publish_summary_only" {
+        let (previous, result) = if case == "draft_pull_request_summary_only" {
             ("prepare", "ok")
         } else {
             ("review", "pass")
@@ -561,9 +561,9 @@ fn worker() {
         | "base_head"
         | "dirty_diff"
         | "fresh_fix"
-        | "publish"
-        | "publish_summary"
-        | "publish_summary_only" => None,
+        | "draft_pull_request"
+        | "draft_pull_request_summary"
+        | "draft_pull_request_summary_only" => None,
         "limit" | "max_steps" | "shared_limit" => Some("limit"),
         "verdict" => Some("contract_invalid"),
         "dirty" | "check_dirty" | "setup_dirty" => Some("dirty_workspace"),
@@ -775,7 +775,7 @@ fn worker() {
             assert_eq!(record.steps_started, 4);
             assert_eq!(fs::read_to_string(root.join("calls")).unwrap(), "2");
         }
-        "publish" | "publish_summary" | "publish_summary_only" => {
+        "draft_pull_request" | "draft_pull_request_summary" | "draft_pull_request_summary_only" => {
             // No remote or gh is installed: successful publication is the agent's
             // report, with no rabi publication, lookup, or metadata extraction.
             assert!(record.pr.is_none());
@@ -797,7 +797,7 @@ fn worker() {
             ] {
                 assert!(prompt.contains(text), "Missing {text}: {prompt}");
             }
-            if case.starts_with("publish_summary") {
+            if case.starts_with("draft_pull_request_summary") {
                 assert!(prompt.contains(
                     "Final summary.\nVerification gap: integration checks were not run."
                 ));
@@ -806,7 +806,7 @@ fn worker() {
             } else {
                 assert!(prompt.contains("Implementation report."));
             }
-            if case != "publish_summary_only" {
+            if case != "draft_pull_request_summary_only" {
                 let review = run::load_attempt(&repo, &record.id, "review", 4).unwrap();
                 assert!(prompt.contains(&format!(
                     "verdict 判定: 問題なし, reviewed HEAD {}, rounds 1",
@@ -817,9 +817,9 @@ fn worker() {
             }
             let args = fs::read_to_string(root.join(format!(
                 "call-{}.args",
-                if case == "publish_summary_only" {
+                if case == "draft_pull_request_summary_only" {
                     2
-                } else if case == "publish_summary" {
+                } else if case == "draft_pull_request_summary" {
                     4
                 } else {
                     3
