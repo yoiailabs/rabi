@@ -3,8 +3,9 @@ use super::{io_error, Final, Probe, Session};
 use crate::error::{Error, Result};
 use serde_json::Value;
 use std::fs::{self, OpenOptions};
-use std::io::{BufRead, BufReader, Write};
+use std::io::Write;
 use std::os::unix::ffi::OsStrExt;
+#[cfg(test)]
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -13,7 +14,8 @@ mod md5;
 
 // Tool and result events can exceed the live observer's 64 KiB bound. Refuse
 // oversized lines without allocating beyond this separate finalization bound.
-const FINAL_LINE_BYTES: usize = 16 * 1024 * 1024;
+#[cfg(test)]
+use super::stream::FINAL_LINE_BYTES;
 const SANDBOX: &[u8] = b"{\"networkPolicy\":{\"allow\":[\"github.com\",\"*.github.com\",\"*.githubusercontent.com\"]}}\n";
 
 pub(super) fn command(workspace: &Path, dir: &Path, session: Session<'_>) -> Result<Command> {
@@ -46,21 +48,7 @@ fn resolve_binary() -> Result<PathBuf> {
 }
 
 fn resolve_binary_in(path: Option<&std::ffi::OsStr>) -> Option<PathBuf> {
-    let directories: Vec<_> = std::env::split_paths(path?).collect();
-    for binary in ["cursor-agent", "agent"] {
-        for directory in &directories {
-            let candidate = directory.join(binary);
-            if fs::metadata(&candidate)
-                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
-            {
-                // Resolve relative PATH entries before setting the child's cwd.
-                if let Ok(path) = std::path::absolute(candidate) {
-                    return Some(path);
-                }
-            }
-        }
-    }
-    None
+    super::resolve_binary_in(path, &["cursor-agent", "agent"])
 }
 
 pub(super) fn session_id(line: &str) -> Option<String> {
@@ -73,57 +61,12 @@ pub(super) fn session_id(line: &str) -> Option<String> {
 }
 
 pub(super) fn finalize(events: &Path) -> Result<Final> {
-    let mut reader = BufReader::new(fs::File::open(events).map_err(io_error)?);
-    let mut line = Vec::new();
+    let mut scanner = super::stream::Scanner::open(events, "Cursor")?;
     let mut first_id: Option<String> = None;
     let mut last_result = None;
     let mut protocol_error = None;
     let mut insecure_tool_calls = 0_u64;
-    loop {
-        line.clear();
-        let mut overlong = false;
-        let mut read_any = false;
-        loop {
-            let available = reader.fill_buf().map_err(io_error)?;
-            if available.is_empty() {
-                break;
-            }
-            read_any = true;
-            let newline = available.iter().position(|byte| *byte == b'\n');
-            let consumed = newline.map_or(available.len(), |position| position + 1);
-            if line.len() + consumed > FINAL_LINE_BYTES {
-                overlong = true;
-            }
-            if !overlong {
-                line.extend_from_slice(&available[..consumed]);
-            }
-            reader.consume(consumed);
-            if newline.is_some() {
-                break;
-            }
-        }
-        if !read_any {
-            break;
-        }
-        if overlong {
-            protocol_error = Some(format!(
-                "Cursor event exceeds the finalization line limit ({FINAL_LINE_BYTES} bytes)"
-            ));
-            continue;
-        }
-        // A valid final JSON object need not have a trailing newline. A
-        // truncated/malformed nonempty line is a protocol error even if an
-        // earlier result was valid; never silently accept partial final output.
-        if line.iter().all(u8::is_ascii_whitespace) {
-            continue;
-        }
-        let event = match serde_json::from_slice::<Value>(&line) {
-            Ok(event) => event,
-            Err(_) => {
-                protocol_error = Some("Cursor emitted a malformed or truncated JSON event".into());
-                continue;
-            }
-        };
+    while let Some(event) = scanner.next(&mut protocol_error)? {
         if first_id.is_none() {
             first_id = event["session_id"]
                 .as_str()
@@ -158,6 +101,7 @@ pub(super) fn finalize(events: &Path) -> Result<Final> {
         is_error: false,
         insecure_tool_calls,
         protocol_error,
+        session_validated: true,
     };
     let Some(result) = last_result else {
         finalized

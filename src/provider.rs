@@ -13,13 +13,16 @@ use crate::error::{Error, Result};
 const MODEL: &str = "gpt-6.1-sol";
 const EFFORT: &str = "model_reasoning_effort=\"high\"";
 
+mod claude;
 mod cursor;
+mod stream;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Provider {
     Codex,
     Cursor,
+    Claude,
 }
 
 pub(crate) enum Session<'a> {
@@ -31,8 +34,6 @@ pub(crate) enum Session<'a> {
 pub(crate) enum Probe {
     Present,
     Missing,
-    // Reserved for providers whose local session storage cannot prove absence.
-    #[allow(dead_code)]
     Unknown,
 }
 
@@ -49,6 +50,7 @@ pub(crate) struct Final {
     pub is_error: bool,
     pub insecure_tool_calls: u64,
     pub protocol_error: Option<String>,
+    pub session_validated: bool,
 }
 
 impl FromStr for Provider {
@@ -58,6 +60,7 @@ impl FromStr for Provider {
         match name {
             "codex" => Ok(Self::Codex),
             "cursor" => Ok(Self::Cursor),
+            "claude" => Ok(Self::Claude),
             _ => Err(Error::msg(format!("Unknown run provider: {name}"))),
         }
     }
@@ -68,6 +71,7 @@ impl Provider {
         match self {
             Self::Codex => "codex",
             Self::Cursor => "cursor",
+            Self::Claude => "claude",
         }
     }
 
@@ -75,6 +79,7 @@ impl Provider {
         match self {
             Self::Codex => "codex",
             Self::Cursor => "cursor-agent",
+            Self::Claude => "claude",
         }
     }
 
@@ -82,6 +87,7 @@ impl Provider {
         match self {
             Self::Codex => "Codex",
             Self::Cursor => "Cursor",
+            Self::Claude => "Claude",
         }
     }
 
@@ -112,6 +118,7 @@ impl Provider {
                 Ok(command)
             }
             Self::Cursor => cursor::command(workspace, dir, session),
+            Self::Claude => claude::command(workspace, dir, session),
         }
     }
 
@@ -119,6 +126,7 @@ impl Provider {
         match self {
             Self::Codex => thread_id(line),
             Self::Cursor => cursor::session_id(line),
+            Self::Claude => claude::session_id(line),
         }
     }
 
@@ -135,12 +143,14 @@ impl Provider {
                             is_error: false,
                             insecure_tool_calls: 0,
                             protocol_error: None,
+                            session_validated: true,
                         });
                     }
                 }
                 Err(Error::msg("Codex did not report thread.started.thread_id"))
             }
             Self::Cursor => cursor::finalize(events),
+            Self::Claude => claude::finalize(events),
         }
     }
 
@@ -154,12 +164,13 @@ impl Provider {
                 }
             }),
             Self::Cursor => cursor::probe_session(id, workspace),
+            Self::Claude => claude::probe_session(id),
         }
     }
 
     pub fn prepare_workspace(self, workspace: &Path, common_dir: &Path) -> Result<()> {
         match self {
-            Self::Codex => Ok(()),
+            Self::Codex | Self::Claude => Ok(()),
             Self::Cursor => cursor::prepare_workspace(workspace, common_dir),
         }
     }
@@ -172,6 +183,12 @@ impl Provider {
                 force_signal: 9,
                 term_grace: None,
             },
+            Self::Claude => StopPolicy {
+                signal: 2,
+                grace: Duration::from_secs(2),
+                force_signal: 9,
+                term_grace: Some(Duration::from_secs(1)),
+            },
             Self::Cursor => StopPolicy {
                 signal: 2,
                 grace: Duration::from_millis(200),
@@ -180,6 +197,31 @@ impl Provider {
             },
         }
     }
+}
+
+fn resolve_binary_in(path: Option<&std::ffi::OsStr>, binaries: &[&str]) -> Option<PathBuf> {
+    use std::os::unix::fs::PermissionsExt;
+    let directories: Vec<_> = std::env::split_paths(path?).collect();
+    for binary in binaries {
+        for directory in &directories {
+            let candidate = directory.join(binary);
+            if fs::metadata(&candidate)
+                .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+            {
+                // Resolve relative PATH entries before setting the child's cwd.
+                if let Ok(path) = std::path::absolute(candidate) {
+                    return Some(path);
+                }
+            }
+        }
+    }
+    None
+}
+
+pub(crate) struct Observation {
+    pub session_id: Option<String>,
+    pub error: Option<String>,
+    pub validated: bool,
 }
 
 fn thread_id(line: &str) -> Option<String> {
@@ -202,6 +244,8 @@ pub(crate) struct SessionIdReader<R = fs::File> {
     provider: Provider,
     reader: BufReader<R>,
     partial: Vec<u8>,
+    claude_validated: bool,
+    claude_first_id: Option<String>,
 }
 impl SessionIdReader {
     pub fn open(provider: Provider, stdout: &Path) -> Result<Self> {
@@ -217,11 +261,34 @@ impl<R: Read> SessionIdReader<R> {
             provider,
             reader: BufReader::new(reader),
             partial: Vec::new(),
+            claude_validated: false,
+            claude_first_id: None,
         }
     }
 
+    #[cfg(test)]
     pub fn poll(&mut self) -> Result<Option<String>> {
-        let mut remaining = EVENT_POLL_BYTES;
+        Ok(self.poll_observation()?.and_then(|event| event.session_id))
+    }
+
+    pub fn provider(&self) -> Provider {
+        self.provider
+    }
+
+    pub fn poll_observation(&mut self) -> Result<Option<Observation>> {
+        // Claude init events can include large metadata. Use the final-scan
+        // bound for both a line and a poll so permission validation is prompt
+        // without unbounded work; Codex/Cursor retain their original bounds.
+        let line_limit = if self.provider == Provider::Claude {
+            stream::FINAL_LINE_BYTES
+        } else {
+            EVENT_LINE_BYTES
+        };
+        let mut remaining = if self.provider == Provider::Claude {
+            stream::FINAL_LINE_BYTES
+        } else {
+            EVENT_POLL_BYTES
+        };
         while remaining > 0 {
             let available = self.reader.fill_buf().map_err(io_error)?;
             let available = &available[..available.len().min(remaining)];
@@ -230,9 +297,7 @@ impl<R: Read> SessionIdReader<R> {
             }
             let newline = available.iter().position(|byte| *byte == b'\n');
             let consumed = newline.map_or(available.len(), |position| position + 1);
-            if self.partial.len() + consumed > EVENT_LINE_BYTES {
-                // An oversized line could contain the first thread id. Defer
-                // to the final scan rather than trusting a later event.
+            if self.partial.len() + consumed > line_limit {
                 return Err(Error::msg(format!(
                     "{} event exceeds the observation line limit",
                     self.provider.display_name()
@@ -244,10 +309,52 @@ impl<R: Read> SessionIdReader<R> {
             if newline.is_some() {
                 let line =
                     std::str::from_utf8(&self.partial).map_err(|e| Error::msg(e.to_string()))?;
-                let id = self.provider.observe(line);
+                let mut init = false;
+                let (mut id, mode) = if self.provider == Provider::Claude {
+                    let event: serde_json::Value = serde_json::from_str(line).map_err(|_| {
+                        Error::msg("Claude emitted a malformed or truncated JSON event")
+                    })?;
+                    (
+                        claude::event_session_id(&event),
+                        claude::permission_mode_event(&event),
+                    )
+                } else {
+                    (self.provider.observe(line), None)
+                };
+                let error = if self.provider == Provider::Claude {
+                    match mode {
+                        Some(Ok(())) => {
+                            init = true;
+                            self.claude_validated = true;
+                            None
+                        }
+                        Some(Err(error)) => {
+                            init = true;
+                            self.claude_validated = false;
+                            Some(error)
+                        }
+                        None => None,
+                    }
+                } else {
+                    None
+                };
+                if self.provider == Provider::Claude {
+                    if self.claude_first_id.is_none() {
+                        self.claude_first_id = id.clone();
+                    } else if !init {
+                        // Claude repeats the session id on every event. Keep
+                        // scanning init validation without rewriting state for
+                        // every assistant/tool event; finalize checks result ids.
+                        id = None;
+                    }
+                }
                 self.partial.clear();
-                if id.is_some() {
-                    return Ok(id);
+                if id.is_some() || error.is_some() || init {
+                    return Ok(Some(Observation {
+                        session_id: id,
+                        error,
+                        validated: self.provider != Provider::Claude || self.claude_validated,
+                    }));
                 }
             }
         }

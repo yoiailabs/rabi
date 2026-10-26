@@ -132,7 +132,7 @@ npx skills update rabi
 
 `rabi run --skill rabi-dev "Fix issue #123"` は現在のワークスペースで Codex の親セッションを1つ起動します。親が進行管理、subagent への委任、証拠収集、完了判断を担当します。次の `rabi run` は同じ親を再開し、`--fresh --skill VALUE` は古い記録を残して新しく開始します。`--skill` はファイルを解決せず値をそのまま指示に渡します。`--timeout 30m` で起動ごとの制限時間を変更できます（既定 `2h`）。リポジトリの信頼が必要です。先にワークスペースを作成してください。[コマンド](docs/commands.md)を参照。
 
-初回または `--fresh` とともに `--provider cursor` を指定すると Cursor を選べます。再開時は記録された provider に従い、異なる `--provider` には `--fresh` が必要です。既定は Codex のままです。Cursor は sandbox と自動承認レビューを使い、レビューサービスが sandbox 外での実行を許可した場合は起動の監査情報に表示します。既存の `.cursor/sandbox.json` は保持し、存在しない場合は GitHub 向けネットワーク許可リストを作成します。[Cursor の詳細](docs/commands.md#parent-sessions-and-skill-discovery)を参照。
+初回または `--fresh` とともに `--provider cursor` で Cursor、`--provider claude` で Claude Code を選べます。再開時は記録された provider に従い、異なる `--provider` には `--fresh` が必要です。既定は Codex のままです。Cursor は sandbox と自動承認レビューを使い、レビューサービスが sandbox 外での実行を許可した場合は起動の監査情報に表示します。既存の `.cursor/sandbox.json` は保持し、存在しない場合は GitHub 向けネットワーク許可リストを作成します。Claude Code は PATH 上の `claude` とログインを必要とし、モデル `opus`、effort `high` を使い、報告された権限モードが `auto` でなければ起動を停止します。[provider の詳細](docs/commands.md#parent-sessions-and-skill-discovery)を参照。
 
 `rabi run SEL -- [TASK]` でディレクトリを移動せずにワークスペースを選べます。リポジトリ外からは `-R REPO` を追加します。`--` がない場合の単一の位置引数は従来どおりタスクの文章です。`rabi list` と `rabi show` は現在の親の実行状態を表示し、JSON にはセッション ID と最新起動のログ・回答のパスも含まれます。
 
@@ -145,6 +145,7 @@ rabi run "Address the review findings"
 rabi run -R /path/to/repo task/auth -- "Address the review findings"
 rabi run --fresh --skill rabi-dev - < task.md
 rabi run --fresh --provider cursor --skill rabi-dev "Fix issue #123"
+rabi run --fresh --provider claude --skill rabi-dev "Fix issue #123"
 ```
 
 ## 設定

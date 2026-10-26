@@ -155,18 +155,32 @@ fn broken(reason: impl std::fmt::Display) -> Error {
     Error::msg(format!("Cannot resume current run: {reason}. Start a new parent with `rabi run --fresh --skill <value>`."))
 }
 
-fn observe_session(record: &mut Record, id: String, resuming: bool) -> Result<bool> {
+fn observe_session(
+    record: &mut Record,
+    id: String,
+    resuming: bool,
+    validated: bool,
+) -> Result<bool> {
     let provider = record.provider.parse::<Provider>()?;
     let launch = record
         .launches
         .last_mut()
         .ok_or_else(|| Error::msg("Missing launch record"))?;
-    let mismatch = resuming && record.session_id.as_deref() != Some(&id);
+    let expected = if resuming {
+        record.session_id.as_deref()
+    } else {
+        launch.requested_session_id.as_deref()
+    };
+    let mismatch = expected.is_some_and(|expected| expected != id);
     if mismatch {
         if launch.message.is_none() {
-            launch.message = Some(format!("{} resumed a different thread id ({id}); expected {}. The recorded parent session was retained. Use `rabi run --fresh --skill <value>` to start over.", provider.display_name(), record.session_id.as_deref().unwrap_or_default()));
+            launch.message = Some(if provider == Provider::Claude {
+                format!("Claude reported a different session id ({id}); expected {}. The recorded parent session was retained. Use `rabi run --fresh --provider claude --skill <value>` to start over.", expected.unwrap_or_default())
+            } else {
+                format!("{} resumed a different thread id ({id}); expected {}. The recorded parent session was retained. Use `rabi run --fresh --skill <value>` to start over.", provider.display_name(), record.session_id.as_deref().unwrap_or_default())
+            });
         }
-    } else {
+    } else if validated {
         record.session_id = Some(id.clone());
     }
     launch.session_id = Some(id);
@@ -209,7 +223,8 @@ fn prepare_launch(dir: &Path, record: &mut Record, prompt: &str) -> Result<PathB
             stop_reason: None,
             skill: record.skill.clone(),
             session_id: None,
-            requested_session_id: None,
+            requested_session_id: (record.provider == "claude" && record.session_id.is_none())
+                .then(|| uuid::Uuid::new_v4().to_string()),
             insecure_tool_calls: 0,
             message: None,
         });
@@ -359,10 +374,17 @@ pub(crate) fn execute(
     } else {
         None
     };
+    let requested_session = record
+        .launches
+        .last()
+        .and_then(|launch| launch.requested_session_id.clone());
     let session = match session.as_deref() {
         Some(id) => Session::Resume { id },
-        None => Session::New { requested: None },
+        None => Session::New {
+            requested: requested_session.as_deref(),
+        },
     };
+    let mut claude_validation_failed = false;
     let launched = provider
         .prepare_workspace(Path::new(&record.workspace.path), &common_dir)
         .and_then(|()| {
@@ -373,32 +395,65 @@ pub(crate) fn execute(
                 session,
                 timeout,
                 &mut lock,
-                |id| {
-                    let mismatch = observe_session(&mut record, id, resuming)?;
+                |observation| {
+                    let mut stop = false;
+                    let observed = observation.session_id.or_else(|| {
+                        observation
+                            .validated
+                            .then(|| {
+                                record
+                                    .launches
+                                    .last()
+                                    .and_then(|launch| launch.session_id.clone())
+                            })
+                            .flatten()
+                    });
+                    if let Some(id) = observed {
+                        stop = observe_session(&mut record, id, resuming, observation.validated)?;
+                    }
+                    if let Some(error) = observation.error {
+                        let launch = record
+                            .launches
+                            .last_mut()
+                            .ok_or_else(|| Error::msg("Missing launch record"))?;
+                        launch.message = Some(error);
+                        stop = true;
+                    }
+                    if provider == Provider::Claude && stop {
+                        claude_validation_failed = true;
+                        if !resuming {
+                            record.session_id = None;
+                        }
+                    }
                     save(&dir, &record).map_err(|e| {
                         Error::msg(format!(
                             "Failed to persist {} session id: {e}",
                             provider.display_name()
                         ))
                     })?;
-                    Ok(mismatch)
+                    Ok(stop)
                 },
             )
         });
-    // Cursor finalization scans the full log once after process reaping even
+    // Stream-result providers scan the full log once after process reaping even
     // when the session id was already observed during launch.
-    let cursor_final =
-        (provider == Provider::Cursor).then(|| provider.finalize(&launch_dir.join("events.jsonl")));
+    let stream_final =
+        (provider != Provider::Codex).then(|| provider.finalize(&launch_dir.join("events.jsonl")));
     // Fast exits and a final line without a newline still use the complete log.
     // Once observed mid-launch, the first id is authoritative for this launch.
-    let session = if let Some(finalized) = &cursor_final {
+    let session = if let Some(finalized) = &stream_final {
         finalized
             .as_ref()
             .ok()
             .and_then(|finalized| {
                 (!finalized.session_id.is_empty()).then(|| Ok(finalized.session_id.clone()))
             })
-            .unwrap_or_else(|| Err(Error::msg("Cursor did not report a session id")))
+            .unwrap_or_else(|| {
+                Err(Error::msg(format!(
+                    "{} did not report a session id",
+                    provider.display_name()
+                )))
+            })
     } else {
         record
             .launches
@@ -411,6 +466,17 @@ pub(crate) fn execute(
                     .map(|finalized| finalized.session_id)
             })
     };
+    if provider == Provider::Claude
+        && !resuming
+        && (claude_validation_failed
+            || stream_final.as_ref().is_some_and(|result| {
+                result
+                    .as_ref()
+                    .is_ok_and(|finalized| !finalized.session_validated)
+            }))
+    {
+        record.session_id = None;
+    }
     let launch = record
         .launches
         .last_mut()
@@ -426,7 +492,7 @@ pub(crate) fn execute(
         Err(e) => {
             launch.message = Some(e.to_string());
             launch.stop_reason = Some(StopReason::Error);
-            if provider == Provider::Cursor {
+            if provider != Provider::Codex {
                 failure = Some(e);
             }
             1
@@ -434,7 +500,13 @@ pub(crate) fn execute(
     };
     match session {
         Ok(id) => {
-            if observe_session(&mut record, id, resuming)?
+            let validated = !claude_validation_failed
+                && stream_final.as_ref().is_none_or(|result| {
+                    result
+                        .as_ref()
+                        .is_ok_and(|finalized| finalized.session_validated)
+                });
+            if observe_session(&mut record, id, resuming, validated)?
                 && (provider == Provider::Codex || exit == 0)
             {
                 record
@@ -463,7 +535,7 @@ pub(crate) fn execute(
             _ => launch.message.take(),
         };
     }
-    if let Some(finalized) = cursor_final {
+    if let Some(finalized) = stream_final {
         match finalized {
             Ok(finalized) => {
                 if exit == 0 {
@@ -472,7 +544,10 @@ pub(crate) fn execute(
                         launch.stop_reason = Some(StopReason::Error);
                         exit = 1;
                     } else if finalized.is_error {
-                        launch.message = Some("Cursor reported an error result".into());
+                        launch.message = Some(format!(
+                            "{} reported an error result",
+                            provider.display_name()
+                        ));
                         launch.stop_reason = Some(StopReason::ParentFailed);
                         exit = 1;
                     }
