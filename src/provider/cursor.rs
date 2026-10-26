@@ -230,6 +230,8 @@ fn probe_in(home: &Path, id: &str, workspace: &Path) -> Probe {
 pub(super) fn prepare_workspace(workspace: &Path, common_dir: &Path) -> Result<()> {
     // Never follow a checkout-controlled .cursor symlink or overwrite existing
     // sandbox content, including dangling symlinks and directories.
+    // These checks do not prevent concurrent same-uid symlink replacement between
+    // checking and opening .cursor, info, or info/exclude.
     let cursor = workspace.join(".cursor");
     match fs::create_dir(&cursor) {
         Ok(()) => {}

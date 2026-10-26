@@ -191,7 +191,7 @@ pub(super) fn group_is_alive(pgid: u32) -> bool {
 // Cursor tool shells may call setsid(), escaping their parent's process group.
 // Linux /proc snapshots retain their identities before signaling the leader.
 // This is best effort: children that reparent before a snapshot may be missed.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 struct Descendant {
     pid: i32,
@@ -207,21 +207,95 @@ fn process_identity(pid: i32) -> Option<(i32, u64)> {
     Some((fields.get(1)?.parse().ok()?, fields.get(19)?.parse().ok()?))
 }
 
-struct Group(Child, StopPolicy, Vec<Descendant>);
+// Snapshot admission is separate from signaling so PID reuse can be tested
+// without depending on kernel PID allocation or sending signals in a test.
+#[cfg(target_os = "linux")]
+fn refresh_saved_descendants(
+    saved: &mut Vec<Descendant>,
+    leader: Option<Descendant>,
+    reaped: bool,
+    processes: &[(Descendant, i32)],
+) {
+    saved.retain(|saved| processes.iter().any(|(current, _)| saved == current));
+    // Reaping frees the leader PID for reuse. Afterwards only descendants saved
+    // before reap and still matching their starttime may remain signal targets;
+    // neither a replacement leader nor saved descendants admit new processes.
+    if reaped {
+        return;
+    }
+    let Some(leader) =
+        leader.filter(|leader| processes.iter().any(|(current, _)| leader == current))
+    else {
+        return;
+    };
+    loop {
+        let mut added = false;
+        for (process, parent) in processes {
+            if process.pid != leader.pid
+                && (*parent == leader.pid || saved.iter().any(|saved| saved.pid == *parent))
+                && !saved.iter().any(|saved| saved.pid == process.pid)
+            {
+                saved.push(*process);
+                added = true;
+            }
+        }
+        if !added {
+            break;
+        }
+    }
+}
+
+struct Group {
+    child: Child,
+    policy: StopPolicy,
+    descendants: Vec<Descendant>,
+    reaped: bool,
+    #[cfg(target_os = "linux")]
+    leader: Option<Descendant>,
+}
 impl Group {
     fn new(child: Child, policy: StopPolicy) -> Self {
-        Self(child, policy, Vec::new())
+        #[cfg(target_os = "linux")]
+        let leader = i32::try_from(child.id()).ok().and_then(|pid| {
+            let (_, started) = process_identity(pid)?;
+            Some(Descendant { pid, started })
+        });
+        Self {
+            child,
+            policy,
+            descendants: Vec::new(),
+            reaped: false,
+            #[cfg(target_os = "linux")]
+            leader,
+        }
+    }
+
+    fn id(&self) -> u32 {
+        self.child.id()
+    }
+
+    // All Child reaping goes through these methods, including Drop, so later
+    // cleanup cannot accidentally treat a released numeric PID as the leader.
+    fn wait(&mut self) -> std::io::Result<ExitStatus> {
+        let status = self.child.wait()?;
+        self.reaped = true;
+        Ok(status)
+    }
+
+    fn try_wait(&mut self) -> std::io::Result<Option<ExitStatus>> {
+        let status = self.child.try_wait()?;
+        if status.is_some() {
+            self.reaped = true;
+        }
+        Ok(status)
     }
 
     fn refresh_descendants(&mut self) {
-        if self.1.term_grace.is_none() {
+        if self.policy.term_grace.is_none() {
             return;
         }
         #[cfg(target_os = "linux")]
         {
-            let Ok(root) = i32::try_from(self.0.id()) else {
-                return;
-            };
             let Ok(entries) = fs::read_dir("/proc") else {
                 return;
             };
@@ -232,38 +306,28 @@ impl Group {
                     Some((Descendant { pid, started }, parent))
                 })
                 .collect();
-            self.2.retain(|saved| {
-                processes.iter().any(|(current, _)| {
-                    saved.pid == current.pid && saved.started == current.started
-                })
-            });
-            loop {
-                let mut added = false;
-                for (process, parent) in &processes {
-                    if process.pid != root
-                        && (*parent == root || self.2.iter().any(|saved| saved.pid == *parent))
-                        && !self.2.iter().any(|saved| saved.pid == process.pid)
-                    {
-                        self.2.push(*process);
-                        added = true;
-                    }
-                }
-                if !added {
-                    break;
-                }
-            }
+            refresh_saved_descendants(&mut self.descendants, self.leader, self.reaped, &processes);
         }
     }
 
+    fn can_signal_group(&self) -> bool {
+        // Cursor cleanup after reap is restricted to saved descendant identities;
+        // the old leader PID may now identify an unrelated process group.
+        // Preserve Codex's existing process-group cleanup behavior.
+        !self.reaped || self.policy.term_grace.is_none()
+    }
+
     fn send(&self, sig: i32) {
-        if let Ok(pid) = i32::try_from(self.0.id()) {
-            // SAFETY: CommandExt::process_group(0) isolated the child group.
-            unsafe {
-                kill(-pid, sig);
+        if self.can_signal_group() {
+            if let Ok(pid) = i32::try_from(self.id()) {
+                // SAFETY: CommandExt::process_group(0) isolated the child group.
+                unsafe {
+                    kill(-pid, sig);
+                }
             }
         }
         #[cfg(target_os = "linux")]
-        for process in &self.2 {
+        for process in &self.descendants {
             // Check starttime to avoid signaling a different process after PID
             // reuse. Linux does not offer an atomic check-and-kill via /proc;
             // this narrow race is why descendant cleanup remains best effort.
@@ -289,20 +353,20 @@ impl Group {
 
     fn stop(&mut self) {
         self.refresh_descendants();
-        self.send(self.1.signal);
-        self.grace(self.1.grace);
-        if let Some(grace) = self.1.term_grace {
+        self.send(self.policy.signal);
+        self.grace(self.policy.grace);
+        if let Some(grace) = self.policy.term_grace {
             self.send(15);
             self.grace(grace);
         }
-        self.send(self.1.force_signal);
+        self.send(self.policy.force_signal);
     }
 }
 impl Drop for Group {
     fn drop(&mut self) {
         self.refresh_descendants();
-        self.send(self.1.force_signal);
-        let _ = self.0.wait();
+        self.send(self.policy.force_signal);
+        let _ = self.wait();
     }
 }
 
@@ -343,7 +407,7 @@ pub(super) fn launch(
         })?,
         provider.stop_policy(),
     );
-    lock.record_group(group.0.id())?;
+    lock.record_group(group.id())?;
     monitor(group, timeout, events, on_session)
 }
 
@@ -369,7 +433,7 @@ fn monitor<R: std::io::Read>(
         };
         if let Some((reason, exit)) = reason {
             group.stop();
-            let status = io(group.0.wait())?;
+            let status = io(group.wait())?;
             return Ok(Outcome {
                 parent_exit: code(status),
                 exit,
@@ -384,7 +448,7 @@ fn monitor<R: std::io::Read>(
                     // still propagate, with Group reaping before finalization.
                     if on_session(id)? {
                         group.stop();
-                        let status = io(group.0.wait())?;
+                        let status = io(group.wait())?;
                         return Ok(Outcome {
                             parent_exit: code(status),
                             exit: 1,
@@ -399,7 +463,7 @@ fn monitor<R: std::io::Read>(
                 Ok(None) => {}
             }
         }
-        if let Some(status) = io(group.0.try_wait())? {
+        if let Some(status) = io(group.try_wait())? {
             let exit = code(status);
             return Ok(Outcome {
                 parent_exit: exit,
@@ -426,6 +490,129 @@ mod tests {
     use std::cell::Cell;
     use std::rc::Rc;
 
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn descendant_snapshots_reject_reused_leader_pid() {
+        let leader = Descendant {
+            pid: 10,
+            started: 100,
+        };
+        let child = Descendant {
+            pid: 20,
+            started: 200,
+        };
+        let grandchild = Descendant {
+            pid: 30,
+            started: 300,
+        };
+        let mut saved = Vec::new();
+        // Snapshot order must not matter for multi-generation discovery.
+        refresh_saved_descendants(
+            &mut saved,
+            Some(leader),
+            false,
+            &[(grandchild, 20), (child, 10), (leader, 1)],
+        );
+        assert_eq!(saved, vec![child, grandchild]);
+        let replacement = Descendant {
+            pid: 10,
+            started: 400,
+        };
+        let unrelated = Descendant {
+            pid: 40,
+            started: 500,
+        };
+        for reaped in [false, true] {
+            let mut saved = vec![child, grandchild];
+            refresh_saved_descendants(
+                &mut saved,
+                Some(leader),
+                reaped,
+                &[
+                    (replacement, 1),
+                    (unrelated, 10),
+                    (child, 1),
+                    (grandchild, 20),
+                ],
+            );
+            assert_eq!(saved, vec![child, grandchild], "reaped: {reaped}");
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn reaped_leader_freezes_admission_and_rejects_reused_saved_pids() {
+        let leader = Descendant {
+            pid: 10,
+            started: 100,
+        };
+        let child = Descendant {
+            pid: 20,
+            started: 200,
+        };
+        let new_child = Descendant {
+            pid: 30,
+            started: 300,
+        };
+        let new_grandchild = Descendant {
+            pid: 40,
+            started: 350,
+        };
+        let mut saved = vec![child];
+        // Even a matching leader snapshot and a verified saved descendant must
+        // not admit new targets after wait/try_wait have reaped the leader.
+        refresh_saved_descendants(
+            &mut saved,
+            Some(leader),
+            true,
+            &[
+                (leader, 1),
+                (child, 1),
+                (new_child, 10),
+                (new_grandchild, 20),
+            ],
+        );
+        assert_eq!(saved, vec![child]);
+        let replacement = Descendant {
+            pid: 20,
+            started: 400,
+        };
+        refresh_saved_descendants(
+            &mut saved,
+            Some(leader),
+            true,
+            &[(replacement, 1), (new_child, 20)],
+        );
+        assert!(saved.is_empty());
+    }
+
+    #[test]
+    fn child_wait_methods_mark_reaped_and_disable_cursor_group_signals() {
+        for provider in [Provider::Codex, Provider::Cursor] {
+            for poll in [false, true] {
+                let child = std::process::Command::new("sh")
+                    .args(["-c", "exit 0"])
+                    .process_group(0)
+                    .spawn()
+                    .unwrap();
+                let mut group = Group::new(child, provider.stop_policy());
+                assert!(!group.reaped);
+                assert!(group.can_signal_group());
+                if poll {
+                    let start = Instant::now();
+                    while group.try_wait().unwrap().is_none() {
+                        assert!(start.elapsed() < Duration::from_secs(5));
+                        std::thread::sleep(Duration::from_millis(10));
+                    }
+                } else {
+                    group.wait().unwrap();
+                }
+                assert!(group.reaped);
+                assert_eq!(group.can_signal_group(), provider == Provider::Codex);
+            }
+        }
+    }
+
     #[test]
     fn cursor_stop_sends_int_then_term_before_kill() {
         let path =
@@ -447,7 +634,7 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         group.stop();
-        assert_eq!(code(group.0.wait().unwrap()), 137);
+        assert_eq!(code(group.wait().unwrap()), 137);
         assert_eq!(fs::read_to_string(&path).unwrap(), "readyINTTERM");
         fs::remove_file(path).unwrap();
     }
