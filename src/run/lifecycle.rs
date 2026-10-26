@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use super::{io, StopReason};
 use crate::error::{Error, Result, REFUSED};
-use crate::provider::{Provider, Session, StopPolicy};
+use crate::provider::{Observation, Provider, Session, StopPolicy};
 
 extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
@@ -188,7 +188,7 @@ pub(super) fn group_is_alive(pgid: u32) -> bool {
     status == 0 || std::io::Error::last_os_error().raw_os_error() != Some(3)
 }
 
-// Cursor tool shells may call setsid(), escaping their parent's process group.
+// Cursor and Claude tool shells may call setsid(), escaping their parent's process group.
 // Linux /proc snapshots retain their identities before signaling the leader.
 // This is best effort: children that reparent before a snapshot may be missed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -378,7 +378,7 @@ pub(super) fn launch(
     session: Session<'_>,
     timeout: Duration,
     lock: &mut Lock,
-    on_session: impl FnMut(String) -> Result<bool>,
+    on_session: impl FnMut(Observation) -> Result<bool>,
 ) -> Result<Outcome> {
     let mut cmd = provider.command(workspace, dir, session)?;
     cmd.stdout(io(File::create(dir.join("events.jsonl")))?)
@@ -410,7 +410,7 @@ fn monitor<R: std::io::Read>(
     mut group: Group,
     timeout: Duration,
     mut events: Option<crate::provider::SessionIdReader<R>>,
-    mut on_session: impl FnMut(String) -> Result<bool>,
+    mut on_session: impl FnMut(Observation) -> Result<bool>,
 ) -> Result<Outcome> {
     let start = Instant::now();
     let mut last_snapshot = None;
@@ -436,12 +436,12 @@ fn monitor<R: std::io::Read>(
             });
         }
         if let Some(reader) = events.as_mut() {
-            match reader.poll() {
-                Ok(Some(id)) => {
+            match reader.poll_observation() {
+                Ok(Some(observation)) => {
                     // A true callback result requests a controlled error stop
                     // after saving the observed session. Persistence errors
                     // still propagate, with Group reaping before finalization.
-                    if on_session(id)? {
+                    if on_session(observation)? {
                         group.stop();
                         let status = io(group.wait())?;
                         return Ok(Outcome {
@@ -450,10 +450,28 @@ fn monitor<R: std::io::Read>(
                             reason: StopReason::Error,
                         });
                     }
-                    events = None;
+                    if reader.provider() != Provider::Claude {
+                        events = None;
+                    }
                 }
-                // Observation is best effort: defer unreadable or oversized
-                // events to the final scan, preserving parent work and status.
+                Err(error) if reader.provider() == Provider::Claude => {
+                    // Claude's effective permission mode must remain readable
+                    // throughout the launch. Never silently disable validation.
+                    on_session(Observation {
+                        session_id: None,
+                        validated: false,
+                        error: Some(format!("Claude event observation failed: {error}")),
+                    })?;
+                    group.stop();
+                    let status = io(group.wait())?;
+                    return Ok(Outcome {
+                        parent_exit: code(status),
+                        exit: 1,
+                        reason: StopReason::Error,
+                    });
+                }
+                // Codex/Cursor observation remains best effort, deferring
+                // unreadable or oversized events to the final scan.
                 Err(_) => events = None,
                 Ok(None) => {}
             }
@@ -723,7 +741,7 @@ mod tests {
                 )),
                 |id| {
                     calls += 1;
-                    assert_eq!(id, "observed-thread");
+                    assert_eq!(id.session_id.as_deref(), Some("observed-thread"));
                     Ok(stop)
                 },
             )
@@ -741,6 +759,46 @@ mod tests {
             );
             fs::remove_file(path).unwrap();
         }
+    }
+
+    #[test]
+    fn claude_observer_failures_request_a_controlled_error_stop() {
+        struct FailedRead;
+        impl std::io::Read for FailedRead {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::other("injected Claude read failure"))
+            }
+        }
+        let child = std::process::Command::new("sh")
+            .args(["-c", "sleep 30"])
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let mut calls = 0;
+        // The observer determines fail-closed behavior independently of signal
+        // grace durations, whose Claude values are covered by provider tests.
+        let result = monitor(
+            Group::new(child, Provider::Codex.stop_policy()),
+            Duration::from_secs(5),
+            Some(crate::provider::SessionIdReader::new(
+                Provider::Claude,
+                FailedRead,
+            )),
+            |observation| {
+                calls += 1;
+                assert!(observation.session_id.is_none());
+                assert!(!observation.validated);
+                assert!(observation
+                    .error
+                    .unwrap()
+                    .contains("Claude event observation failed"));
+                Ok(true)
+            },
+        )
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(result.exit, 1);
+        assert!(matches!(result.reason, StopReason::Error));
     }
 
     #[test]

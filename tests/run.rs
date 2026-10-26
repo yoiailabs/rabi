@@ -659,7 +659,7 @@ fn validation_trust_stdin_and_removed_commands() {
         vec!["run", "start"],
         vec!["run", "show"],
         vec!["run", "--provider", "codex"],
-        vec!["run", "--provider", "claude", "--skill", "x"],
+        vec!["run", "--provider", "unknown", "--skill", "x"],
         vec!["run", "--provider", "Cursor", "--skill", "x"],
         vec!["run", "a", "b"],
         vec!["run", "-R", "."],
@@ -2621,4 +2621,769 @@ fn cursor_timeout_and_interrupt_kill_setsid_descendants_and_allow_resume() {
         let resumed = f.cursor_json(&["run", "--json"]);
         assert_eq!(resumed["run"]["sessionId"], saved["sessionId"]);
     }
+}
+
+impl Fixture {
+    fn fake_claude(&self) {
+        // Restrict PATH so no test can invoke a real Claude installation.
+        for name in ["git", "python3"] {
+            let source = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+                .map(|path| path.join(name))
+                .find(|path| path.is_file())
+                .unwrap();
+            std::os::unix::fs::symlink(source, self.root.join("bin").join(name)).unwrap();
+        }
+        let script = self.root.join("bin/claude");
+        fs::write(&script, r#"#!/usr/bin/env python3
+import json, os, pathlib, signal, subprocess, sys, time
+args = sys.argv[1:]
+root = pathlib.Path(os.environ['FAKE_ROOT'])
+with (root/'argv.jsonl').open('a') as f: f.write(json.dumps(args)+'\n')
+(root/'input').write_bytes(sys.stdin.buffer.read())
+(root/'cwd').write_text(os.getcwd())
+sid = args[args.index('--resume')+1] if '--resume' in args else args[args.index('--session-id')+1]
+sid = os.environ.get('CLAUDE_OTHER_ID', sid)
+if os.environ.get('CLAUDE_UNKNOWN_ID'):
+    print(json.dumps({'type':'result','subtype':'error_during_execution','is_error':True,'session_id':sid,'errors':['No conversation found with session ID: '+sid]}), flush=True)
+    print('No conversation found with session ID: '+sid, file=sys.stderr, flush=True)
+    sys.exit(1)
+if not os.environ.get('CLAUDE_NO_TRANSCRIPT'):
+    config = pathlib.Path(os.environ.get('CLAUDE_CONFIG_DIR') or pathlib.Path(os.environ['HOME'])/'.claude')
+    transcript = config/'projects/fake-lossy-workspace'/(sid+'.jsonl')
+    transcript.parent.mkdir(parents=True, exist_ok=True)
+    transcript.write_text('{}\n')
+    (root/'transcript-path').write_text(str(transcript))
+if os.environ.get('CLAUDE_BLOCK'):
+    def capture_signal(signum, frame):
+        with (root/'signals').open('a') as f: f.write(str(signum)+'\n')
+        if signum == signal.SIGINT and not os.environ.get('CLAUDE_STUBBORN'):
+            # Real Claude 2.1.310 exits zero on INT with an error result.
+            print(json.dumps({'type':'result','subtype':'error_during_execution','is_error':True,'result':None,'session_id':sid}), flush=True)
+            sys.exit(0)
+    signal.signal(signal.SIGINT, capture_signal)
+    signal.signal(signal.SIGTERM, capture_signal)
+    child = subprocess.Popen([sys.executable,'-c','import os,signal,time; signal.signal(signal.SIGINT,signal.SIG_IGN); signal.signal(signal.SIGTERM,signal.SIG_IGN); os.write(1,b"ready\\n"); time.sleep(600)'], start_new_session=True, stdout=subprocess.PIPE)
+    assert child.stdout.readline() == b'ready\n'
+    (root/'pids').write_text(str(os.getpid())+' '+str(child.pid))
+if os.environ.get('CLAUDE_EARLY_ID'):
+    print(json.dumps({'type':'system','subtype':'status','session_id':sid}), flush=True)
+if os.environ.get('CLAUDE_LARGE_EVENT'):
+    if os.environ['CLAUDE_LARGE_EVENT'] == 'assistant':
+        event = {'type':'assistant','session_id':sid,'message':{'role':'assistant','content':[{'type':'text','text':'x'*131072}]}}
+    else:
+        event = {'type':'user','session_id':sid,'message':{'role':'user','content':[{'type':'tool_result','tool_use_id':'fake-tool','content':'x'*131072}]}}
+    print(json.dumps(event), flush=True)
+if not os.environ.get('CLAUDE_NO_INIT'):
+    event = {'type':'system','subtype':'init','cwd':os.getcwd(),'session_id':os.environ.get('CLAUDE_INIT_ID',sid),'model':'claude-opus-5-5','permissionMode':os.environ.get('CLAUDE_PERMISSION_MODE','auto')}
+    if os.environ.get('CLAUDE_NO_PERMISSION_MODE'): del event['permissionMode']
+    if os.environ.get('CLAUDE_INIT_PADDING'): event['padding'] = 'x'*int(os.environ['CLAUDE_INIT_PADDING'])
+    print(json.dumps(event), flush=True)
+(root/'session-ready').write_text(str(os.getpid()))
+if os.environ.get('CLAUDE_CONTINUATION_DELAY'):
+    time.sleep(float(os.environ['CLAUDE_CONTINUATION_DELAY']))
+    (root/'continued-after-init').write_text('parent continued')
+if os.environ.get('CLAUDE_BLOCK'): time.sleep(600)
+if os.environ.get('CLAUDE_FIRST_RESULT'):
+    print(json.dumps({'type':'result','result':'Superseded result','is_error':False,'session_id':sid}), flush=True)
+if not os.environ.get('CLAUDE_NO_RESULT'):
+    answer = 'x' * int(os.environ['CLAUDE_ANSWER_SIZE']) if os.environ.get('CLAUDE_ANSWER_SIZE') else 'Claude final answer.\n'
+    event = {'type':'result','subtype':'success','duration_ms':1,'duration_api_ms':1,'is_error':bool(os.environ.get('CLAUDE_IS_ERROR')),'result':answer,'session_id':os.environ.get('CLAUDE_RESULT_ID',sid),'usage':{'input_tokens':10,'output_tokens':5}}
+    if os.environ.get('CLAUDE_BAD_RESULT'): event['result'] = {'not':'text'}
+    if os.environ.get('CLAUDE_NULL_RESULT'): event['result'] = None
+    if os.environ.get('CLAUDE_BAD_ERROR'): event['is_error'] = 'false'
+    text = json.dumps(event)
+    if os.environ.get('CLAUDE_TRUNCATE'): text = text[:-5]
+    print(text, end='' if os.environ.get('CLAUDE_NO_NEWLINE') else '\n', flush=True)
+if os.environ.get('CLAUDE_TRAILING_TRUNCATED'):
+    print('{"type":"result","result":"unfinished', end='', flush=True)
+print('fake Claude stderr', file=sys.stderr, flush=True)
+(root/'completed').write_text('done')
+sys.exit(int(os.environ.get('CLAUDE_EXIT','0')))
+"#).unwrap();
+        fs::set_permissions(script, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn claude_command(&self, args: &[&str]) -> Command {
+        let mut command = self.command(args);
+        command
+            .env("PATH", self.root.join("bin"))
+            .env_remove("CLAUDE_CONFIG_DIR");
+        command
+    }
+
+    fn claude_json(&self, args: &[&str]) -> Value {
+        let out = self.claude_command(args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{:?}: {} {}",
+            args,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["data"].clone()
+    }
+}
+
+#[test]
+fn claude_fresh_and_resume_preserve_exact_argv_prompt_answer_and_provider_summary() {
+    let f = Fixture::new();
+    f.fake_claude();
+    let exclude = fs::read(f.repo.join(".git/info/exclude")).ok();
+    let first = f.claude_json(&[
+        "run",
+        "--provider",
+        "claude",
+        "--skill",
+        "x",
+        "initial task",
+        "--json",
+    ]);
+    let sid = first["run"]["sessionId"].as_str().unwrap();
+    let uuid = uuid::Uuid::parse_str(sid).unwrap();
+    assert_eq!(uuid.get_version_num(), 4);
+    assert_eq!(uuid.get_variant(), uuid::Variant::RFC4122);
+    assert_eq!(uuid.hyphenated().to_string(), sid);
+    assert_eq!(first["run"]["provider"], "claude");
+    assert_eq!(first["run"]["schema"], 2);
+    assert_eq!(first["run"]["state"], "idle");
+    assert_eq!(first["answer"], "Claude final answer.\n");
+    assert_eq!(first["launch"]["requestedSessionId"], sid);
+    assert_eq!(first["launch"]["sessionId"], sid);
+    let dir = f.run_dir();
+    assert_eq!(
+        fs::read(f.root.join("input")).unwrap(),
+        fs::read(dir.join("launches/1/prompt.md")).unwrap()
+    );
+    assert!(fs::read_to_string(f.root.join("input"))
+        .unwrap()
+        .contains("initial task"));
+    assert_eq!(
+        fs::read_to_string(dir.join("launches/1/answer.md")).unwrap(),
+        "Claude final answer.\n"
+    );
+    assert_eq!(
+        fs::read_to_string(f.root.join("cwd")).unwrap(),
+        f.workspace.to_str().unwrap()
+    );
+    let expected = serde_json::json!([
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--verbose",
+        "--session-id",
+        sid,
+        "--permission-mode",
+        "auto",
+        "--permission-prompts",
+        "none",
+        "--model",
+        "opus",
+        "--effort",
+        "high"
+    ]);
+    let calls = || {
+        fs::read_to_string(f.root.join("argv.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(calls()[0], expected);
+    let second = f.claude_json(&["run", "--json"]);
+    assert_eq!(second["run"]["id"], first["run"]["id"]);
+    assert_eq!(second["run"]["sessionId"], sid);
+    assert!(second["launch"]["requestedSessionId"].is_null());
+    let mut resumed = expected.as_array().unwrap().clone();
+    resumed[4] = Value::from("--resume");
+    assert_eq!(calls()[1], Value::Array(resumed));
+    assert_eq!(
+        fs::read_to_string(f.root.join("input")).unwrap(),
+        "Continue."
+    );
+    let third = f.claude_json(&["run", "--provider", "claude", "--json"]);
+    assert_eq!(third["run"]["sessionId"], sid);
+    assert_eq!(observed_run(&f, "show")["provider"], "claude");
+    let list = f.json(&["list", "--json"]);
+    assert_eq!(
+        list["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|ws| ws["path"] == f.workspace.to_str().unwrap())
+            .unwrap()["run"]["provider"],
+        "claude"
+    );
+    let saved = fs::read(dir.join("state.json")).unwrap();
+    let fresh = f.claude_json(&[
+        "run",
+        "--fresh",
+        "--provider",
+        "claude",
+        "--skill",
+        "x",
+        "--json",
+    ]);
+    assert_ne!(fresh["run"]["id"], first["run"]["id"]);
+    assert_ne!(fresh["run"]["sessionId"], sid);
+    assert_eq!(fs::read(dir.join("state.json")).unwrap(), saved);
+    assert_eq!(fs::read(f.repo.join(".git/info/exclude")).ok(), exclude);
+    assert!(!f.workspace.join(".claude").exists());
+    assert!(!f.workspace.join(".cursor").exists());
+    f.assert_unlocked();
+}
+
+#[test]
+fn claude_provider_mismatch_is_usage_before_any_persistent_mutation() {
+    let f = Fixture::new();
+    f.fake_claude();
+    f.claude_json(&["run", "--provider", "claude", "--skill", "x", "--json"]);
+    for provider in ["codex", "cursor"] {
+        let before = snapshot_run_files(&f.repo.join(".git/rabi/runs"));
+        assert_error(
+            f.claude_command(&["run", "--provider", provider, "--json"])
+                .output()
+                .unwrap(),
+            2,
+            &format!("--fresh --provider {provider}"),
+        );
+        assert_eq!(snapshot_run_files(&f.repo.join(".git/rabi/runs")), before);
+        assert_eq!(f.calls(), 1);
+        f.assert_unlocked();
+    }
+    let g = Fixture::new();
+    g.fake_claude();
+    let first = g.json(&["run", "--skill", "x", "--json"]);
+    assert_eq!(first["run"]["provider"], "codex");
+    assert!(first["launch"]["requestedSessionId"].is_null());
+    let before = snapshot_run_files(&g.repo.join(".git/rabi/runs"));
+    assert_error(
+        g.claude_command(&["run", "--provider", "claude", "--json"])
+            .output()
+            .unwrap(),
+        2,
+        "--fresh --provider claude",
+    );
+    assert_eq!(snapshot_run_files(&g.repo.join(".git/rabi/runs")), before);
+    let fresh = g.claude_json(&[
+        "run",
+        "--fresh",
+        "--provider",
+        "claude",
+        "--skill",
+        "x",
+        "--json",
+    ]);
+    assert_eq!(fresh["run"]["provider"], "claude");
+}
+
+#[test]
+fn claude_unknown_local_session_attempts_resume_and_preserves_launch_failure() {
+    let f = Fixture::new();
+    f.fake_claude();
+    let first = f.claude_json(&["run", "--provider", "claude", "--skill", "x", "--json"]);
+    // Claude storage is an internal detail: missing local evidence must permit resume.
+    fs::remove_dir_all(f.home.join(".claude")).unwrap();
+    let resumed = f.claude_json(&["run", "--json"]);
+    assert_eq!(resumed["run"]["sessionId"], first["run"]["sessionId"]);
+    let mut state = f.state();
+    let unknown_id = uuid::Uuid::new_v4().to_string();
+    state["sessionId"] = Value::from(unknown_id.clone());
+    fs::write(f.run_dir().join("state.json"), state.to_string()).unwrap();
+    let out = f
+        .claude_command(&["run", "--json"])
+        .env("CLAUDE_UNKNOWN_ID", "1")
+        .output()
+        .unwrap();
+    assert_error(out, 1, "claude");
+    assert_eq!(f.calls(), 3);
+    let saved = f.state();
+    assert_eq!(saved["sessionId"], unknown_id);
+    assert_eq!(saved["state"], "stopped");
+    assert_eq!(saved["launches"][2]["stopReason"], "parent_failed");
+    assert_eq!(saved["launches"][2]["exitCode"], 1);
+    assert!(!f
+        .home
+        .join(".claude/projects/fake-lossy-workspace")
+        .join(format!("{unknown_id}.jsonl"))
+        .exists());
+    f.assert_unlocked();
+}
+
+#[test]
+fn claude_result_protocol_errors_and_parent_failures_keep_real_exit_code() {
+    for (setting, stop) in [
+        ("CLAUDE_NO_RESULT", "error"),
+        ("CLAUDE_BAD_RESULT", "error"),
+        ("CLAUDE_NULL_RESULT", "error"),
+        ("CLAUDE_BAD_ERROR", "error"),
+        ("CLAUDE_TRUNCATE", "error"),
+        ("CLAUDE_TRAILING_TRUNCATED", "error"),
+        ("CLAUDE_IS_ERROR", "parent_failed"),
+    ] {
+        let f = Fixture::new();
+        f.fake_claude();
+        let out = f
+            .claude_command(&["run", "--provider", "claude", "--skill", "x", "--json"])
+            .env(setting, "1")
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{setting}: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let state = f.state();
+        assert_eq!(
+            state["state"],
+            if stop == "parent_failed" {
+                "stopped"
+            } else {
+                "error"
+            },
+            "{setting}"
+        );
+        assert_eq!(state["launches"][0]["stopReason"], stop, "{setting}");
+        assert_eq!(state["launches"][0]["exitCode"], 0, "{setting}");
+        assert!(state["launches"][0]["finishedAt"].is_string());
+        f.assert_unlocked();
+    }
+    for result in ["CLAUDE_NO_RESULT", "CLAUDE_NULL_RESULT"] {
+        let f = Fixture::new();
+        f.fake_claude();
+        let out = f
+            .claude_command(&["run", "--provider", "claude", "--skill", "x", "--json"])
+            .env("CLAUDE_EXIT", "42")
+            .env(result, "1")
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(42),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        assert_eq!(f.state()["launches"][0]["stopReason"], "parent_failed");
+        assert_eq!(f.state()["launches"][0]["exitCode"], 42);
+    }
+}
+
+#[test]
+fn claude_last_result_large_answer_and_missing_final_newline_are_supported() {
+    for size in [0, 131072] {
+        let f = Fixture::new();
+        f.fake_claude();
+        let out = f
+            .claude_command(&["run", "--provider", "claude", "--skill", "x", "--json"])
+            .env("CLAUDE_FIRST_RESULT", "1")
+            .env("CLAUDE_NO_NEWLINE", "1")
+            .env("CLAUDE_ANSWER_SIZE", size.to_string())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let answer = fs::read(f.run_dir().join("launches/1/answer.md")).unwrap();
+        assert_eq!(answer, vec![b'x'; size]);
+        f.assert_unlocked();
+    }
+}
+
+#[test]
+fn claude_permission_mode_must_be_auto_before_session_is_resumable() {
+    for mode in [Some("default"), Some("plan"), None] {
+        let f = Fixture::new();
+        f.fake_claude();
+        let mut command =
+            f.claude_command(&["run", "--provider", "claude", "--skill", "x", "--json"]);
+        match mode {
+            Some(mode) => {
+                command.env("CLAUDE_PERMISSION_MODE", mode);
+            }
+            None => {
+                command.env("CLAUDE_NO_PERMISSION_MODE", "1");
+            }
+        }
+        let child = Running(Some(
+            command
+                .env("CLAUDE_BLOCK", "1")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        ));
+        let pids = wait_for_file(&f.root.join("pids"));
+        let out = child.finish();
+        assert_error(out, 1, "auto");
+        let state = f.state();
+        assert_eq!(state["state"], "error");
+        assert!(
+            state["sessionId"].is_null(),
+            "unvalidated permission mode {mode:?}"
+        );
+        assert_eq!(state["launches"][0]["stopReason"], "error");
+        let message = state["launches"][0]["message"].as_str().unwrap();
+        assert!(
+            message.contains("Claude") && message.contains("permission mode"),
+            "{message}"
+        );
+        assert!(!f.root.join("completed").exists());
+        for pid in pids.split_whitespace() {
+            assert_dead(pid.parse().unwrap());
+        }
+        let calls = f.calls();
+        assert_error(
+            f.claude_command(&["run", "--json"]).output().unwrap(),
+            1,
+            "--fresh",
+        );
+        assert_eq!(f.calls(), calls);
+        f.assert_unlocked();
+    }
+}
+
+#[test]
+fn claude_oversized_init_permission_mode_is_checked_before_parent_continues() {
+    for missing_mode in [false, true] {
+        let f = Fixture::new();
+        f.fake_claude();
+        let mut command =
+            f.claude_command(&["run", "--provider", "claude", "--skill", "x", "--json"]);
+        command
+            .env("CLAUDE_INIT_PADDING", "131072")
+            .env("CLAUDE_CONTINUATION_DELAY", ".3")
+            .env("CLAUDE_BLOCK", "1");
+        if missing_mode {
+            command.env("CLAUDE_NO_PERMISSION_MODE", "1");
+        } else {
+            command.env("CLAUDE_PERMISSION_MODE", "default");
+        }
+        let child = Running(Some(
+            command
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        ));
+        let pids = wait_for_file(&f.root.join("pids"));
+        assert_error(child.finish(), 1, "permission mode");
+        assert!(
+            !f.root.join("continued-after-init").exists(),
+            "oversized init escaped live permission validation (missing mode: {missing_mode})"
+        );
+        let state = f.state();
+        assert_eq!(state["state"], "error");
+        assert!(state["sessionId"].is_null());
+        assert_eq!(state["launches"][0]["stopReason"], "error");
+        for pid in pids.split_whitespace() {
+            assert_dead(pid.parse().unwrap());
+        }
+        f.assert_unlocked();
+    }
+}
+
+#[test]
+fn claude_large_init_assistant_and_tool_events_preserve_valid_session() {
+    for large_event in ["init", "assistant", "tool"] {
+        let f = Fixture::new();
+        f.fake_claude();
+        let mut command =
+            f.claude_command(&["run", "--provider", "claude", "--skill", "x", "--json"]);
+        if large_event == "init" {
+            command.env("CLAUDE_INIT_PADDING", "131072");
+        } else {
+            command.env("CLAUDE_LARGE_EVENT", large_event);
+        }
+        let out = command.output().unwrap();
+        assert!(
+            out.status.success(),
+            "large {large_event}: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let state = f.state();
+        assert_eq!(state["state"], "idle");
+        assert_eq!(
+            state["sessionId"],
+            state["launches"][0]["requestedSessionId"]
+        );
+        assert_eq!(
+            fs::read_to_string(f.run_dir().join("launches/1/answer.md")).unwrap(),
+            "Claude final answer.\n"
+        );
+        f.assert_unlocked();
+    }
+}
+
+#[test]
+fn claude_first_observed_id_cannot_validate_a_different_init_id() {
+    for resume in [false, true] {
+        for live in [false, true] {
+            let f = Fixture::new();
+            f.fake_claude();
+            let previous = resume
+                .then(|| f.claude_json(&["run", "--provider", "claude", "--skill", "x", "--json"]));
+            let _ = fs::remove_file(f.root.join("completed"));
+            let init_id = uuid::Uuid::new_v4().to_string();
+            let args = if resume {
+                vec!["run", "--json"]
+            } else {
+                vec!["run", "--provider", "claude", "--skill", "x", "--json"]
+            };
+            let mut command = f.claude_command(&args);
+            // The first event and final result use A (requested/resumed), while
+            // init reports B. A valid auto mode alone must not validate A.
+            command
+                .env("CLAUDE_EARLY_ID", "1")
+                .env("CLAUDE_INIT_ID", &init_id);
+            let (out, pids) = if live {
+                let child = Running(Some(
+                    command
+                        .env("CLAUDE_BLOCK", "1")
+                        .env("CLAUDE_CONTINUATION_DELAY", ".3")
+                        .stdout(Stdio::piped())
+                        .stderr(Stdio::piped())
+                        .spawn()
+                        .unwrap(),
+                ));
+                let pids = wait_for_file(&f.root.join("pids"));
+                (child.finish(), pids)
+            } else {
+                (command.output().unwrap(), String::new())
+            };
+            assert_error(out, 1, "Claude");
+            let state = f.state();
+            let launch = state["launches"].as_array().unwrap().last().unwrap();
+            assert_eq!(state["state"], "error");
+            assert_eq!(launch["stopReason"], "error");
+            if let Some(previous) = previous {
+                assert_eq!(state["sessionId"], previous["run"]["sessionId"]);
+            } else {
+                assert!(
+                    state["sessionId"].is_null(),
+                    "a fresh session with inconsistent init identity remained resumable (live: {live})"
+                );
+                assert_ne!(launch["requestedSessionId"], init_id);
+                let calls = f.calls();
+                assert_error(
+                    f.claude_command(&["run", "--json"]).output().unwrap(),
+                    1,
+                    "--fresh",
+                );
+                assert_eq!(f.calls(), calls);
+            }
+            if live {
+                assert!(!f.root.join("continued-after-init").exists());
+                assert!(!f.root.join("completed").exists());
+            }
+            for pid in pids.split_whitespace() {
+                assert_dead(pid.parse().unwrap());
+            }
+            f.assert_unlocked();
+        }
+    }
+}
+
+#[test]
+fn claude_init_requested_and_resumed_session_mismatches_stop_immediately() {
+    for resume in [false, true] {
+        let f = Fixture::new();
+        f.fake_claude();
+        let previous = resume
+            .then(|| f.claude_json(&["run", "--provider", "claude", "--skill", "x", "--json"]));
+        let observed = uuid::Uuid::new_v4().to_string();
+        let args = if resume {
+            vec!["run", "--json"]
+        } else {
+            vec!["run", "--provider", "claude", "--skill", "x", "--json"]
+        };
+        let _ = fs::remove_file(f.root.join("completed"));
+        let child = Running(Some(
+            f.claude_command(&args)
+                .env("CLAUDE_OTHER_ID", &observed)
+                .env("CLAUDE_BLOCK", "1")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        ));
+        let pids = wait_for_file(&f.root.join("pids"));
+        assert_error(child.finish(), 1, "Claude");
+        let state = f.state();
+        let launch = state["launches"].as_array().unwrap().last().unwrap();
+        assert_eq!(launch["stopReason"], "error");
+        assert_eq!(launch["sessionId"], observed);
+        if let Some(previous) = previous {
+            assert_eq!(state["sessionId"], previous["run"]["sessionId"]);
+        } else {
+            assert_ne!(launch["requestedSessionId"], observed);
+            assert!(state["sessionId"].is_null());
+        }
+        assert!(!f.root.join("completed").exists());
+        for pid in pids.split_whitespace() {
+            assert_dead(pid.parse().unwrap());
+        }
+        f.assert_unlocked();
+    }
+}
+
+#[test]
+fn claude_init_result_session_mismatch_names_claude() {
+    let f = Fixture::new();
+    f.fake_claude();
+    let out = f
+        .claude_command(&["run", "--provider", "claude", "--skill", "x", "--json"])
+        .env("CLAUDE_RESULT_ID", uuid::Uuid::new_v4().to_string())
+        .output()
+        .unwrap();
+    assert_error(out, 1, "Claude");
+    let state = f.state();
+    assert_eq!(state["launches"][0]["stopReason"], "error");
+    assert!(state["sessionId"].is_null());
+    assert_eq!(
+        state["launches"][0]["sessionId"],
+        state["launches"][0]["requestedSessionId"]
+    );
+}
+
+#[test]
+fn claude_missing_binary_has_spawn_error_and_install_login_guidance() {
+    let f = Fixture::new();
+    f.fake_claude();
+    fs::remove_file(f.root.join("bin/claude")).unwrap();
+    let out = f
+        .claude_command(&["run", "--provider", "claude", "--skill", "x", "--json"])
+        .output()
+        .unwrap();
+    assert_eq!(out.status.code(), Some(1));
+    let envelope: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(envelope["error"]["code"], "spawn");
+    let text = String::from_utf8_lossy(&out.stdout);
+    assert!(text.contains("claude"), "{text}");
+    assert!(text.to_ascii_lowercase().contains("install"), "{text}");
+    assert!(text.contains("login") || text.contains("log in"), "{text}");
+    assert_eq!(f.calls(), 0);
+    assert!(f.state()["sessionId"].is_null());
+    f.assert_unlocked();
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn claude_timeout_and_interrupt_preserve_reason_after_zero_exit_and_cleanup_setsid_child() {
+    for interrupt in [false, true] {
+        let f = Fixture::new();
+        f.fake_claude();
+        let timeout = if interrupt { "30s" } else { "2s" };
+        let child = Running(Some(
+            f.claude_command(&[
+                "run",
+                "--provider",
+                "claude",
+                "--skill",
+                "x",
+                "--timeout",
+                timeout,
+                "--json",
+            ])
+            .env("CLAUDE_BLOCK", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+        ));
+        let pids = wait_for_file(&f.root.join("pids"));
+        wait_for_session(&f, &pids);
+        let ids: Vec<u32> = pids
+            .split_whitespace()
+            .map(|pid| pid.parse().unwrap())
+            .collect();
+        let stat = fs::read_to_string(format!("/proc/{}/stat", ids[1])).unwrap();
+        let fields: Vec<_> = stat
+            .rsplit_once(')')
+            .unwrap()
+            .1
+            .split_whitespace()
+            .collect();
+        assert_eq!(fields[2].parse::<u32>().unwrap(), ids[1]);
+        if interrupt {
+            send(child.0.as_ref().unwrap().id(), 2);
+        }
+        let out = child.finish();
+        assert_eq!(
+            out.status.code(),
+            Some(if interrupt { 130 } else { 124 }),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        for pid in ids {
+            assert_dead(pid);
+        }
+        let signals = fs::read_to_string(f.root.join("signals")).unwrap();
+        assert_eq!(
+            signals.lines().next(),
+            Some("2"),
+            "Claude must receive INT first"
+        );
+        let state = f.state();
+        assert_eq!(state["state"], "stopped");
+        assert_eq!(state["launches"][0]["exitCode"], 0);
+        assert_eq!(
+            state["launches"][0]["stopReason"],
+            if interrupt {
+                "interrupted"
+            } else {
+                "timed_out"
+            }
+        );
+        let events = fs::read_to_string(f.run_dir().join("launches/1/events.jsonl")).unwrap();
+        let result: Value = serde_json::from_str(events.lines().last().unwrap()).unwrap();
+        assert_eq!(result["subtype"], "error_during_execution");
+        assert_eq!(result["is_error"], true);
+        assert!(result["result"].is_null());
+        // A null result has no text to save, matching Cursor's malformed-result behavior.
+        assert!(!f.run_dir().join("launches/1/answer.md").exists());
+        f.assert_unlocked();
+        let resumed = f.claude_json(&["run", "--json"]);
+        assert_eq!(resumed["run"]["sessionId"], state["sessionId"]);
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn claude_stubborn_parent_escalates_int_then_term_then_kill_with_setsid_cleanup() {
+    let f = Fixture::new();
+    f.fake_claude();
+    let child = Running(Some(
+        f.claude_command(&[
+            "run",
+            "--provider",
+            "claude",
+            "--skill",
+            "x",
+            "--timeout",
+            "1s",
+            "--json",
+        ])
+        .env("CLAUDE_BLOCK", "1")
+        .env("CLAUDE_STUBBORN", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap(),
+    ));
+    let pids = wait_for_file(&f.root.join("pids"));
+    assert_error(child.finish(), 124, "");
+    assert_eq!(
+        fs::read_to_string(f.root.join("signals"))
+            .unwrap()
+            .lines()
+            .collect::<Vec<_>>(),
+        ["2", "15"]
+    );
+    for pid in pids.split_whitespace() {
+        assert_dead(pid.parse().unwrap());
+    }
+    assert_eq!(f.state()["launches"][0]["stopReason"], "timed_out");
+    f.assert_unlocked();
 }
