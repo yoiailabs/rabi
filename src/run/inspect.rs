@@ -70,7 +70,10 @@ fn read(root: &Path, path: &str) -> Result<Option<Summary>> {
         .map_err(|error| Error::msg(error.to_string()))?;
     if record.schema != 2
         || record.id != id
-        || record.provider != "codex"
+        || record
+            .provider
+            .parse::<crate::provider::Provider>()
+            .is_err()
         || record.workspace.path != path
         || record.launches.iter().any(|launch| launch.n == 0)
         || record
