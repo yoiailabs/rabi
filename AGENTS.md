@@ -46,6 +46,7 @@
 - Do not bump `Cargo.toml` or `Cargo.lock` in a feature pull request. Change the version by hand in a dedicated pull request against `main`. See Releases.
 - PRs should include a summary, verification steps, and CLI output for UX-facing changes.
 - For this repository, follow [Review process](CONTRIBUTING.md#review-process), [REVIEW.md](REVIEW.md), and [risk-tiers.md](risk-tiers.md): fresh read-only review before a draft PR, at most three rounds, responses to every finding, and no unresolved Important. Record risk in the PR, judging behavioral and security substance rather than touched paths; changes that actually affect trust, hooks, delete/remove (including gc), or sync behavior also require a separate security review (when in doubt, obtain it).
+- Changes to risk classification or merge-gate rules are high with `human_review: "yes"` under canonical [risk-tiers.md](risk-tiers.md), whether they relax or tighten the gates.
 - Ensure `cargo fmt`, `cargo clippy --locked`, and `cargo test --locked` pass. Note known gaps in the PR body.
 
 ## Security & Configuration Tips

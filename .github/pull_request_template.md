@@ -24,7 +24,7 @@ assessed_sha: "<full git HEAD SHA>"
 ```
 
 - Low/medium requires `human_review: "no"`: the development bot may merge with authorization after required CI is green, Codex review passes, every finding has a response, and no Important remains open.
-- High (including unknown risk) requires `human_review: "yes"`: stop and report for a human decision; Shuhei's approval for this specific SHA is required, and the bot must not merge.
+- High (including unknown risk) requires `human_review: "yes"`: stop and report for a human decision; Shuhei's approval for this specific SHA is required, and the bot must not merge. Changes to risk classification or merge-gate rules are high under canonical [risk-tiers.md](https://github.com/yoiailabs/rabi/blob/main/risk-tiers.md), whether they relax or tighten the gates.
 - Approval covers one SHA; new HEAD requires reclassification and renewed approval when required.
 - If `human_review: "yes"`, approved HEAD SHA and approval reference (or pending):
 

@@ -122,6 +122,8 @@ This process applies to this repository. Use [REVIEW.md](REVIEW.md) for review o
 
 Under current policy, low/medium means `human_review: "no"`: the development bot may merge with authorization after required CI is green, Codex review passes, every finding has a response, and no Important remains open. High means `human_review: "yes"`: finish authorized local checks, review, commits, and reporting, then stop and report the need for a human decision. Shuhei must approve the specific HEAD SHA and the bot cannot merge it. Unknown risk is high. Approval covers one SHA. Before merging, follow the current-HEAD checks and guarded squash command in [risk-tiers.md](risk-tiers.md); new commits require updated checks, review, risk assessment, and renewed approval when required.
 
+Changes to risk classification or merge-gate rules are high with `human_review: "yes"` under canonical [risk-tiers.md](risk-tiers.md), whether they relax or tighten the gates.
+
 ## 📚 Documentation
 
 When contributing documentation:

@@ -2,6 +2,8 @@
 
 This guide applies to the rabi repository. Read AGENTS.md, CLAUDE.md, the task and completion criteria, the diff, and check results. Review behavior and root causes, including guidance made inaccurate by the change. Judge merge risk by behavioral and security substance under [risk-tiers.md](risk-tiers.md), not touched paths. A separate security review is required when trust, hooks, delete/remove (including gc), or sync behavior is actually affected; when in doubt, obtain it.
 
+Changes to risk classification or merge-gate rules are high with `human_review: "yes"` under canonical [risk-tiers.md](risk-tiers.md), whether they relax or tighten the gates.
+
 Prioritize:
 
 - Removal/gc preflight, primary checkout protection, dirty files, submodules, commit preservation, and checks after hooks. Ignored files are intentionally removed with a workspace; that documented behavior alone is not a bug.

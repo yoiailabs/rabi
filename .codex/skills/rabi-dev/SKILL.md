@@ -92,6 +92,8 @@ strings. Put supporting evidence in `reason` or immediately after the block;
 state `uncertainty: "none"` only when justified. The canonical tier definitions
 and merge gates are in [risk-tiers.md](../../../risk-tiers.md).
 
+Changes to risk classification or merge-gate rules are high with `human_review: "yes"` under canonical [risk-tiers.md](../../../risk-tiers.md), whether they relax or tighten the gates.
+
 ```yaml
 tier: <low|medium|high>
 human_review: "<yes|no>"
