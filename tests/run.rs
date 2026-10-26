@@ -3902,6 +3902,184 @@ if os.environ.get('ADD_HANDOFF'):
 }
 
 #[test]
+fn handoff_resume_uses_snapshot_time_with_legacy_started_at_fallback() {
+    for legacy in [false, true] {
+        let f = Fixture::new();
+        f.record_workspace();
+        let old = f.json(&["handoff", "add", "already delivered", "--json"]);
+        let first = f.json(&["run", "--skill", "x", "original task", "--json"]);
+        let snapshot_at = first["launch"]["handoff"]["snapshotAt"].as_str().unwrap();
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(snapshot_at).unwrap()
+                <= chrono::DateTime::parse_from_rfc3339(
+                    first["launch"]["startedAt"].as_str().unwrap()
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            first["launch"]["handoff"]["injectedEntryIds"],
+            serde_json::json!([old["id"]])
+        );
+        let note = f.json(&["handoff", "add", "after snapshot before start", "--json"]);
+        let mut state = f.state();
+        let launch = &mut state["launches"][0];
+        if legacy {
+            launch["startedAt"] = snapshot_at.into();
+            launch["handoff"]
+                .as_object_mut()
+                .unwrap()
+                .remove("snapshotAt");
+        } else {
+            // Model a note appended after snapshot read but before prompt fsync
+            // and startedAt publication, without a timing-sensitive race.
+            launch["startedAt"] = note["createdAt"].clone();
+        }
+        fs::write(
+            f.run_dir().join("state.json"),
+            serde_json::to_vec(&state).unwrap(),
+        )
+        .unwrap();
+        let resumed = f.json(&["run", "--json"]);
+        assert_eq!(
+            resumed["launch"]["handoff"]["injectedEntryIds"],
+            serde_json::json!([note["id"]])
+        );
+        let prompt = fs::read_to_string(f.run_dir().join("launches/2/prompt.md")).unwrap();
+        assert!(prompt.contains("after snapshot before start"));
+        assert!(!prompt.contains("already delivered"));
+        assert!(!prompt.contains("Original task"));
+    }
+}
+
+#[test]
+fn handoff_resume_retries_undelivered_snapshot_after_immediate_provider_failure() {
+    for prior_delivery in [false, true] {
+        let f = Fixture::new();
+        f.record_workspace();
+        f.json(&["run", "--skill", "x", "original task", "--json"]);
+        if !prior_delivery {
+            f.json(&["run", "--fresh", "--no-handoff", "--skill", "x", "--json"]);
+        }
+        let note = f.json(&["handoff", "add", "unseen human note", "--json"]);
+        let calls = f.calls();
+        let out = f
+            .command(&["run", "--json"])
+            .env("FAKE_NO_THREAD", "1")
+            .env("FAKE_EXIT", "1")
+            .output()
+            .unwrap();
+        assert_error(out, 1, "");
+        assert_eq!(f.calls(), calls + 1); // Binary/preparation preflight succeeded.
+        let state = f.state();
+        let failed = &state["launches"][1];
+        assert!(!state["sessionId"].is_null()); // A run-level session id is not evidence for this launch.
+        assert!(failed["sessionId"].is_null());
+        assert_eq!(failed["exitCode"], 1);
+        assert_eq!(
+            failed["handoff"]["injectedEntryIds"],
+            serde_json::json!([note["id"]])
+        );
+        let resumed = f.json(&["run", "--json"]);
+        assert_eq!(
+            resumed["launch"]["handoff"]["injectedEntryIds"],
+            serde_json::json!([note["id"]])
+        );
+        let prompt = fs::read_to_string(f.run_dir().join("launches/3/prompt.md")).unwrap();
+        assert!(prompt.contains("unseen human note"));
+        assert_eq!(prompt.contains("Original task"), !prior_delivery);
+        let again = f.json(&["run", "--json"]);
+        assert!(again["launch"]["handoff"]["injectedEntryIds"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[test]
+fn handoff_resume_accepts_observed_session_or_zero_exit_as_delivery() {
+    for observed_session in [false, true] {
+        let f = Fixture::new();
+        f.record_workspace();
+        f.json(&["run", "--skill", "x", "original task", "--json"]);
+        let note = f.json(&["handoff", "add", "delivered note", "--json"]);
+        let mut command = f.command(&["run", "--json"]);
+        if observed_session {
+            command.env("FAKE_EXIT", "1");
+        } else {
+            command.env("FAKE_NO_THREAD", "1");
+        }
+        // No-session exit 0 still reports a protocol error to the caller.
+        assert_error(command.output().unwrap(), 1, "");
+        let state = f.state();
+        let delivered = &state["launches"][1];
+        assert_eq!(delivered["sessionId"].is_string(), observed_session);
+        assert_eq!(delivered["exitCode"], if observed_session { 1 } else { 0 });
+        assert_eq!(
+            delivered["handoff"]["injectedEntryIds"],
+            serde_json::json!([note["id"]])
+        );
+        let resumed = f.json(&["run", "--json"]);
+        assert!(resumed["launch"]["handoff"]["injectedEntryIds"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[test]
+fn handoff_heredoc_intent_and_requests_deduplicate_trailing_whitespace_verbatim() {
+    let f = Fixture::new();
+    f.record_workspace();
+    let task = "  same task\nsecond line";
+    let out = f
+        .command_at(
+            &f.workspace,
+            &[
+                "-c",
+                "\"$1\" run --skill x - --json <<'EOF'\n  same task\nsecond line\nEOF\n",
+                "handoff-test",
+                env!("CARGO_BIN_EXE_rabi"),
+            ],
+            "bash",
+        )
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let intent = format!("{task}\n");
+    for repeated in [task.to_owned(), format!("{task}\r\n \t\u{2003}")] {
+        f.json(&["run", "--fresh", "--skill", "x", &repeated, "--json"]);
+        assert_eq!(
+            fs::read_to_string(f.memory().join("intent.md")).unwrap(),
+            intent
+        );
+        assert!(f.handoff()["entries"].as_array().unwrap().is_empty());
+        let prompt = fs::read_to_string(f.run_dir().join("launches/1/prompt.md")).unwrap();
+        assert!(!prompt.contains("Original task"));
+        assert_eq!(prompt.matches(task).count(), 1);
+        assert!(prompt.ends_with(&repeated));
+    }
+    let request = "  next request\nkeep internal lines\n";
+    f.json(&["run", request, "--json"]);
+    f.json(&["handoff", "add", "intervening note", "--json"]);
+    let ledger = fs::read(f.memory().join("handoff.jsonl")).unwrap();
+    for repeated in [
+        request.trim_end().to_owned(),
+        format!("{request}\r\n \t\u{2003}"),
+    ] {
+        f.json(&["run", "--fresh", "--skill", "x", &repeated, "--json"]);
+        assert_eq!(fs::read(f.memory().join("handoff.jsonl")).unwrap(), ledger);
+        assert_eq!(f.handoff()["entries"][0]["text"], request);
+        let prompt = fs::read_to_string(f.run_dir().join("launches/1/prompt.md")).unwrap();
+        assert_eq!(prompt.matches(request.trim_end()).count(), 1);
+        assert!(prompt.ends_with(&repeated));
+    }
+}
+
+#[test]
 fn handoff_resume_uses_last_injection_across_disabled_and_failed_launches() {
     for failed_preflight in [false, true] {
         let f = Fixture::new();

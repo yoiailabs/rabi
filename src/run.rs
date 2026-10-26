@@ -422,12 +422,20 @@ pub(crate) fn execute(
         None
     };
     let rabi_bin = crate::handoff::current_executable();
-    let previous_started = record
+    let previous_snapshot = record
         .launches
         .iter()
         .rev()
-        .find(|launch| launch.handoff.is_some())
-        .map(|launch| launch.started_at.clone());
+        .filter(|launch| launch.session_id.is_some() || launch.exit_code == Some(0))
+        .find_map(|launch| {
+            launch.handoff.as_ref().map(|handoff| {
+                handoff
+                    .snapshot_at
+                    .as_ref()
+                    .unwrap_or(&launch.started_at)
+                    .clone()
+            })
+        });
     let run_id = record.id.clone();
     let dir = runs.join(&record.id);
     if !resuming {
@@ -442,19 +450,20 @@ pub(crate) fn execute(
                 provider,
             };
             let captured = memory.capture(task, source).map_err(handoff_error)?;
-            let mut snapshot = memory.read().map_err(handoff_error)?;
+            let mut snapshot = captured.snapshot;
             if captured.exclude_intent {
                 snapshot.intent = None;
             }
-            let resume = previous_started
+            let resume = previous_snapshot
                 .as_deref()
                 .map(|since| (run_id.as_str(), since));
-            let (stanza, injection) = snapshot.render(
+            let (stanza, mut injection) = snapshot.render(
                 &rabi_bin,
                 tree.metadata.id.as_deref().unwrap_or_default(),
                 resume,
                 captured.entry_id.as_deref(),
             );
+            injection.snapshot_at = Some(captured.snapshot_at);
             Ok((format!("{stanza}{prompt}"), Some(injection)))
         } else {
             Ok((prompt, None))

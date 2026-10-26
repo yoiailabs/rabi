@@ -75,6 +75,8 @@ pub(crate) struct Entry {
 pub(crate) struct Injection {
     pub injected_entry_ids: Vec<String>,
     pub bytes: usize,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_at: Option<String>,
 }
 #[derive(Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -97,10 +99,16 @@ pub(crate) struct Memory {
     common: PathBuf,
     pub path: PathBuf,
 }
-#[derive(Default)]
 pub(crate) struct Capture {
     pub entry_id: Option<String>,
     pub exclude_intent: bool,
+    pub snapshot: Snapshot,
+    pub snapshot_at: String,
+}
+#[derive(Default)]
+struct TaskCapture {
+    entry_id: Option<String>,
+    exclude_intent: bool,
 }
 #[derive(Serialize)]
 pub(crate) struct Snapshot {
@@ -248,12 +256,16 @@ impl Memory {
     }
 
     pub fn read(&self) -> Result<Snapshot> {
+        self.read_directory(self.directory(false)?.as_ref())
+    }
+
+    fn read_directory(&self, dir: Option<&Directory>) -> Result<Snapshot> {
         let mut snapshot = Snapshot {
             intent: None,
             entries: Vec::new(),
             path: self.path.clone(),
         };
-        let Some(dir) = self.directory(false)? else {
+        let Some(dir) = dir else {
             return Ok(snapshot);
         };
         snapshot.intent = io(dir.read("intent.md"))?
@@ -285,22 +297,37 @@ impl Memory {
         Ok(entry)
     }
     pub fn capture(&self, task: Option<&str>, source: Source) -> Result<Capture> {
-        let Some(task) = task.filter(|s| !s.trim().is_empty()) else {
-            return Ok(Capture::default());
-        };
         let (dir, _lock) = self.locked_directory()?;
+        let task = Self::capture_task(&dir, task, source)?;
+        let snapshot_at = crate::metadata::iso_now();
+        let snapshot = self.read_directory(Some(&dir))?;
+        Ok(Capture {
+            entry_id: task.entry_id,
+            exclude_intent: task.exclude_intent,
+            snapshot,
+            snapshot_at,
+        })
+    }
+
+    fn capture_task(dir: &Directory, task: Option<&str>, source: Source) -> Result<TaskCapture> {
+        let Some(task) = task.filter(|s| !s.trim().is_empty()) else {
+            return Ok(TaskCapture::default());
+        };
         match io(dir.read("intent.md"))? {
             None => {
                 io(dir.publish("intent.md", task.as_bytes()))?;
-                return Ok(Capture {
+                return Ok(TaskCapture {
                     exclude_intent: true,
-                    ..Capture::default()
+                    ..TaskCapture::default()
                 });
             }
-            Some(intent) if intent == task.as_bytes() => {
-                return Ok(Capture {
+            Some(intent)
+                if std::str::from_utf8(&intent)
+                    .is_ok_and(|intent| intent.trim_end() == task.trim_end()) =>
+            {
+                return Ok(TaskCapture {
                     exclude_intent: true,
-                    ..Capture::default()
+                    ..TaskCapture::default()
                 });
             }
             Some(_) => {}
@@ -310,7 +337,7 @@ impl Memory {
                 "handoff_request_skipped",
                 "Task exceeds 65536 bytes; skipping handoff request capture",
             );
-            return Ok(Capture::default());
+            return Ok(TaskCapture::default());
         }
         if let Some(bytes) = io(dir.read("handoff.jsonl"))? {
             if let Some(previous) = read_entries(&bytes)
@@ -318,10 +345,10 @@ impl Memory {
                 .rev()
                 .find(|e| e.kind == "request")
             {
-                if previous.text == task {
-                    return Ok(Capture {
+                if previous.text.trim_end() == task.trim_end() {
+                    return Ok(TaskCapture {
                         entry_id: Some(previous.id.clone()),
-                        ..Capture::default()
+                        ..TaskCapture::default()
                     });
                 }
             }
@@ -334,10 +361,10 @@ impl Memory {
             text: task.into(),
             source: Some(source),
         };
-        append(&dir, &entry)?;
-        Ok(Capture {
+        append(dir, &entry)?;
+        Ok(TaskCapture {
             entry_id: Some(entry.id),
-            ..Capture::default()
+            ..TaskCapture::default()
         })
     }
     pub fn source_from_env(&self) -> Option<Source> {
@@ -591,6 +618,7 @@ impl Snapshot {
         let injection = Injection {
             bytes: text.len(),
             injected_entry_ids,
+            snapshot_at: None,
         };
         (text, injection)
     }
