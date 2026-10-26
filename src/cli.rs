@@ -2676,17 +2676,17 @@ mod forget_tests {
     }
 
     #[test]
-    fn review6_forget_first_refresh_failure_keeps_deleted_item_ok_and_returns_partial() {
+    fn forget_first_refresh_failure_keeps_deleted_item_ok_and_returns_partial() {
         assert_refresh_failure(0);
     }
 
     #[test]
-    fn review6_forget_later_refresh_failure_keeps_deleted_items_ok_and_returns_partial() {
+    fn forget_later_refresh_failure_keeps_deleted_items_ok_and_returns_partial() {
         assert_refresh_failure(1);
     }
 
     #[test]
-    fn review6_forget_removal_failure_after_an_earlier_removal_is_partial() {
+    fn forget_removal_failure_after_an_earlier_removal_is_partial() {
         let fixture = Fixture::new();
         let (items, error) =
             forget_resolved(&fixture.context, fixture.trees.clone(), |context, path| {
@@ -2704,7 +2704,7 @@ mod forget_tests {
     }
 
     #[test]
-    fn review6_forget_failure_before_removal_preserves_the_original_exit() {
+    fn forget_failure_before_removal_preserves_the_original_exit() {
         let fixture = Fixture::new();
         fs::write(fixture.record_path(0), "{").unwrap();
         let (items, error) = forget_resolved(&fixture.context, fixture.trees.clone(), |_, _| {

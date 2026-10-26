@@ -9070,13 +9070,13 @@ fn nameless_create_skips_a_remote_tracking_candidate() {
 
 #[cfg(debug_assertions)]
 #[test]
-fn review4_nameless_create_skips_recorded_workspace_names() {
+fn nameless_create_skips_recorded_workspace_names() {
     assert_generated_name_skips_adopted_alias(false);
 }
 
 #[cfg(debug_assertions)]
 #[test]
-fn review4_nameless_detach_skips_recorded_workspace_names() {
+fn nameless_detach_skips_recorded_workspace_names() {
     assert_generated_name_skips_adopted_alias(true);
 }
 
@@ -13173,16 +13173,16 @@ fn unified_create_uses_the_default_base_and_supports_named_branch_and_detach() {
 }
 
 #[test]
-fn review10_create_pr_accepts_repository_url_case_variants() {
-    assert_review10_source_url_case_variants(true);
+fn create_pr_accepts_repository_url_case_variants() {
+    assert_source_url_case_variants(true);
 }
 
 #[test]
-fn review10_create_issue_accepts_repository_url_case_variants() {
-    assert_review10_source_url_case_variants(false);
+fn create_issue_accepts_repository_url_case_variants() {
+    assert_source_url_case_variants(false);
 }
 
-fn assert_review10_source_url_case_variants(pr: bool) {
+fn assert_source_url_case_variants(pr: bool) {
     let repo = Repo::new();
     let path = fake_gh_for_topic_pr(&repo);
     let gh = repo.root.join("bin/gh");
@@ -13249,7 +13249,7 @@ fn assert_review10_source_url_case_variants(pr: bool) {
 }
 
 #[test]
-fn review10_create_rejects_foreign_repository_host_and_source_kind_urls() {
+fn create_rejects_foreign_repository_host_and_source_kind_urls() {
     let repo = Repo::new();
     let path = fake_gh_for_topic_pr(&repo);
     let gh = repo.root.join("bin/gh");
@@ -13258,7 +13258,7 @@ fn review10_create_rejects_foreign_repository_host_and_source_kind_urls() {
         &gh,
         script.replace(
             "#!/bin/sh\n",
-            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$RABI_REVIEW10_GH_LOG\"\n",
+            "#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$RABI_TEST_GH_LOG\"\n",
         ),
     )
     .unwrap();
@@ -13290,7 +13290,7 @@ fn review10_create_rejects_foreign_repository_host_and_source_kind_urls() {
                     ],
                 )
                 .env("PATH", &path)
-                .env("RABI_REVIEW10_GH_LOG", &log)
+                .env("RABI_TEST_GH_LOG", &log)
                 .output()
                 .unwrap();
             assert_eq!(out.status.code(), Some(2), "{url}: {}", text(&out.stdout));
@@ -13632,7 +13632,7 @@ fn create_reuse_propagates_corrupt_record_errors() {
 }
 
 #[test]
-fn review2_branch_usage_compares_branches_when_workspace_names_cross() {
+fn branch_usage_compares_branches_when_workspace_names_cross() {
     for reuse in [false, true] {
         let repo = Repo::new();
         repo.git(&["branch", "feature"]);
@@ -13659,7 +13659,7 @@ fn review2_branch_usage_compares_branches_when_workspace_names_cross() {
 }
 
 #[test]
-fn review2_pr_usage_compares_branches_when_workspace_names_cross() {
+fn pr_usage_compares_branches_when_workspace_names_cross() {
     for reuse in [false, true] {
         let repo = Repo::new();
         let path = fake_gh_for_topic_pr(&repo);
@@ -13692,7 +13692,7 @@ fn review2_pr_usage_compares_branches_when_workspace_names_cross() {
 }
 
 #[test]
-fn review2_reuse_with_an_explicit_name_does_not_reuse_a_branch_alias() {
+fn reuse_with_an_explicit_name_does_not_reuse_a_branch_alias() {
     for pr in [false, true] {
         let repo = Repo::new();
         let path = fake_gh_for_topic_pr(&repo);
@@ -13724,7 +13724,7 @@ fn review2_reuse_with_an_explicit_name_does_not_reuse_a_branch_alias() {
 }
 
 #[test]
-fn review2_explicit_detached_name_can_match_another_workspaces_branch() {
+fn explicit_detached_name_can_match_another_workspaces_branch() {
     let repo = Repo::new();
     repo.git(&["branch", "feature"]);
     let first = repo.rabi(&["create", "review", "--branch", "feature", "--json"]);
@@ -13743,7 +13743,7 @@ fn review2_explicit_detached_name_can_match_another_workspaces_branch() {
 }
 
 #[test]
-fn review1_create_rejects_names_outside_the_workspace_root_for_every_source() {
+fn create_rejects_names_outside_the_workspace_root_for_every_source() {
     for source in [
         vec![],
         vec!["--detach"],
@@ -13807,7 +13807,7 @@ fn review1_create_rejects_names_outside_the_workspace_root_for_every_source() {
 }
 
 #[test]
-fn review1_create_rejects_destination_escaping_through_a_parent_symlink() {
+fn create_rejects_destination_escaping_through_a_parent_symlink() {
     use std::os::unix::fs::symlink;
     for source in [
         vec![],
@@ -13861,7 +13861,7 @@ fn review1_create_rejects_destination_escaping_through_a_parent_symlink() {
 }
 
 #[test]
-fn review1_reuse_links_resolve_bare_numbers_in_the_selected_repository() {
+fn reuse_links_resolve_bare_numbers_in_the_selected_repository() {
     let repo = Repo::new();
     repo.git(&[
         "remote",
@@ -13907,7 +13907,7 @@ fn review1_reuse_links_resolve_bare_numbers_in_the_selected_repository() {
 }
 
 #[test]
-fn review1_reuse_links_share_terminal_url_normalization_with_selectors() {
+fn reuse_links_share_terminal_url_normalization_with_selectors() {
     let repo = Repo::new();
     repo.git(&["branch", "existing"]);
     // The earlier /pull/123 belongs to owner/repo, not the subject number.
@@ -13931,7 +13931,7 @@ fn review1_reuse_links_share_terminal_url_normalization_with_selectors() {
 }
 
 #[test]
-fn review1_adopt_name_is_used_inside_the_workspace_root() {
+fn adopt_name_is_used_inside_the_workspace_root() {
     let repo = Repo::new();
     let tree = managed(&repo, "directory-name");
     repo.git(&[
@@ -13959,7 +13959,7 @@ fn review1_adopt_name_is_used_inside_the_workspace_root() {
 }
 
 #[test]
-fn review1_existing_branch_creation_does_not_require_a_default_or_source_head() {
+fn existing_branch_creation_does_not_require_a_default_or_source_head() {
     let repo = Repo::new();
     repo.git(&["branch", "-m", "develop"]);
     repo.git(&["checkout", "--orphan", "unborn"]);
@@ -13972,7 +13972,7 @@ fn review1_existing_branch_creation_does_not_require_a_default_or_source_head() 
 }
 
 #[test]
-fn review9_pr_unknown_base_stays_unknown_after_default_returns() {
+fn pr_unknown_base_stays_unknown_after_default_returns() {
     let repo = Repo::new();
     publish_pr_topic(&repo);
     let path = fake_gh_for_topic_pr(&repo);
@@ -14022,7 +14022,7 @@ fn review9_pr_unknown_base_stays_unknown_after_default_returns() {
 }
 
 #[test]
-fn review1_pr_creation_does_not_require_a_default_or_source_head() {
+fn pr_creation_does_not_require_a_default_or_source_head() {
     let repo = Repo::new();
     publish_pr_topic(&repo);
     let path = fake_gh_for_topic_pr(&repo);
@@ -14050,7 +14050,7 @@ fn review1_pr_creation_does_not_require_a_default_or_source_head() {
 }
 
 #[test]
-fn review3_reuse_rejects_a_prunable_checkout_with_a_missing_git_file() {
+fn reuse_rejects_a_prunable_checkout_with_a_missing_git_file() {
     for source in ["branch", "new", "detach"] {
         let repo = Repo::new();
         let mut create = vec!["create", "review", "--json"];
@@ -14093,7 +14093,7 @@ fn review3_reuse_rejects_a_prunable_checkout_with_a_missing_git_file() {
 }
 
 #[test]
-fn review3_reuse_rejects_git_discovery_falling_back_to_the_parent_checkout() {
+fn reuse_rejects_git_discovery_falling_back_to_the_parent_checkout() {
     let repo = Repo::new();
     assert!(repo
         .rabi(&["config", "set", "workspace-root", "workspaces"])
@@ -14115,7 +14115,7 @@ fn review3_reuse_rejects_git_discovery_falling_back_to_the_parent_checkout() {
 }
 
 #[test]
-fn review3_reuse_rejects_a_checkout_pointing_to_a_foreign_common_directory() {
+fn reuse_rejects_a_checkout_pointing_to_a_foreign_common_directory() {
     let repo = Repo::new();
     let foreign = Repo::new();
     assert!(repo.rabi(&["create", "review"]).status.success());
@@ -14188,17 +14188,17 @@ fn assert_reuse_rejects_swapped_git_dir(primary: bool) {
 }
 
 #[test]
-fn review5_reuse_rejects_a_git_file_pointing_to_primary() {
+fn reuse_rejects_a_git_file_pointing_to_primary() {
     assert_reuse_rejects_swapped_git_dir(true);
 }
 
 #[test]
-fn review5_reuse_rejects_a_git_file_pointing_to_another_workspace() {
+fn reuse_rejects_a_git_file_pointing_to_another_workspace() {
     assert_reuse_rejects_swapped_git_dir(false);
 }
 
 #[test]
-fn review5_user_names_reject_reserved_selectors_without_records() {
+fn user_names_reject_reserved_selectors_without_records() {
     for command in ["adopt", "create"] {
         for name in [
             ".",
@@ -14244,7 +14244,7 @@ fn review5_user_names_reject_reserved_selectors_without_records() {
 }
 
 #[test]
-fn review3_forget_matches_show_and_list_after_record_removal() {
+fn forget_matches_show_and_list_after_record_removal() {
     for location in [
         "inside",
         "outside",
@@ -14349,7 +14349,7 @@ fn review3_forget_matches_show_and_list_after_record_removal() {
 }
 
 #[test]
-fn review1_forget_returns_the_workspace_after_removing_its_record() {
+fn forget_returns_the_workspace_after_removing_its_record() {
     let repo = Repo::new();
     let out = repo.create_recorded(&[
         "create",
@@ -14452,36 +14452,36 @@ fn assert_adopt_rejects_swapped_git_dir(primary: bool) {
 }
 
 #[test]
-fn review6_adopt_rejects_a_git_file_pointing_to_primary() {
+fn adopt_rejects_a_git_file_pointing_to_primary() {
     assert_adopt_rejects_swapped_git_dir(true);
 }
 
 #[test]
-fn review6_adopt_rejects_a_git_file_pointing_to_another_workspace() {
+fn adopt_rejects_a_git_file_pointing_to_another_workspace() {
     assert_adopt_rejects_swapped_git_dir(false);
 }
 
 #[test]
-fn review11_branch_reuse_refuses_primary_checkout() {
-    assert_review11_primary_refused(false, false);
+fn branch_reuse_refuses_primary_checkout() {
+    assert_primary_refused(false, false);
 }
 
 #[test]
-fn review11_named_branch_reuse_refuses_primary_checkout() {
-    assert_review11_primary_refused(false, true);
+fn named_branch_reuse_refuses_primary_checkout() {
+    assert_primary_refused(false, true);
 }
 
 #[test]
-fn review11_pr_reuse_refuses_primary_checkout() {
-    assert_review11_primary_refused(true, false);
+fn pr_reuse_refuses_primary_checkout() {
+    assert_primary_refused(true, false);
 }
 
 #[test]
-fn review11_named_pr_reuse_refuses_primary_checkout() {
-    assert_review11_primary_refused(true, true);
+fn named_pr_reuse_refuses_primary_checkout() {
+    assert_primary_refused(true, true);
 }
 
-fn assert_review11_primary_refused(pr: bool, named: bool) {
+fn assert_primary_refused(pr: bool, named: bool) {
     for recorded in [false, true] {
         let repo = Repo::new();
         let path = fake_gh_for_topic_pr(&repo);
@@ -14540,26 +14540,26 @@ fn assert_review11_primary_refused(pr: bool, named: bool) {
 }
 
 #[test]
-fn review11_adopt_skips_worktree_lock_files() {
-    assert_review11_stale_registration_skipped(true, false);
+fn adopt_skips_worktree_lock_files() {
+    assert_stale_registration_skipped(true, false);
 }
 
 #[test]
-fn review11_reuse_skips_worktree_lock_files() {
-    assert_review11_stale_registration_skipped(false, false);
+fn reuse_skips_worktree_lock_files() {
+    assert_stale_registration_skipped(false, false);
 }
 
 #[test]
-fn review11_adopt_skips_admin_directories_without_gitdir() {
-    assert_review11_stale_registration_skipped(true, true);
+fn adopt_skips_admin_directories_without_gitdir() {
+    assert_stale_registration_skipped(true, true);
 }
 
 #[test]
-fn review11_reuse_skips_admin_directories_without_gitdir() {
-    assert_review11_stale_registration_skipped(false, true);
+fn reuse_skips_admin_directories_without_gitdir() {
+    assert_stale_registration_skipped(false, true);
 }
 
-fn assert_review11_stale_registration_skipped(adopt: bool, directory: bool) {
+fn assert_stale_registration_skipped(adopt: bool, directory: bool) {
     let repo = Repo::new();
     let registrations = repo.repo.join(".git/worktrees");
     fs::create_dir_all(&registrations).unwrap();
@@ -16491,17 +16491,17 @@ exec "$REAL_GIT" "$@"
 }
 
 #[test]
-fn retirement_review6_remove_keeps_unpreserved_branch_when_hook_removes_directory() {
+fn retirement_remove_keeps_unpreserved_branch_when_hook_removes_directory() {
     assert_retirement_hook_loses_directory(false, false);
 }
 
 #[test]
-fn retirement_review6_remove_honors_keep_branch_when_hook_removes_directory() {
+fn retirement_remove_honors_keep_branch_when_hook_removes_directory() {
     assert_retirement_hook_loses_directory(false, true);
 }
 
 #[test]
-fn retirement_review6_gc_stops_when_hook_removes_directory() {
+fn retirement_gc_stops_when_hook_removes_directory() {
     assert_retirement_hook_loses_directory(true, false);
     assert_retirement_hook_loses_directory(true, true);
 }
@@ -16643,17 +16643,17 @@ fn assert_retirement_missing_remove_path(name_first: bool) {
 }
 
 #[test]
-fn retirement_review6_gc_keeps_fresh_branch_with_same_named_tag() {
+fn retirement_gc_keeps_fresh_branch_with_same_named_tag() {
     assert_retirement_creation_with_tag(false, false);
 }
 
 #[test]
-fn retirement_review6_gc_keeps_fresh_branch_with_same_named_tag_using_reflog() {
+fn retirement_gc_keeps_fresh_branch_with_same_named_tag_using_reflog() {
     assert_retirement_creation_with_tag(true, false);
 }
 
 #[test]
-fn retirement_review6_gc_keeps_synced_branch_with_same_named_tag_using_reflog() {
+fn retirement_gc_keeps_synced_branch_with_same_named_tag_using_reflog() {
     assert_retirement_creation_with_tag(true, true);
 }
 
@@ -16708,7 +16708,7 @@ fn assert_retirement_creation_with_tag(clear_creation: bool, synced: bool) {
 }
 
 #[test]
-fn retirement_review6_existing_branch_creation_uses_full_reflog_ref() {
+fn retirement_existing_branch_creation_uses_full_reflog_ref() {
     let repo = Repo::new();
     let creation = retirement_head_at(&repo, &repo.repo);
     repo.git(&["branch", "topic", "refs/heads/main"]);
@@ -16722,7 +16722,7 @@ fn retirement_review6_existing_branch_creation_uses_full_reflog_ref() {
 }
 
 #[test]
-fn retirement_review6_gc_default_uses_full_remote_ref_with_same_named_tag() {
+fn retirement_gc_default_uses_full_remote_ref_with_same_named_tag() {
     for ambiguous_refs in ["false", "true"] {
         let repo = Repo::new();
         assert!(repo
@@ -16762,17 +16762,17 @@ fn retirement_review6_gc_default_uses_full_remote_ref_with_same_named_tag() {
 }
 
 #[test]
-fn retirement_review7_keeps_reapplied_branch_without_distinct_evidence() {
+fn retirement_keeps_reapplied_branch_without_distinct_evidence() {
     assert_retirement_reapplication(false, false);
 }
 
 #[test]
-fn retirement_review7_keeps_reapplied_detached_without_distinct_evidence() {
+fn retirement_keeps_reapplied_detached_without_distinct_evidence() {
     assert_retirement_reapplication(true, false);
 }
 
 #[test]
-fn retirement_review7_accepts_reapplication_with_distinct_ordered_evidence() {
+fn retirement_accepts_reapplication_with_distinct_ordered_evidence() {
     assert_retirement_reapplication(false, true);
     assert_retirement_reapplication(true, true);
 }
@@ -16819,7 +16819,7 @@ fn assert_retirement_reapplication(detached: bool, preserved: bool) {
 }
 
 #[test]
-fn retirement_review7_keeps_commits_landed_in_different_order() {
+fn retirement_keeps_commits_landed_in_different_order() {
     for detached in [false, true] {
         let repo = Repo::new();
         let path = retirement_replay_workspace(&repo, detached);
@@ -16833,7 +16833,7 @@ fn retirement_review7_keeps_commits_landed_in_different_order() {
 }
 
 #[test]
-fn retirement_review7_keeps_evidence_from_discarded_side_history() {
+fn retirement_keeps_evidence_from_discarded_side_history() {
     for detached in [false, true] {
         let repo = Repo::new();
         let path = retirement_replay_workspace(&repo, detached);
@@ -16902,7 +16902,7 @@ fn assert_retirement_replay_is_unpreserved(repo: &Repo, detached: bool) {
             records
         );
     }
-    assert_retirement_review3_keeps_workspace(repo, "replay", detached);
+    assert_retirement_keeps_workspace(repo, "replay", detached);
     if !detached {
         let tip = repo
             .command("git", &["rev-parse", "refs/heads/replay"])
@@ -16914,12 +16914,12 @@ fn assert_retirement_replay_is_unpreserved(repo: &Repo, detached: bool) {
 }
 
 #[test]
-fn retirement_review5_remove_batches_long_base_history() {
+fn retirement_remove_batches_long_base_history() {
     assert_retirement_batches_long_history(false);
 }
 
 #[test]
-fn retirement_review5_gc_reuses_integration_observation() {
+fn retirement_gc_reuses_integration_observation() {
     assert_retirement_batches_long_history(true);
 }
 
@@ -17261,7 +17261,7 @@ fn retirement_gc_closed_pr_and_missing_gh_report_separate_skip_hints() {
 }
 
 #[test]
-fn retirement_bugbot_gc_keeps_live_unregistered_records() {
+fn retirement_gc_keeps_live_unregistered_records() {
     let repo = Repo::new();
     assert!(repo
         .rabi(&["create", "unregistered", "--no-setup"])
@@ -17353,7 +17353,7 @@ fn retirement_bugbot_gc_keeps_live_unregistered_records() {
 }
 
 #[test]
-fn retirement_bugbot_remove_reports_all_preflight_refusals() {
+fn retirement_remove_reports_all_preflight_refusals() {
     let repo = Repo::new();
     for name in ["clean", "dirty-one", "dirty-two"] {
         assert!(repo.rabi(&["create", name, "--no-setup"]).status.success());
@@ -17581,22 +17581,22 @@ fn retirement_review_keeps_unique_merge_conflict_resolution() {
 }
 
 #[test]
-fn retirement_review3_keeps_other_block_in_squash() {
+fn retirement_keeps_other_block_in_squash() {
     assert_retirement_keeps_other_block(false, false);
 }
 
 #[test]
-fn retirement_review3_keeps_other_block_in_rebased_history() {
+fn retirement_keeps_other_block_in_rebased_history() {
     assert_retirement_keeps_other_block(true, false);
 }
 
 #[test]
-fn retirement_review3_keeps_detached_other_block_in_squash() {
+fn retirement_keeps_detached_other_block_in_squash() {
     assert_retirement_keeps_other_block(false, true);
 }
 
 #[test]
-fn retirement_review3_keeps_detached_other_block_in_rebased_history() {
+fn retirement_keeps_detached_other_block_in_rebased_history() {
     assert_retirement_keeps_other_block(true, true);
 }
 
@@ -17631,21 +17631,21 @@ fn assert_retirement_keeps_other_block(rebased: bool, detached: bool) {
         let tip = retirement_head_at(&repo, &managed(&repo, "blocks"));
         repo.git(&["cherry-pick", tip.trim()]);
     }
-    assert_retirement_review3_keeps_workspace(&repo, "blocks", detached);
+    assert_retirement_keeps_workspace(&repo, "blocks", detached);
 }
 
 #[test]
-fn retirement_review3_keeps_gitlink_with_ignore_submodules_all() {
+fn retirement_keeps_gitlink_with_ignore_submodules_all() {
     assert_retirement_keeps_gitlink("diff.ignoreSubmodules", "all");
 }
 
 #[test]
-fn retirement_review3_keeps_gitlink_with_submodule_log() {
+fn retirement_keeps_gitlink_with_submodule_log() {
     assert_retirement_keeps_gitlink("diff.submodule", "log");
 }
 
 #[test]
-fn retirement_review3_accepts_exact_trees_despite_diff_settings() {
+fn retirement_accepts_exact_trees_despite_diff_settings() {
     let repo = Repo::new();
     let marker = repo.root.join("unexpected-diff-command");
     let command = format!("touch '{}'", marker.display());
@@ -17753,7 +17753,7 @@ fn assert_retirement_keeps_gitlink(key: &str, value: &str) {
                 repo.git(&["cherry-pick", tip.trim()]);
             }
             repo.git(&["config", key, value]);
-            assert_retirement_review3_keeps_workspace(&repo, "gitlink", detached);
+            assert_retirement_keeps_workspace(&repo, "gitlink", detached);
         }
     }
 }
@@ -17768,7 +17768,7 @@ fn retirement_head_at(repo: &Repo, path: &Path) -> String {
     text(&output.stdout)
 }
 
-fn assert_retirement_review3_keeps_workspace(repo: &Repo, name: &str, detached: bool) {
+fn assert_retirement_keeps_workspace(repo: &Repo, name: &str, detached: bool) {
     let path = managed(repo, name);
     let head = retirement_head_at(repo, &path);
     let dry_run = repo.rabi(&["remove", name, "--dry-run", "--json"]);
@@ -18073,12 +18073,12 @@ fn retirement_review_already_gone_is_visible_in_text_only() {
 }
 
 #[test]
-fn retirement_review2_remove_dry_run_suppresses_git_hooks() {
+fn retirement_remove_dry_run_suppresses_git_hooks() {
     assert_retirement_plan_suppresses_fsmonitor(false);
 }
 
 #[test]
-fn retirement_review2_gc_plan_suppresses_git_hooks() {
+fn retirement_gc_plan_suppresses_git_hooks() {
     assert_retirement_plan_suppresses_fsmonitor(true);
 }
 
@@ -18161,7 +18161,7 @@ fn assert_retirement_plan_suppresses_fsmonitor(gc: bool) {
 }
 
 #[test]
-fn retirement_review2_gc_keeps_fresh_detached_workspace() {
+fn retirement_gc_keeps_fresh_detached_workspace() {
     for unknown_creation in [false, true] {
         let repo = Repo::new();
         assert!(repo
@@ -18193,7 +18193,7 @@ fn retirement_review2_gc_keeps_fresh_detached_workspace() {
 }
 
 #[test]
-fn retirement_review2_gc_keeps_landed_detached_with_unknown_creation() {
+fn retirement_gc_keeps_landed_detached_with_unknown_creation() {
     for creation in ["missing", "invalid", "unrecorded"] {
         let repo = Repo::new();
         assert!(repo
@@ -18239,7 +18239,7 @@ fn retirement_review2_gc_keeps_landed_detached_with_unknown_creation() {
 }
 
 #[test]
-fn retirement_review2_gc_removes_detached_only_after_known_work_lands() {
+fn retirement_gc_removes_detached_only_after_known_work_lands() {
     let repo = Repo::new();
     assert!(repo
         .rabi(&["create", "review", "--detach", "--no-setup"])
@@ -18275,7 +18275,7 @@ fn retirement_review2_gc_removes_detached_only_after_known_work_lands() {
 }
 
 #[test]
-fn retirement_review2_gc_hint_accepts_leading_hyphen_alias() {
+fn retirement_gc_hint_accepts_leading_hyphen_alias() {
     for unpreserved in [false, true] {
         for apply in [false, true] {
             for json in [false, true] {
@@ -18356,7 +18356,7 @@ fn persist_retirement_hyphen_alias(repo: &Repo) {
 }
 
 #[test]
-fn retirement_review2_sync_base_hints_accept_leading_hyphen_alias() {
+fn retirement_sync_base_hints_accept_leading_hyphen_alias() {
     for missing_base in [false, true] {
         let repo = Repo::new();
         assert!(repo
@@ -18438,22 +18438,22 @@ fn retirement_review2_sync_base_hints_accept_leading_hyphen_alias() {
 }
 
 #[test]
-fn retirement_review4_rejects_own_branch_as_base() {
+fn retirement_rejects_own_branch_as_base() {
     assert_retirement_rejects_self_evidence("base");
 }
 
 #[test]
-fn retirement_review4_rejects_symbolic_base_to_own_branch() {
+fn retirement_rejects_symbolic_base_to_own_branch() {
     assert_retirement_rejects_self_evidence("symbolic-base");
 }
 
 #[test]
-fn retirement_review4_rejects_own_branch_as_upstream() {
+fn retirement_rejects_own_branch_as_upstream() {
     assert_retirement_rejects_self_evidence("upstream");
 }
 
 #[test]
-fn retirement_review4_rejects_symbolic_upstream_to_own_branch() {
+fn retirement_rejects_symbolic_upstream_to_own_branch() {
     assert_retirement_rejects_self_evidence("symbolic-upstream");
 }
 
@@ -18489,11 +18489,11 @@ fn assert_retirement_rejects_self_evidence(evidence: &str) {
         // Retarget after recording too: stored names must be resolved at deletion time.
         repo.git(&["symbolic-ref", "refs/heads/alias", "refs/heads/topic"]);
     }
-    assert_retirement_review3_keeps_workspace(&repo, "topic", false);
+    assert_retirement_keeps_workspace(&repo, "topic", false);
 }
 
 #[test]
-fn retirement_review4_rejects_detached_head_and_unrooted_commit_bases() {
+fn retirement_rejects_detached_head_and_unrooted_commit_bases() {
     for base in ["HEAD", "oid", "worktree-head"] {
         let repo = Repo::new();
         assert!(repo
@@ -18531,12 +18531,12 @@ fn retirement_review4_rejects_detached_head_and_unrooted_commit_bases() {
             // The observing checkout's HEAD can itself be detached at this tip.
             repo.git(&["checkout", "--detach", head.trim()]);
         }
-        assert_retirement_review3_keeps_workspace(&repo, "topic", true);
+        assert_retirement_keeps_workspace(&repo, "topic", true);
     }
 }
 
 #[test]
-fn retirement_review4_accepts_independent_refs_at_same_commit() {
+fn retirement_accepts_independent_refs_at_same_commit() {
     for evidence in [
         "branch",
         "tag",
@@ -18594,12 +18594,12 @@ fn retirement_review4_accepts_independent_refs_at_same_commit() {
 }
 
 #[test]
-fn retirement_review4_missing_git_only_workspace_hint_uses_link() {
+fn retirement_missing_git_only_workspace_hint_uses_link() {
     assert_retirement_missing_git_only_hint("linked");
 }
 
 #[test]
-fn retirement_review4_missing_git_only_workspace_hint_uses_git() {
+fn retirement_missing_git_only_workspace_hint_uses_git() {
     assert_retirement_missing_git_only_hint("unrecorded");
     assert_retirement_missing_git_only_hint("ambiguous");
 }
@@ -18690,7 +18690,7 @@ fn assert_retirement_missing_git_only_hint(kind: &str) {
 }
 
 #[test]
-fn retirement_review4_sync_missing_directory_hint_can_set_base() {
+fn retirement_sync_missing_directory_hint_can_set_base() {
     let repo = Repo::new();
     assert!(repo
         .rabi(&["create", "topic", "--no-setup"])
@@ -19223,7 +19223,7 @@ fn retirement_remove_branch_failure_and_unfinished_targets_use_one_retry() {
 }
 
 #[test]
-fn retirement_remove_review3_retry_runs_in_shell_with_deleted_cwd() {
+fn retirement_remove_retry_runs_in_shell_with_deleted_cwd() {
     let repo = Repo::new();
     for name in ["source", "remaining"] {
         assert!(repo.rabi(&["create", name, "--no-setup"]).status.success());

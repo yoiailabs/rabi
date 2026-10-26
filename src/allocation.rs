@@ -674,7 +674,7 @@ mod adopt_tests {
     }
 
     #[test]
-    fn review7_adopt_refresh_failure_preserves_saved_registration_and_returns_partial() {
+    fn adopt_refresh_failure_preserves_saved_registration_and_returns_partial() {
         let fixture = Fixture::new();
         crate::output::begin("adopt", true);
         let input = MetadataInput {
@@ -733,7 +733,7 @@ mod adopt_tests {
     }
 
     #[test]
-    fn review7_adopt_failure_before_save_keeps_original_status_and_has_no_data() {
+    fn adopt_failure_before_save_keeps_original_status_and_has_no_data() {
         let fixture = Fixture::new();
         crate::output::begin("adopt", true);
         let error = adopt_with_refresh(
