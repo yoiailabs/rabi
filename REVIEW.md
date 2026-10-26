@@ -1,6 +1,6 @@
 # Review guide
 
-This guide applies to the rabi repository. Read AGENTS.md, CLAUDE.md, the task and completion criteria, the diff, and check results. Review behavior and root causes, including guidance made inaccurate by the change.
+This guide applies to the rabi repository. Read AGENTS.md, CLAUDE.md, the task and completion criteria, the diff, and check results. Review behavior and root causes, including guidance made inaccurate by the change. Judge merge risk by behavioral and security substance under [risk-tiers.md](risk-tiers.md), not touched paths. A separate security review is required when trust, hooks, delete/remove (including gc), or sync behavior is actually affected; when in doubt, obtain it.
 
 Prioritize:
 

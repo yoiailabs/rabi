@@ -42,8 +42,9 @@ creating a YAML or file-based workflow:
    from both the implementer and ordinary reviewer. Give it the task, recorded
    initial merge-base, current HEAD, full proposed diff (including staged,
    unstaged, and intended new files), and `risk-tiers.md`. Require it to read the
-   full diff and relevant callers, classify the change rather than its author,
-   and return the fixed block below with evidence. Unknown risk is high;
+   full diff and relevant callers, judge behavioral and security substance rather
+   than paths or authors, and name the changed behavior and evidence in `reason`
+   when returning the fixed block below. Unknown risk is high;
    high requires `human_review: "yes"`, low/medium require `human_review: "no"`
    under current policy. An assessment including uncommitted changes is
    provisional; material changes invalidate it. A changed HEAD always requires
@@ -51,8 +52,9 @@ creating a YAML or file-based workflow:
 5. Spawn a fresh read-only reviewer subagent with the task, completion criteria,
    full proposed diff, actual check results, and risk assessment. Require
    `REVIEW.md` output and its repository context, including `CLAUDE.md`. If trust,
-   hooks, delete/remove (including gc), or sync is touched, also obtain a separate
-   fresh read-only security review under `risk-tiers.md`.
+   hooks, delete/remove (including gc), or sync behavior is actually affected,
+   also obtain a separate fresh read-only security review under `risk-tiers.md`;
+   when in doubt, obtain it. Touched paths alone do not trigger this review.
 6. Respond to every finding: fixed, or declined with evidence. Resolve every
    Important; a declined Important needs reviewer agreement. Delegate fixes,
    rerun affected checks, and use a fresh read-only reviewer for each round.

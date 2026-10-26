@@ -11,7 +11,7 @@
 
 ## Risk
 
-Replace every placeholder with the fresh read-only classifier's assessment of the current committed HEAD; see [risk-tiers.md](https://github.com/yoiailabs/rabi/blob/main/risk-tiers.md). Keep all six keys and quote `human_review` as a string.
+Replace every placeholder with the fresh read-only classifier's assessment of the current committed HEAD; see [risk-tiers.md](https://github.com/yoiailabs/rabi/blob/main/risk-tiers.md). Judge behavioral and security substance, not touched paths; name the changed behavior and supporting evidence in `reason`. Keep all six keys and quote `human_review` as a string.
 
 ```yaml
 tier: <low|medium|high>
