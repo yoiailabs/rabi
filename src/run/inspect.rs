@@ -18,6 +18,7 @@ pub(crate) struct WorkspaceOutput {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Summary {
     pub id: String,
+    pub provider: String,
     pub state: &'static str,
     pub session_id: Option<String>,
     skill: String,
@@ -34,6 +35,8 @@ pub(crate) struct LastLaunch {
     exit_code: Option<i32>,
     pub stop_reason: Option<&'static str>,
     message: Option<String>,
+    #[serde(skip_serializing_if = "super::is_zero")]
+    insecure_tool_calls: u64,
     dir: Option<String>,
     prompt_path: Option<String>,
     pub events_path: Option<String>,
@@ -106,6 +109,7 @@ fn read(root: &Path, path: &str) -> Result<Option<Summary>> {
                 StopReason::Error => "error",
             }),
             message: launch.message.clone(),
+            insecure_tool_calls: launch.insecure_tool_calls,
             dir: dir.is_dir().then(|| dir.to_string_lossy().into_owned()),
             prompt_path: existing_file(&dir.join("prompt.md")),
             events_path: existing_file(&dir.join("events.jsonl")),
@@ -116,6 +120,7 @@ fn read(root: &Path, path: &str) -> Result<Option<Summary>> {
     Ok(Some(Summary {
         id,
         state,
+        provider: record.provider,
         session_id: record.session_id,
         skill: record.skill,
         launches: record.launches.len(),

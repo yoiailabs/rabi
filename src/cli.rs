@@ -761,12 +761,20 @@ fn run_parent(args: &[String]) -> Result<i32> {
         || (selector.is_none() && task.is_some_and(|s| matches!(s, "start" | "show")))
     {
         return Err(Error::validation(
-            "Usage: rabi run [--skill VALUE] [--fresh] [--timeout DURATION] [SEL --] [TASK | -]",
+            "Usage: rabi run [--provider codex|cursor] [--skill VALUE] [--fresh] [--timeout DURATION] [SEL --] [TASK | -]",
         ));
     }
     if selector.is_none() && parsed.value("repo").is_some() {
         return Err(Error::validation("Run allows -R/--repo only with SEL --"));
     }
+    let provider = parsed
+        .value("provider")
+        .map(|value| {
+            value
+                .parse::<crate::provider::Provider>()
+                .map_err(|_| Error::validation("--provider requires codex or cursor"))
+        })
+        .transpose()?;
     let timeout = crate::run::timeout(parsed.value("timeout").unwrap_or("2h"))?;
     let cwd = std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?;
     let repository = selected_repository(&parsed)?;
@@ -804,6 +812,7 @@ fn run_parent(args: &[String]) -> Result<i32> {
         &tree,
         parsed.value("skill"),
         parsed.flag("fresh"),
+        provider,
         task.as_deref(),
         timeout,
     )?;
@@ -818,7 +827,15 @@ fn run_parent(args: &[String]) -> Result<i32> {
         }
     }
     if let Some(message) = report.launch.message.as_deref() {
-        crate::output::failure(Error::msg(message).to_json(GENERAL).error);
+        if report.exit == 0 {
+            crate::output::warning("run_audit", message);
+        } else {
+            let error = match report.failure {
+                Some(error) => error.to_json(GENERAL).error,
+                None => Error::msg(message).to_json(GENERAL).error,
+            };
+            crate::output::failure(error);
+        }
     } else if report.exit != 0 {
         crate::output::failure(
             Error::CommandFailed {
@@ -1797,6 +1814,7 @@ fn command_options(key: &str) -> Vec<Opt> {
     let mut options = match key {
         "run" => vec![
             repo_flag(),
+            value_flag("provider", None),
             value_flag("skill", None),
             flag("fresh", None),
             value_flag("timeout", None),

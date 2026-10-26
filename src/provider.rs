@@ -13,10 +13,13 @@ use crate::error::{Error, Result};
 const MODEL: &str = "gpt-6.1-sol";
 const EFFORT: &str = "model_reasoning_effort=\"high\"";
 
+mod cursor;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum Provider {
     Codex,
+    Cursor,
 }
 
 pub(crate) enum Session<'a> {
@@ -38,10 +41,14 @@ pub(crate) struct StopPolicy {
     pub signal: i32,
     pub grace: Duration,
     pub force_signal: i32,
+    pub term_grace: Option<Duration>,
 }
 
 pub(crate) struct Final {
     pub session_id: String,
+    pub is_error: bool,
+    pub insecure_tool_calls: u64,
+    pub protocol_error: Option<String>,
 }
 
 impl FromStr for Provider {
@@ -50,6 +57,7 @@ impl FromStr for Provider {
     fn from_str(name: &str) -> Result<Self> {
         match name {
             "codex" => Ok(Self::Codex),
+            "cursor" => Ok(Self::Cursor),
             _ => Err(Error::msg(format!("Unknown run provider: {name}"))),
         }
     }
@@ -59,18 +67,21 @@ impl Provider {
     pub fn name(self) -> &'static str {
         match self {
             Self::Codex => "codex",
+            Self::Cursor => "cursor",
         }
     }
 
     pub fn binary(self) -> &'static str {
         match self {
             Self::Codex => "codex",
+            Self::Cursor => "cursor-agent",
         }
     }
 
     pub fn display_name(self) -> &'static str {
         match self {
             Self::Codex => "Codex",
+            Self::Cursor => "Cursor",
         }
     }
 
@@ -100,12 +111,14 @@ impl Provider {
                 ));
                 Ok(command)
             }
+            Self::Cursor => cursor::command(workspace, dir, session),
         }
     }
 
     pub fn observe(self, line: &str) -> Option<String> {
         match self {
             Self::Codex => thread_id(line),
+            Self::Cursor => cursor::session_id(line),
         }
     }
 
@@ -117,15 +130,21 @@ impl Provider {
                 for line in BufReader::new(fs::File::open(events).map_err(io_error)?).lines() {
                     let line = line.map_err(io_error)?;
                     if let Some(session_id) = self.observe(&line) {
-                        return Ok(Final { session_id });
+                        return Ok(Final {
+                            session_id,
+                            is_error: false,
+                            insecure_tool_calls: 0,
+                            protocol_error: None,
+                        });
                     }
                 }
                 Err(Error::msg("Codex did not report thread.started.thread_id"))
             }
+            Self::Cursor => cursor::finalize(events),
         }
     }
 
-    pub fn probe_session(self, id: &str) -> Result<Probe> {
+    pub fn probe_session(self, id: &str, workspace: &Path) -> Result<Probe> {
         match self {
             Self::Codex => has_rollout(id).map(|present| {
                 if present {
@@ -134,6 +153,14 @@ impl Provider {
                     Probe::Missing
                 }
             }),
+            Self::Cursor => cursor::probe_session(id, workspace),
+        }
+    }
+
+    pub fn prepare_workspace(self, workspace: &Path, common_dir: &Path) -> Result<()> {
+        match self {
+            Self::Codex => Ok(()),
+            Self::Cursor => cursor::prepare_workspace(workspace, common_dir),
         }
     }
 
@@ -143,6 +170,13 @@ impl Provider {
                 signal: 15,
                 grace: Duration::from_millis(200),
                 force_signal: 9,
+                term_grace: None,
+            },
+            Self::Cursor => StopPolicy {
+                signal: 2,
+                grace: Duration::from_millis(200),
+                force_signal: 9,
+                term_grace: Some(Duration::from_millis(200)),
             },
         }
     }
@@ -267,6 +301,17 @@ mod tests {
     #[test]
     fn provider_name_round_trips_and_unknown_names_are_rejected() {
         assert_eq!("codex".parse::<Provider>().unwrap(), Provider::Codex);
+        assert_eq!("cursor".parse::<Provider>().unwrap(), Provider::Cursor);
+        assert_eq!(Provider::Cursor.name(), "cursor");
+        assert_eq!(Provider::Cursor.display_name(), "Cursor");
+        assert_eq!(
+            serde_json::to_string(&Provider::Cursor).unwrap(),
+            "\"cursor\""
+        );
+        assert_eq!(
+            serde_json::from_str::<Provider>("\"cursor\"").unwrap(),
+            Provider::Cursor
+        );
         assert_eq!(Provider::Codex.name(), "codex");
         assert_eq!(Provider::Codex.binary(), "codex");
         assert_eq!(Provider::Codex.display_name(), "Codex");
@@ -404,11 +449,15 @@ mod tests {
         const CHILD: &str = "RABI_TEST_PROVIDER_PROBE_CHILD";
         if std::env::var_os(CHILD).is_some() {
             assert_eq!(
-                Provider::Codex.probe_session("present").unwrap(),
+                Provider::Codex
+                    .probe_session("present", Path::new("/ignored"))
+                    .unwrap(),
                 Probe::Present
             );
             assert_eq!(
-                Provider::Codex.probe_session("missing").unwrap(),
+                Provider::Codex
+                    .probe_session("missing", Path::new("/ignored"))
+                    .unwrap(),
                 Probe::Missing
             );
             return;
@@ -447,6 +496,16 @@ mod tests {
                 signal: 15,
                 grace: Duration::from_millis(200),
                 force_signal: 9,
+                term_grace: None,
+            }
+        );
+        assert_eq!(
+            Provider::Cursor.stop_policy(),
+            StopPolicy {
+                signal: 2,
+                grace: Duration::from_millis(200),
+                force_signal: 9,
+                term_grace: Some(Duration::from_millis(200)),
             }
         );
     }
