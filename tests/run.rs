@@ -3656,9 +3656,9 @@ fn handoff_all_providers_capture_inject_grant_and_attribute_appends() {
             _ => "codex",
         });
         let script = fs::read_to_string(&binary).unwrap().replace("(root/'cwd').write_text(os.getcwd())", r#"(root/'cwd').write_text(os.getcwd())
-(root/'run-env.json').write_text(json.dumps({k:os.environ.get(k) for k in ['RABI_RUN_ID','RABI_RUN_LAUNCH','RABI_RUN_PROVIDER','RABI_WORKSPACE_ID']}))
+(root/'run-env.json').write_text(json.dumps({k:os.environ.get(k) for k in ['RABI_BIN','RABI_RUN_ID','RABI_RUN_LAUNCH','RABI_RUN_PROVIDER','RABI_WORKSPACE_ID']}))
 if os.environ.get('ADD_HANDOFF'):
-    subprocess.run([os.environ['RABI_TEST_BIN'], 'handoff', 'add', '--kind', 'checkpoint', 'parent checkpoint'], check=True, stdout=subprocess.DEVNULL)
+    subprocess.run([os.environ['RABI_BIN'], 'handoff', 'add', '--kind', 'checkpoint', 'parent checkpoint'], check=True, stdout=subprocess.DEVNULL)
 "#);
         fs::write(&binary, script).unwrap();
         let first = f.provider_run(
@@ -3674,9 +3674,22 @@ if os.environ.get('ADD_HANDOFF'):
             ],
         );
         let memory = f.memory();
+        let rabi_bin = fs::canonicalize(env!("CARGO_BIN_EXE_rabi")).unwrap();
+        let command = if rabi_bin
+            .as_os_str()
+            .as_encoded_bytes()
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || b"/_-.@%+=:,".contains(b))
+        {
+            rabi_bin.to_str().unwrap().to_owned()
+        } else {
+            format!("'{}'", rabi_bin.to_str().unwrap().replace('\'', "'\\''"))
+        };
+        let reminder_command = format!("`{command} handoff add --kind checkpoint -`");
         assert_eq!(f.handoff()["intent"], "original task");
         let prompt = fs::read_to_string(f.run_dir().join("launches/1/prompt.md")).unwrap();
         assert!(prompt.starts_with("<rabi-handoff workspace=\"ws_"));
+        assert!(prompt.contains(&reminder_command));
         assert!(prompt.ends_with("Follow skill `x`.\n\noriginal task"));
         assert_eq!(
             first["launch"]["handoff"]["bytes"].as_u64().unwrap() as usize,
@@ -3692,6 +3705,7 @@ if os.environ.get('ADD_HANDOFF'):
         assert_eq!(args[grant + 1], memory.to_str().unwrap());
         let env: Value =
             serde_json::from_slice(&fs::read(f.root.join("run-env.json")).unwrap()).unwrap();
+        assert_eq!(env["RABI_BIN"], rabi_bin.to_str().unwrap());
         assert_eq!(env["RABI_RUN_ID"], first["run"]["id"]);
         assert_eq!(env["RABI_RUN_LAUNCH"], "1");
         assert_eq!(env["RABI_RUN_PROVIDER"], provider);
@@ -3699,11 +3713,7 @@ if os.environ.get('ADD_HANDOFF'):
         if provider != "codex" {
             cmd.env("PATH", f.root.join("bin"));
         }
-        let out = cmd
-            .env("ADD_HANDOFF", "1")
-            .env("RABI_TEST_BIN", env!("CARGO_BIN_EXE_rabi"))
-            .output()
-            .unwrap();
+        let out = cmd.env("ADD_HANDOFF", "1").output().unwrap();
         assert!(
             out.status.success(),
             "{}",
@@ -3716,6 +3726,7 @@ if os.environ.get('ADD_HANDOFF'):
         f.json(&["handoff", "add", "foreign human note", "--json"]);
         let resumed = f.provider_run(provider, &["run", "--json"]);
         let prompt = fs::read_to_string(f.run_dir().join("launches/3/prompt.md")).unwrap();
+        assert!(prompt.contains(&reminder_command));
         assert!(prompt.contains("foreign human note"));
         assert!(!prompt.contains("parent checkpoint"));
         assert!(!prompt.contains("original task"));
@@ -3748,6 +3759,7 @@ if os.environ.get('ADD_HANDOFF'):
         let prompt = fs::read_to_string(f.run_dir().join("launches/1/prompt.md")).unwrap();
         assert!(prompt.contains("original task"));
         assert!(prompt.contains("parent checkpoint"));
+        assert!(prompt.contains(&reminder_command));
         assert_eq!(prompt.matches("new request").count(), 1);
         let before = fs::read(memory.join("handoff.jsonl")).unwrap();
         let disabled = f.provider_run(
@@ -3771,6 +3783,7 @@ if os.environ.get('ADD_HANDOFF'):
         assert!(!last.as_array().unwrap().contains(&Value::from("--add-dir")));
         let env: Value =
             serde_json::from_slice(&fs::read(f.root.join("run-env.json")).unwrap()).unwrap();
+        assert!(env["RABI_BIN"].is_null());
         assert!(env["RABI_RUN_ID"].is_null());
     }
 }

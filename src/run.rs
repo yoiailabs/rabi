@@ -414,6 +414,7 @@ pub(crate) fn execute(
         }
         None
     };
+    let rabi_bin = crate::handoff::current_executable();
     let previous_started = record.launches.last().map(|l| l.started_at.clone());
     let run_id = record.id.clone();
     let dir = runs.join(&record.id);
@@ -434,6 +435,7 @@ pub(crate) fn execute(
                 .as_deref()
                 .map(|since| (run_id.as_str(), since));
             let (stanza, injection) = snapshot.render(
+                &rabi_bin,
                 tree.metadata.id.as_deref().unwrap_or_default(),
                 resume,
                 excluded.as_deref(),
@@ -477,6 +479,7 @@ pub(crate) fn execute(
             if memory.is_some() {
                 let n = record.launches.last().map_or(0, |l| l.n);
                 command
+                    .env("RABI_BIN", &rabi_bin)
                     .env("RABI_RUN_ID", &run_id)
                     .env("RABI_RUN_LAUNCH", n.to_string())
                     .env("RABI_RUN_PROVIDER", provider.name())
@@ -490,6 +493,7 @@ pub(crate) fn execute(
                     .env("RABI_WORKSPACE_PATH", &tree.path);
             } else {
                 command
+                    .env_remove("RABI_BIN")
                     .env_remove("RABI_RUN_ID")
                     .env_remove("RABI_RUN_LAUNCH")
                     .env_remove("RABI_RUN_PROVIDER");

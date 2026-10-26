@@ -5,7 +5,7 @@
 ### Added
 
 - `rabi handoff show|path|add` stores original tasks and durable notes across parent providers. Recorded workspaces capture intent once, preserve it across `--fresh`, and append later tasks as requests. First/fresh launches inject up to 24 KiB; resume injects up to 8 KiB of new foreign notes. `--no-handoff` disables memory capture, injection and reminders.
-- Handoff-enabled parents receive only their memory directory through `--add-dir`, plus `RABI_RUN_ID`, `RABI_RUN_LAUNCH`, `RABI_RUN_PROVIDER` and workspace environment variables. Memory is private XDG state under `repositories/`, bound to workspace id and creation time; remove/gc/forget retain it. Existing run and workspace record storage stays in the git common directory.
+- Handoff-enabled parents receive only their memory directory through `--add-dir`, plus `RABI_BIN`, `RABI_RUN_ID`, `RABI_RUN_LAUNCH`, `RABI_RUN_PROVIDER` and workspace environment variables. Memory is private XDG state under `repositories/`, bound to workspace id and creation time; remove/gc/forget retain it. Existing run and workspace record storage stays in the git common directory.
 
 - `rabi run --provider claude` starts and resumes Claude Code parents with requested UUID sessions, enforced auto permission mode, result-derived answers, and INT-first cleanup. Resume follows the recorded provider; Codex remains the default.
 - `rabi run --provider cursor` starts and resumes Cursor CLI parents, with sandbox setup, result-derived answers, session verification, and audit notes for completed tool calls requesting execution outside the sandbox. Provider selection is available on first/fresh runs; resume uses the recorded provider and refuses a different selection before changing state. Codex remains the default. Run summaries include `provider`.
@@ -13,6 +13,8 @@
 - `rabi list` and `rabi show` expose the current parent run state, session id, and latest launch log/answer paths in JSON, with compact run state in text. Run inspection is read-only; stale running records display as stopped, and invalid records produce a warning without failing inspection.
 
 ### Fixed
+
+- Handoff instructions name the launching rabi executable (canonical absolute path when available, shell-quoted when needed) instead of relying on the parent’s PATH. Handoff-enabled parents receive the same unquoted path as `RABI_BIN`; executable lookup failure falls back to `rabi`.
 
 - `rabi run` now stops and reaps the parent process group as soon as a resumed launch observes a different Codex thread id, after saving the observed launch id. The original session id is retained; the run records an error and exits 1 instead of letting the different conversation keep running.
 
