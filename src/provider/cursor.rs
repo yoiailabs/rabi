@@ -48,7 +48,7 @@ pub(super) fn command(
     Ok(command)
 }
 
-fn resolve_binary() -> Result<PathBuf> {
+pub(super) fn resolve_binary() -> Result<PathBuf> {
     resolve_binary_in(std::env::var_os("PATH").as_deref()).ok_or_else(|| Error::Spawn {
         command: "cursor-agent".into(),
         details: "Cursor CLI was not found on PATH (tried cursor-agent and agent). Install Cursor CLI from https://cursor.com/cli, then run `cursor-agent login` (or `agent login`) before retrying.".into(),

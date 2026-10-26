@@ -12,12 +12,15 @@ pub(super) fn command(
     session: Session<'_>,
     memory: Option<&Path>,
 ) -> Result<Command> {
-    let binary = super::resolve_binary_in(std::env::var_os("PATH").as_deref(), &["claude"])
+    command_with_binary(resolve_binary()?, workspace, dir, session, memory)
+}
+
+pub(super) fn resolve_binary() -> Result<PathBuf> {
+    super::resolve_binary_in(std::env::var_os("PATH").as_deref(), &["claude"])
         .ok_or_else(|| Error::Spawn {
             command: "claude".into(),
             details: "Claude Code CLI was not found on PATH. Install Claude Code, then run `claude` to log in before retrying.".into(),
-        })?;
-    command_with_binary(binary, workspace, dir, session, memory)
+        })
 }
 
 fn command_with_binary(

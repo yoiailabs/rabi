@@ -761,7 +761,7 @@ fn run_parent(args: &[String]) -> Result<i32> {
         || (selector.is_none() && task.is_some_and(|s| matches!(s, "start" | "show")))
     {
         return Err(Error::validation(
-            "Usage: rabi run [--provider codex|cursor|claude] [--skill VALUE] [--fresh] [--timeout DURATION] [SEL --] [TASK | -]",
+            "Usage: rabi run [--provider codex|cursor|claude] [--skill VALUE] [--fresh] [--no-handoff] [--timeout DURATION] [SEL --] [TASK | -]",
         ));
     }
     if selector.is_none() && parsed.value("repo").is_some() {

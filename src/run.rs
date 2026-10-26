@@ -394,17 +394,24 @@ pub(crate) fn execute(
     } else {
         format!("You are the parent agent for this rabi run in workspace {} on branch {}. You manage progress: delegate implementation and review to your own subagents, gather the information you need yourself (git, gh, tests), give follow-up instructions until the work is really done, and decide completion.\n\nFollow skill `{}`.\n\n{}", tree.path, tree.branch, record.skill, task.unwrap_or_default())
     };
+    // Fail provider preflight before memory capture, while retaining the normal
+    // failed-launch record and error reporting below.
+    let prepared = provider
+        .check_binary()
+        .and_then(|()| provider.prepare_workspace(Path::new(&record.workspace.path), &common_dir));
     let handoff_error = |e: Error| {
         let message = format!(
             "Cannot prepare handoff memory: {e}. Use `rabi run --no-handoff` to bypass memory."
         );
-        if matches!(e, Error::Validation(_)) {
-            Error::validation(message)
-        } else {
-            Error::msg(message)
+        match e {
+            Error::Validation(_) => Error::validation(message),
+            Error::Status { code, .. } => Error::Status { code, message },
+            _ => Error::msg(message),
         }
     };
-    let memory = if options.handoff && tree.metadata.id.is_some() {
+    let memory = if prepared.is_err() {
+        None
+    } else if options.handoff && tree.metadata.id.is_some() {
         let memory = crate::handoff::Memory::locate(root, tree).map_err(handoff_error)?;
         memory.ensure().map_err(handoff_error)?;
         Some(memory)
@@ -429,8 +436,11 @@ pub(crate) fn execute(
                 launch: n,
                 provider,
             };
-            let excluded = memory.capture(task, source).map_err(handoff_error)?;
-            let snapshot = memory.read().map_err(handoff_error)?;
+            let captured = memory.capture(task, source).map_err(handoff_error)?;
+            let mut snapshot = memory.read().map_err(handoff_error)?;
+            if captured.wrote_intent {
+                snapshot.intent = None;
+            }
             let resume = previous_started
                 .as_deref()
                 .map(|since| (run_id.as_str(), since));
@@ -438,7 +448,7 @@ pub(crate) fn execute(
                 &rabi_bin,
                 tree.metadata.id.as_deref().unwrap_or_default(),
                 resume,
-                excluded.as_deref(),
+                captured.entry_id.as_deref(),
             );
             Ok((format!("{stanza}{prompt}"), Some(injection)))
         } else {
@@ -467,83 +477,81 @@ pub(crate) fn execute(
         },
     };
     let mut claude_validation_failed = false;
-    let launched = provider
-        .prepare_workspace(Path::new(&record.workspace.path), &common_dir)
-        .and_then(|()| {
-            let mut command = provider.command(
-                Path::new(&tree.path),
-                &launch_dir,
-                session,
-                memory.as_ref().map(|m| m.path.as_path()),
-            )?;
-            if memory.is_some() {
-                let n = record.launches.last().map_or(0, |l| l.n);
-                command
-                    .env("RABI_BIN", &rabi_bin)
-                    .env("RABI_RUN_ID", &run_id)
-                    .env("RABI_RUN_LAUNCH", n.to_string())
-                    .env("RABI_RUN_PROVIDER", provider.name())
-                    .env("RABI", "1")
-                    .env("RABI_REPO_PATH", root)
-                    .env("RABI_WORKSPACE", &tree.name)
-                    .env(
-                        "RABI_WORKSPACE_ID",
-                        tree.metadata.id.as_deref().unwrap_or_default(),
-                    )
-                    .env("RABI_WORKSPACE_PATH", &tree.path);
-            } else {
-                command
-                    .env_remove("RABI_BIN")
-                    .env_remove("RABI_RUN_ID")
-                    .env_remove("RABI_RUN_LAUNCH")
-                    .env_remove("RABI_RUN_PROVIDER");
-            }
-            lifecycle::launch(
-                provider,
-                command,
-                &launch_dir,
-                options.timeout,
-                &mut lock,
-                |observation| {
-                    let mut stop = false;
-                    let observed = observation.session_id.or_else(|| {
-                        observation
-                            .validated
-                            .then(|| {
-                                record
-                                    .launches
-                                    .last()
-                                    .and_then(|launch| launch.session_id.clone())
-                            })
-                            .flatten()
-                    });
-                    if let Some(id) = observed {
-                        stop = observe_session(&mut record, id, resuming, observation.validated)?;
+    let launched = prepared.and_then(|()| {
+        let mut command = provider.command(
+            Path::new(&tree.path),
+            &launch_dir,
+            session,
+            memory.as_ref().map(|m| m.path.as_path()),
+        )?;
+        if memory.is_some() {
+            let n = record.launches.last().map_or(0, |l| l.n);
+            command
+                .env("RABI_BIN", &rabi_bin)
+                .env("RABI_RUN_ID", &run_id)
+                .env("RABI_RUN_LAUNCH", n.to_string())
+                .env("RABI_RUN_PROVIDER", provider.name())
+                .env("RABI", "1")
+                .env("RABI_REPO_PATH", root)
+                .env("RABI_WORKSPACE", &tree.name)
+                .env(
+                    "RABI_WORKSPACE_ID",
+                    tree.metadata.id.as_deref().unwrap_or_default(),
+                )
+                .env("RABI_WORKSPACE_PATH", &tree.path);
+        } else {
+            command
+                .env_remove("RABI_BIN")
+                .env_remove("RABI_RUN_ID")
+                .env_remove("RABI_RUN_LAUNCH")
+                .env_remove("RABI_RUN_PROVIDER");
+        }
+        lifecycle::launch(
+            provider,
+            command,
+            &launch_dir,
+            options.timeout,
+            &mut lock,
+            |observation| {
+                let mut stop = false;
+                let observed = observation.session_id.or_else(|| {
+                    observation
+                        .validated
+                        .then(|| {
+                            record
+                                .launches
+                                .last()
+                                .and_then(|launch| launch.session_id.clone())
+                        })
+                        .flatten()
+                });
+                if let Some(id) = observed {
+                    stop = observe_session(&mut record, id, resuming, observation.validated)?;
+                }
+                if let Some(error) = observation.error {
+                    let launch = record
+                        .launches
+                        .last_mut()
+                        .ok_or_else(|| Error::msg("Missing launch record"))?;
+                    launch.message = Some(error);
+                    stop = true;
+                }
+                if provider == Provider::Claude && stop {
+                    claude_validation_failed = true;
+                    if !resuming {
+                        record.session_id = None;
                     }
-                    if let Some(error) = observation.error {
-                        let launch = record
-                            .launches
-                            .last_mut()
-                            .ok_or_else(|| Error::msg("Missing launch record"))?;
-                        launch.message = Some(error);
-                        stop = true;
-                    }
-                    if provider == Provider::Claude && stop {
-                        claude_validation_failed = true;
-                        if !resuming {
-                            record.session_id = None;
-                        }
-                    }
-                    save(&dir, &record).map_err(|e| {
-                        Error::msg(format!(
-                            "Failed to persist {} session id: {e}",
-                            provider.display_name()
-                        ))
-                    })?;
-                    Ok(stop)
-                },
-            )
-        });
+                }
+                save(&dir, &record).map_err(|e| {
+                    Error::msg(format!(
+                        "Failed to persist {} session id: {e}",
+                        provider.display_name()
+                    ))
+                })?;
+                Ok(stop)
+            },
+        )
+    });
     // Stream-result providers scan the full log once after process reaping even
     // when the session id was already observed during launch.
     let stream_final =

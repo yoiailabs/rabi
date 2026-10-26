@@ -2238,7 +2238,8 @@
     "run_read",
     "handoff_unrecorded",
     "handoff_invalid_line",
-    "handoff_identity"
+    "handoff_identity",
+    "handoff_request_skipped"
   ],
   "schemaVersion": 2
 }

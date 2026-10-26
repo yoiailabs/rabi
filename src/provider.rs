@@ -177,6 +177,19 @@ impl Provider {
         }
     }
 
+    pub fn check_binary(self) -> Result<()> {
+        match self {
+            Self::Codex => resolve_binary_in(std::env::var_os("PATH").as_deref(), &["codex"])
+                .ok_or_else(|| Error::Spawn {
+                    command: "codex".into(),
+                    details: "Codex CLI was not found on PATH".into(),
+                }),
+            Self::Cursor => cursor::resolve_binary(),
+            Self::Claude => claude::resolve_binary(),
+        }
+        .map(|_| ())
+    }
+
     pub fn prepare_workspace(self, workspace: &Path, common_dir: &Path) -> Result<()> {
         match self {
             Self::Codex | Self::Claude => Ok(()),
