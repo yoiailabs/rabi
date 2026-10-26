@@ -1,17 +1,17 @@
 # Changelog
 
-## Unreleased
+## v7.2.0 (2026-10-26)
 
 ### Added
 
-- `rabi run --provider claude` starts and resumes Claude Code parents with requested UUID sessions, enforced auto permission mode, result-derived answers, and INT-first cleanup. Resume follows the recorded provider; Codex remains the default.
-- `rabi run --provider cursor` starts and resumes Cursor CLI parents, with sandbox setup, result-derived answers, session verification, and audit notes for completed tool calls requesting execution outside the sandbox. Provider selection is available on first/fresh runs; resume uses the recorded provider and refuses a different selection before changing state. Codex remains the default. Run summaries include `provider`.
-- `rabi run SEL -- [TASK | -]` launches or resumes a selected workspace without changing directory; `-R/--repo` can select its repository when SEL is supplied. Existing task-only forms retain their meanings.
-- `rabi list` and `rabi show` expose the current parent run state, session id, and latest launch log/answer paths in JSON, with compact run state in text. Run inspection is read-only; stale running records display as stopped, and invalid records produce a warning without failing inspection.
+- `rabi run --provider claude` starts and resumes Claude Code parents with requested UUID sessions, enforced auto permission mode, result-derived answers, and INT-first cleanup. Resume follows the recorded provider; Codex remains the default. (#921)
+- `rabi run --provider cursor` starts and resumes Cursor CLI parents, with sandbox setup, result-derived answers, session verification, and audit notes for completed tool calls requesting execution outside the sandbox. Provider selection is available on first/fresh runs; resume uses the recorded provider and refuses a different selection before changing state. Codex remains the default. Run summaries include `provider`. (#920)
+- `rabi run SEL -- [TASK | -]` launches or resumes a selected workspace without changing directory; `-R/--repo` can select its repository when SEL is supplied. Existing task-only forms retain their meanings. (#914)
+- `rabi list` and `rabi show` expose the current parent run state, session id, and latest launch log/answer paths in JSON, with compact run state in text. Run inspection is read-only; stale running records display as stopped, and invalid records produce a warning without failing inspection. (#914)
 
 ### Fixed
 
-- `rabi run` now stops and reaps the parent process group as soon as a resumed launch observes a different Codex thread id, after saving the observed launch id. The original session id is retained; the run records an error and exits 1 instead of letting the different conversation keep running.
+- `rabi run` now stops and reaps the parent process group as soon as a resumed launch observes a different Codex thread id, after saving the observed launch id. The original session id is retained; the run records an error and exits 1 instead of letting the different conversation keep running. (#916)
 
 ## v7.1.0 (2026-10-25)
 

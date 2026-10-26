@@ -1,6 +1,6 @@
 [package]
 name = "rabi"
-version = "7.1.0"
+version = "7.2.0"
 edition = "2021"
 rust-version = "1.89"
 publish = false
