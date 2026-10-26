@@ -3902,6 +3902,96 @@ if os.environ.get('ADD_HANDOFF'):
 }
 
 #[test]
+fn handoff_resume_uses_last_injection_across_disabled_and_failed_launches() {
+    for failed_preflight in [false, true] {
+        let f = Fixture::new();
+        f.record_workspace();
+        f.json(&["run", "--skill", "x", "original task", "--json"]);
+        let note = f.json(&["handoff", "add", "unseen human note", "--json"]);
+        if failed_preflight {
+            // Keep the fake provider isolated while making the binary check fail.
+            f.fake_claude();
+            let binary = f.root.join("bin/codex");
+            let saved = f.root.join("saved-codex");
+            fs::rename(&binary, &saved).unwrap();
+            let out = f
+                .command(&["run", "--json"])
+                .env("PATH", f.root.join("bin"))
+                .output()
+                .unwrap();
+            assert_error(out, 1, "not found on PATH");
+            fs::rename(saved, binary).unwrap();
+        } else {
+            f.json(&["run", "--no-handoff", "--json"]);
+        }
+        assert!(f.state()["launches"][1]["handoff"].is_null());
+        let resumed = f.json(&["run", "--json"]);
+        assert_eq!(
+            resumed["launch"]["handoff"]["injectedEntryIds"],
+            serde_json::json!([note["id"]])
+        );
+        let prompt = fs::read_to_string(f.run_dir().join("launches/3/prompt.md")).unwrap();
+        assert!(prompt.contains("unseen human note"));
+        assert!(!prompt.contains("Original task"));
+        let again = f.json(&["run", "--json"]);
+        assert!(again["launch"]["handoff"]["injectedEntryIds"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[test]
+fn handoff_resume_without_prior_injection_carries_full_snapshot() {
+    let f = Fixture::new();
+    f.record_workspace();
+    f.json(&["run", "--skill", "x", "original task", "--json"]);
+    let note = f.json(&["handoff", "add", "older human note", "--json"]);
+    f.json(&["run", "--fresh", "--no-handoff", "--skill", "x", "--json"]);
+    assert!(f.state()["launches"][0]["handoff"].is_null());
+    let resumed = f.json(&["run", "--json"]);
+    assert_eq!(
+        resumed["launch"]["handoff"]["injectedEntryIds"],
+        serde_json::json!([note["id"]])
+    );
+    let prompt = fs::read_to_string(f.run_dir().join("launches/2/prompt.md")).unwrap();
+    assert!(prompt.contains("## Original task (verbatim)\n  original task\n"));
+    assert!(prompt.contains("older human note"));
+}
+
+#[test]
+fn handoff_fresh_retry_after_capture_does_not_duplicate_intent() {
+    let f = Fixture::new();
+    f.record_workspace();
+    let task = "Run cmd < file and check Vec<String>";
+    let out = f
+        .command(&["run", "--skill", "x", task, "--json"])
+        .env("FAKE_NO_THREAD", "1")
+        .env("FAKE_EXIT", "1")
+        .output()
+        .unwrap();
+    assert_error(out, 1, "");
+    assert_eq!(f.handoff()["intent"], task);
+    assert!(f.state()["sessionId"].is_null());
+    let failed_run = f.state()["id"].clone();
+    let fresh = f.json(&["run", "--fresh", "--skill", "x", task, "--json"]);
+    assert_ne!(fresh["run"]["id"], failed_run);
+    let snapshot = f.handoff();
+    assert_eq!(snapshot["intent"], task);
+    assert!(snapshot["entries"].as_array().unwrap().is_empty());
+    let prompt = fs::read_to_string(f.run_dir().join("launches/1/prompt.md")).unwrap();
+    assert!(!prompt.contains("Original task"));
+    assert_eq!(prompt.matches(task).count(), 1);
+    assert!(prompt.ends_with(task));
+
+    // A different task still carries the original command and type verbatim.
+    f.json(&["run", "--fresh", "--skill", "x", "different task", "--json"]);
+    let prompt = fs::read_to_string(f.run_dir().join("launches/1/prompt.md")).unwrap();
+    assert!(prompt.contains(&format!("## Original task (verbatim)\n  {task}\n")));
+    assert_eq!(prompt.matches(task).count(), 1);
+}
+
+#[test]
 fn handoff_cross_provider_switch_stdin_and_no_handoff_exact_prompt() {
     let f = Fixture::new();
     f.record_workspace();
@@ -4245,23 +4335,50 @@ fn handoff_large_intent_is_verbatim_and_show_makes_control_characters_visible() 
 
 #[test]
 fn handoff_accepts_symlinks_through_state_root_but_refuses_descendant_symlinks() {
-    for component in ["state", "state/rabi"] {
-        let f = Fixture::new();
-        f.record_workspace();
-        f.json(&["handoff", "add", "before link", "--json"]);
-        let original = f.root.join(component);
-        let real = f.root.join("real-state");
-        fs::rename(&original, &real).unwrap();
-        std::os::unix::fs::symlink(&real, &original).unwrap();
-        f.json(&["run", "--skill", "x", "task through link", "--json"]);
-        f.json(&["handoff", "add", "after link", "--json"]);
-        assert_eq!(f.handoff()["entries"].as_array().unwrap().len(), 2);
-        let repositories = f.root.join("state/rabi/repositories");
-        let moved = f.root.join("real-repositories");
-        fs::rename(&repositories, &moved).unwrap();
-        std::os::unix::fs::symlink(&moved, &repositories).unwrap();
-        assert_error(f.run(&["handoff", "show"]), 1, "Handoff");
-        assert_error(f.run(&["handoff", "add", "blocked"]), 1, "Handoff");
+    for initialized in [false, true] {
+        for component in ["state", "state/rabi"] {
+            let f = Fixture::new();
+            f.record_workspace();
+            if initialized {
+                f.json(&["handoff", "add", "before link", "--json"]);
+            }
+            let original = f.root.join(component);
+            fs::create_dir_all(&original).unwrap();
+            let original_memory = f.memory();
+            let real = f.root.join("real-state");
+            fs::rename(&original, &real).unwrap();
+            std::os::unix::fs::symlink(&real, &original).unwrap();
+            let memory = f.memory();
+            assert_eq!(
+                memory,
+                real.join(original_memory.strip_prefix(&original).unwrap())
+            );
+            assert_eq!(memory.exists(), initialized);
+            f.json(&["run", "--skill", "x", "task through link", "--json"]);
+            let args: Value = serde_json::from_str(
+                fs::read_to_string(f.root.join("argv.jsonl"))
+                    .unwrap()
+                    .lines()
+                    .next()
+                    .unwrap(),
+            )
+            .unwrap();
+            let args = args.as_array().unwrap();
+            let grant = args.iter().position(|a| a == "--add-dir").unwrap();
+            assert_eq!(args[grant + 1], memory.to_str().unwrap());
+            assert_eq!(memory, memory.canonicalize().unwrap());
+            f.json(&["handoff", "add", "after link", "--json"]);
+            assert_eq!(
+                f.handoff()["entries"].as_array().unwrap().len(),
+                if initialized { 2 } else { 1 }
+            );
+            let repositories = f.root.join("state/rabi/repositories");
+            let moved = f.root.join("real-repositories");
+            fs::rename(&repositories, &moved).unwrap();
+            std::os::unix::fs::symlink(&moved, &repositories).unwrap();
+            assert_error(f.run(&["handoff", "show"]), 1, "Handoff");
+            assert_error(f.run(&["handoff", "add", "blocked"]), 1, "Handoff");
+        }
     }
 }
 

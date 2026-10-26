@@ -5,7 +5,7 @@ use std::io::{self, Read, Write};
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt};
-use std::path::{Component, Path};
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
 pub(super) struct Directory(File);
@@ -20,6 +20,25 @@ fn status(code: i32) -> io::Result<()> {
     }
 }
 impl Directory {
+    // Resolve the trusted root without creating it, retaining missing suffixes
+    // so read-only commands can report the canonical would-be memory path.
+    pub fn canonical_root(root: &Path) -> io::Result<PathBuf> {
+        if !root.is_absolute() {
+            return Err(io::Error::other("Invalid handoff root"));
+        }
+        match root.canonicalize() {
+            Ok(root) => Ok(root),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {
+                let (parent, name) = root
+                    .parent()
+                    .zip(root.file_name())
+                    .ok_or_else(|| io::Error::other("Invalid handoff root"))?;
+                Ok(Self::canonical_root(parent)?.join(name))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
     pub fn open(root: &Path, path: &Path, create: bool) -> io::Result<Option<Self>> {
         if !root.is_absolute() || path.is_absolute() {
             return Err(io::Error::other("Invalid handoff root or relative path"));
@@ -30,12 +49,12 @@ impl Directory {
                 .mode(0o700)
                 .create(root)?;
         }
-        let root = match root.canonicalize() {
-            Ok(root) => root,
+        let root = Self::canonical_root(root)?;
+        let mut dir = match File::open(root) {
+            Ok(file) => Self(file),
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
             Err(e) => return Err(e),
         };
-        let mut dir = Self(File::open(root)?);
         for component in path.components() {
             match component {
                 Component::Normal(value) => match dir.child_os(value, create)? {

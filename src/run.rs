@@ -422,7 +422,12 @@ pub(crate) fn execute(
         None
     };
     let rabi_bin = crate::handoff::current_executable();
-    let previous_started = record.launches.last().map(|l| l.started_at.clone());
+    let previous_started = record
+        .launches
+        .iter()
+        .rev()
+        .find(|launch| launch.handoff.is_some())
+        .map(|launch| launch.started_at.clone());
     let run_id = record.id.clone();
     let dir = runs.join(&record.id);
     if !resuming {
@@ -438,7 +443,7 @@ pub(crate) fn execute(
             };
             let captured = memory.capture(task, source).map_err(handoff_error)?;
             let mut snapshot = memory.read().map_err(handoff_error)?;
-            if captured.wrote_intent {
+            if captured.exclude_intent {
                 snapshot.intent = None;
             }
             let resume = previous_started

@@ -4,7 +4,7 @@
 
 ### Added
 
-- `rabi handoff show|path|add` stores original tasks and durable notes across parent providers. Recorded workspaces capture intent once, preserve it across `--fresh`, and append later tasks as requests. First/fresh launches inject up to 24 KiB; resume injects up to 8 KiB of new foreign notes. `--no-handoff` disables memory capture, injection and reminders.
+- `rabi handoff show|path|add` stores original tasks and durable notes across parent providers. Recorded workspaces capture intent once, preserve it across `--fresh`, and append later tasks as requests unless identical to intent or the previous request. First/fresh launches inject up to 24 KiB; resume injects up to 8 KiB of new foreign notes since the last injection, or a full snapshot if no launch in the run injected memory. `--no-handoff` disables memory capture, injection and reminders. `handoff add` trims trailing whitespace before validation and storage. Text `handoff show` preserves multiline notes with indented continuation lines; injected add instructions include a stdin heredoc example. Intent and request capture remain verbatim.
 - Handoff-enabled parents receive only their memory directory through `--add-dir`, plus `RABI_BIN`, `RABI_RUN_ID`, `RABI_RUN_LAUNCH`, `RABI_RUN_PROVIDER` and workspace environment variables. Memory is private XDG state under `repositories/`, bound to workspace id and creation time; remove/gc/forget retain it. Existing run and workspace record storage stays in the git common directory. Injected commands name the launching rabi executable (canonical absolute path when available, shell-quoted when needed); `RABI_BIN` contains the same unquoted path. Executable lookup failure falls back to `rabi`.
 
 - `rabi run --provider claude` starts and resumes Claude Code parents with requested UUID sessions, enforced auto permission mode, result-derived answers, and INT-first cleanup. Resume follows the recorded provider; Codex remains the default.
@@ -14,7 +14,6 @@
 
 ### Fixed
 
-- `handoff add` trims trailing whitespace before validation and storage. Text `handoff show` preserves multiline notes with indented continuation lines; injected add instructions include a stdin heredoc example. Intent and request capture remain verbatim.
 - `rabi run` now stops and reaps the parent process group as soon as a resumed launch observes a different Codex thread id, after saving the observed launch id. The original session id is retained; the run records an error and exits 1 instead of letting the different conversation keep running.
 
 ## v7.1.0 (2026-10-25)
