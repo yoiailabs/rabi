@@ -892,7 +892,7 @@ fn handoff_command(args: &[String], action: &str) -> Result<i32> {
         };
     let kind = parsed.value("kind").unwrap_or("note");
     if let Some(text) = text {
-        crate::handoff::validate_text(kind, text, false)?;
+        crate::handoff::validate_text(kind, text.trim_end(), false)?;
     }
     let text = text
         .map(|text| {
@@ -905,9 +905,9 @@ fn handoff_command(args: &[String], action: &str) -> Result<i32> {
                         Error::msg(format!("Failed to read handoff text: {e}"))
                     }
                 })?;
-                Ok(input)
+                Ok(input.trim_end().to_owned())
             } else {
-                Ok(text.to_owned())
+                Ok(text.trim_end().to_owned())
             }
         })
         .transpose()?;

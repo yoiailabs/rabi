@@ -3474,7 +3474,7 @@ fn handoff_cli_validates_selectors_json_stdin_and_private_storage() {
         .unwrap();
     let out = child.wait_with_output().unwrap();
     assert!(out.status.success());
-    assert_eq!(f.handoff()["entries"][1]["text"], "stdin note\n\n");
+    assert_eq!(f.handoff()["entries"][1]["text"], "stdin note");
     let out = f
         .command_at(
             &f.root,
@@ -3547,6 +3547,110 @@ fn handoff_cli_validates_selectors_json_stdin_and_private_storage() {
     );
     assert!(!state.join("runs").exists());
     assert!(!state.join("workspaces").exists());
+}
+
+#[test]
+fn handoff_add_trims_only_trailing_whitespace_before_validation_and_storage() {
+    let f = Fixture::new();
+    f.record_workspace();
+    let limit = "é".repeat(4096);
+    let cases = [
+        ("x\n".to_owned(), "x"),
+        (
+            "  first\n\n \tsecond\r\n\r\n \t\u{2003}".to_owned(),
+            "  first\n\n \tsecond",
+        ),
+        ("- \n".to_owned(), "-"),
+        (
+            "  first\r\n  second\n\nlast\n".to_owned(),
+            "  first\r\n  second\n\nlast",
+        ),
+        (format!("{limit}\r\n \t\u{2003}"), limit.as_str()),
+        (" \r\n\t\u{2003}".to_owned(), ""),
+        (format!("{limit}é\n"), ""),
+    ];
+    let mut stored = Vec::new();
+    for (input, expected) in cases {
+        for stdin in [false, true] {
+            let out = if stdin {
+                let mut child = f
+                    .command(&["handoff", "add", "--kind", "checkpoint", "-", "--json"])
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                child
+                    .stdin
+                    .take()
+                    .unwrap()
+                    .write_all(input.as_bytes())
+                    .unwrap();
+                child.wait_with_output().unwrap()
+            } else {
+                f.run(&[
+                    "handoff",
+                    "add",
+                    "--kind",
+                    "checkpoint",
+                    "--json",
+                    "--",
+                    &input,
+                ])
+            };
+            if expected.is_empty() {
+                assert_error(out, 2, "nonblank UTF-8 and at most 8192 bytes");
+            } else {
+                assert!(
+                    out.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                let entry: Value = serde_json::from_slice(&out.stdout).unwrap();
+                assert_eq!(entry["data"]["text"], expected);
+                stored.push(expected.to_owned());
+            }
+        }
+    }
+    let snapshot = f.handoff();
+    let texts: Vec<_> = snapshot["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(texts, stored);
+}
+
+#[test]
+fn handoff_injected_heredoc_supplies_stdin_and_stores_a_checkpoint() {
+    let f = Fixture::new();
+    f.record_workspace();
+    f.json(&["run", "--skill", "x", "task", "--json"]);
+    let prompt = fs::read_to_string(f.run_dir().join("launches/1/prompt.md")).unwrap();
+    let command = prompt
+        .split_once("```sh\n")
+        .unwrap()
+        .1
+        .split_once("\n```")
+        .unwrap()
+        .0;
+    let out = f
+        .command_at(&f.workspace, &["-c", command], "bash")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let snapshot = f.handoff();
+    assert_eq!(snapshot["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(snapshot["entries"][0]["kind"], "checkpoint");
+    assert_eq!(
+        snapshot["entries"][0]["text"],
+        "Decisions, constraints, verification and remaining work."
+    );
 }
 
 #[test]
@@ -3692,7 +3796,7 @@ if os.environ.get('ADD_HANDOFF'):
         } else {
             format!("'{}'", rabi_bin.to_str().unwrap().replace('\'', "'\\''"))
         };
-        let reminder_command = format!("`{command} handoff add --kind checkpoint -`");
+        let reminder_command = format!("{command} handoff add --kind checkpoint - <<'EOF'\nDecisions, constraints, verification and remaining work.\nEOF");
         assert_eq!(f.handoff()["intent"], "original task");
         let prompt = fs::read_to_string(f.run_dir().join("launches/1/prompt.md")).unwrap();
         assert!(prompt.starts_with("Record durable context"));
@@ -3802,7 +3906,7 @@ fn handoff_cross_provider_switch_stdin_and_no_handoff_exact_prompt() {
     let f = Fixture::new();
     f.record_workspace();
     f.fake_claude();
-    let task = "original from stdin\n\n";
+    let task = "  original from stdin\ninternal line\r\n\n \t\u{2003}";
     let mut child = f
         .command(&[
             "run",
@@ -3841,13 +3945,20 @@ fn handoff_cross_provider_switch_stdin_and_no_handoff_exact_prompt() {
         "--fresh",
         "--skill",
         "implement",
-        "implement it",
+        "  implement it\nnext line\r\n \t\u{2003}",
         "--json",
     ]);
     assert_eq!(f.state()["provider"], "codex");
+    let snapshot = f.handoff();
+    assert_eq!(snapshot["intent"], task);
+    assert_eq!(
+        snapshot["entries"][1]["text"],
+        "  implement it\nnext line\r\n \t\u{2003}"
+    );
     let prompt = fs::read_to_string(f.run_dir().join("launches/1/prompt.md")).unwrap();
     assert!(prompt.contains("design approved"));
     assert!(prompt.contains(&task.replace('\n', "\n  ")));
+    assert!(!prompt.contains("\\u{a}"));
     let fresh = f.json(&[
         "run",
         "--fresh",
@@ -4124,7 +4235,8 @@ fn handoff_large_intent_is_verbatim_and_show_makes_control_characters_visible() 
     assert!(!text.contains('\x1b'));
     assert!(!text.contains('\x07'));
     assert!(text.contains("\\u{1b}]52;c;clipboard\\u{7}"));
-    assert!(text.contains("note\\u{1b}]0;title\\u{7}\\u{a}next"));
+    assert!(text.contains("note\\u{1b}]0;title\\u{7}\n  next\n"));
+    assert!(!text.contains("\\u{a}"));
     f.json(&["run", "--fresh", "--skill", "x", "next task", "--json"]);
     let prompt = fs::read_to_string(f.run_dir().join("launches/1/prompt.md")).unwrap();
     assert!(prompt.contains("intent truncated;"));

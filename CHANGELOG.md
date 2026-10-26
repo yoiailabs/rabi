@@ -14,6 +14,7 @@
 
 ### Fixed
 
+- `handoff add` trims trailing whitespace before validation and storage. Text `handoff show` preserves multiline notes with indented continuation lines; injected add instructions include a stdin heredoc example. Intent and request capture remain verbatim.
 - `rabi run` now stops and reaps the parent process group as soon as a resumed launch observes a different Codex thread id, after saving the observed launch id. The original session id is retained; the run records an error and exits 1 instead of letting the different conversation keep running.
 
 ## v7.1.0 (2026-10-25)
