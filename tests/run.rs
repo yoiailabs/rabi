@@ -74,6 +74,10 @@ sid = args[args.index('resume')+1] if 'resume' in args else str(uuid.uuid4())
 sid = os.environ.get('FAKE_OTHER_ID', sid)
 if os.environ.get('FAKE_BLOCK'):
     signal.signal(signal.SIGTERM, signal.SIG_DFL if os.environ.get('FAKE_PARENT_TERM_DEFAULT') else signal.SIG_IGN)
+    if os.environ.get('FAKE_TERM_STATE'):
+        def capture_term_state(signum, frame):
+            (root/'term-state.json').write_bytes(pathlib.Path(os.environ['FAKE_TERM_STATE']).read_bytes())
+        signal.signal(signal.SIGTERM, capture_term_state)
     child = subprocess.Popen([sys.executable, '-c', 'import os,signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); os.write(1,b"ready\\n"); time.sleep(600)'], stdout=subprocess.PIPE)
     assert child.stdout.readline() == b'ready\n'
     (root/'pids').write_text(str(os.getpid())+' '+str(child.pid))
@@ -284,6 +288,9 @@ fn session_id_is_saved_once_while_first_fresh_and_resumed_parents_are_running() 
     for mode in ["first", "fresh", "resume", "mismatch"] {
         let f = Fixture::new();
         let previous = (mode != "first").then(|| f.json(&["run", "--skill", "x", "--json"]));
+        if mode == "mismatch" {
+            fs::remove_file(f.root.join("completed")).unwrap();
+        }
         let expected = if mode == "resume" {
             previous.as_ref().unwrap()["run"]["sessionId"]
                 .as_str()
@@ -311,7 +318,9 @@ fn session_id_is_saved_once_while_first_fresh_and_resumed_parents_are_running() 
         let partial = f.state();
         assert!(partial["launches"].as_array().unwrap().last().unwrap()["sessionId"].is_null());
         fs::write(f.root.join("complete-thread"), "continue").unwrap();
-        wait_for_file(&f.root.join("waiting-finish"));
+        if mode != "mismatch" {
+            wait_for_file(&f.root.join("waiting-finish"));
+        }
         let deadline = Instant::now() + Duration::from_secs(10);
         let state = loop {
             let state = f.state();
@@ -325,10 +334,6 @@ fn session_id_is_saved_once_while_first_fresh_and_resumed_parents_are_running() 
             std::thread::sleep(Duration::from_millis(10));
         };
         let launch = state["launches"].as_array().unwrap().last().unwrap();
-        assert_eq!(state["state"], "running");
-        assert!(launch["finishedAt"].is_null());
-        assert!(launch["stopReason"].is_null());
-        assert!(child.0.as_mut().unwrap().try_wait().unwrap().is_none());
         if mode == "mismatch" {
             assert_eq!(
                 state["sessionId"],
@@ -338,9 +343,23 @@ fn session_id_is_saved_once_while_first_fresh_and_resumed_parents_are_running() 
                 .as_str()
                 .unwrap()
                 .contains("different thread id"));
-        } else {
-            assert_eq!(state["sessionId"], expected);
+            assert_error(child.finish(), 1, "different thread id");
+            let finished = f.state();
+            assert_eq!(finished["sessionId"], state["sessionId"]);
+            assert_eq!(finished["state"], "error");
+            assert_eq!(
+                finished["launches"].as_array().unwrap().last().unwrap()["sessionId"],
+                expected
+            );
+            assert!(!f.root.join("completed").exists());
+            f.assert_unlocked();
+            continue;
         }
+        assert_eq!(state["state"], "running");
+        assert!(launch["finishedAt"].is_null());
+        assert!(launch["stopReason"].is_null());
+        assert!(child.0.as_mut().unwrap().try_wait().unwrap().is_none());
+        assert_eq!(state["sessionId"], expected);
         // Atomic writes replace the inode. Further polls and duplicate events
         // must leave the first observation intact until finalization.
         let path = f.run_dir().join("state.json");
@@ -351,10 +370,7 @@ fn session_id_is_saved_once_while_first_fresh_and_resumed_parents_are_running() 
         assert_error(f.run(&["run", "--json"]), 4, "lock");
         fs::write(f.root.join("finish"), "finish").unwrap();
         let out = child.finish();
-        assert_eq!(
-            out.status.code(),
-            Some(if mode == "mismatch" { 1 } else { 0 })
-        );
+        assert_eq!(out.status.code(), Some(0));
         let finished = f.state();
         assert_eq!(finished["sessionId"], state["sessionId"]);
         assert_eq!(
@@ -385,12 +401,16 @@ fn final_unterminated_thread_event_still_records_a_session() {
 }
 
 #[test]
-fn mid_launch_session_save_failure_stops_and_reaps_the_child_group() {
+fn mid_launch_session_mismatch_stops_and_reaps_the_child_group() {
     let f = Fixture::new();
+    let first = f.json(&["run", "--skill", "x", "--json"]);
+    fs::remove_file(f.root.join("completed")).unwrap();
     let child = Running(Some(
-        f.command(&["run", "--skill", "x", "--json"])
+        f.command(&["run", "--timeout", "5s", "--json"])
+            .env("FAKE_OTHER_ID", "different-thread")
             .env("FAKE_WAIT_THREAD", "1")
             .env("FAKE_BLOCK", "1")
+            .env("FAKE_TERM_STATE", f.run_dir().join("state.json"))
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
@@ -398,19 +418,79 @@ fn mid_launch_session_save_failure_stops_and_reaps_the_child_group() {
     ));
     let pids = wait_for_file(&f.root.join("pids"));
     wait_for_file(&f.root.join("thread-ready"));
-    let state = f.run_dir().join("state.json");
-    fs::remove_file(&state).unwrap();
-    fs::create_dir(&state).unwrap();
+    let start = Instant::now();
     fs::write(f.root.join("emit-thread"), "continue").unwrap();
-    assert_error(child.finish(), 1, "Failed to persist Codex session id");
+    let out = child.finish();
+    assert!(
+        start.elapsed() < Duration::from_secs(3),
+        "mismatched parent was left running until the launch timeout"
+    );
+    assert_error(out, 1, "different thread id (different-thread); expected");
+    // TERM captures the durable mid-launch state before controlled stopping
+    // escalates to KILL and the launcher writes its final state.
+    let saved: Value =
+        serde_json::from_slice(&fs::read(f.root.join("term-state.json")).unwrap()).unwrap();
+    assert_eq!(saved["state"], "running");
+    assert_eq!(saved["sessionId"], first["run"]["sessionId"]);
+    assert_eq!(saved["launches"][1]["sessionId"], "different-thread");
+    assert!(saved["launches"][1]["finishedAt"].is_null());
+    assert!(saved["launches"][1]["stopReason"].is_null());
     for pid in pids.split_whitespace() {
         assert_dead(pid.parse().unwrap());
     }
-    // A reaped direct child has no pid, even on systems that retain orphan
-    // grandchildren as zombies. Group::drop must wait before releasing lock.
     let parent: i32 = pids.split_whitespace().next().unwrap().parse().unwrap();
     assert_eq!(unsafe { kill(parent, 0) }, -1);
+    assert!(!f.root.join("completed").exists());
+    let state = f.state();
+    assert_eq!(state["state"], "error");
+    assert_eq!(state["sessionId"], first["run"]["sessionId"]);
+    let launch = &state["launches"][1];
+    assert_eq!(launch["sessionId"], "different-thread");
+    assert_eq!(launch["stopReason"], "error");
+    assert_eq!(launch["exitCode"], 137);
+    assert!(launch["message"].as_str().unwrap().contains(
+        "The recorded parent session was retained. Use `rabi run --fresh --skill <value>` to start over."
+    ));
     f.assert_unlocked();
+}
+
+#[test]
+fn mid_launch_session_save_failure_stops_and_reaps_the_child_group() {
+    for mismatch in [false, true] {
+        let f = Fixture::new();
+        let mut command = if mismatch {
+            f.json(&["run", "--skill", "x", "--json"]);
+            let mut command = f.command(&["run", "--json"]);
+            command.env("FAKE_OTHER_ID", "different-thread");
+            command
+        } else {
+            f.command(&["run", "--skill", "x", "--json"])
+        };
+        let child = Running(Some(
+            command
+                .env("FAKE_WAIT_THREAD", "1")
+                .env("FAKE_BLOCK", "1")
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .unwrap(),
+        ));
+        let pids = wait_for_file(&f.root.join("pids"));
+        wait_for_file(&f.root.join("thread-ready"));
+        let state = f.run_dir().join("state.json");
+        fs::remove_file(&state).unwrap();
+        fs::create_dir(&state).unwrap();
+        fs::write(f.root.join("emit-thread"), "continue").unwrap();
+        assert_error(child.finish(), 1, "Failed to persist Codex session id");
+        for pid in pids.split_whitespace() {
+            assert_dead(pid.parse().unwrap());
+        }
+        // A reaped direct child has no pid, even on systems that retain orphan
+        // grandchildren as zombies. Group::drop must wait before releasing lock.
+        let parent: i32 = pids.split_whitespace().next().unwrap().parse().unwrap();
+        assert_eq!(unsafe { kill(parent, 0) }, -1);
+        f.assert_unlocked();
+    }
 }
 
 #[test]
@@ -840,9 +920,11 @@ fn broken_session_never_launches_and_mismatched_thread_is_recorded() {
     }
     // Fresh bypasses broken state, and a mismatched resume never replaces its id.
     let fresh = f.json(&["run", "--fresh", "--skill", "x", "--json"]);
+    fs::remove_file(f.root.join("completed")).unwrap();
     let out = f
         .command(&["run", "--json"])
         .env("FAKE_OTHER_ID", "different-thread")
+        .env("FAKE_NO_NEWLINE", "1")
         .output()
         .unwrap();
     assert_error(out, 1, "different thread id");
@@ -850,6 +932,12 @@ fn broken_session_never_launches_and_mismatched_thread_is_recorded() {
     assert_eq!(state["sessionId"], fresh["run"]["sessionId"]);
     assert_eq!(state["state"], "error");
     assert_eq!(state["launches"][1]["sessionId"], "different-thread");
+    assert_eq!(state["launches"][1]["stopReason"], "error");
+    assert_eq!(state["launches"][1]["exitCode"], 0);
+    assert_eq!(
+        fs::read_to_string(f.root.join("completed")).unwrap(),
+        "done"
+    );
     f.assert_unlocked();
 }
 
