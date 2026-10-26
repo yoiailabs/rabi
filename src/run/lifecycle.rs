@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use super::{io, StopReason};
 use crate::error::{Error, Result, REFUSED};
-use crate::provider::{Observation, Provider, Session, StopPolicy};
+use crate::provider::{Observation, Provider, StopPolicy};
 
 extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
@@ -373,14 +373,12 @@ pub(super) struct Outcome {
 
 pub(super) fn launch(
     provider: Provider,
-    workspace: &Path,
+    mut cmd: std::process::Command,
     dir: &Path,
-    session: Session<'_>,
     timeout: Duration,
     lock: &mut Lock,
     on_session: impl FnMut(Observation) -> Result<bool>,
 ) -> Result<Outcome> {
-    let mut cmd = provider.command(workspace, dir, session)?;
     cmd.stdout(io(File::create(dir.join("events.jsonl")))?)
         .stderr(io(File::create(dir.join("stderr.log")))?)
         .process_group(0);

@@ -21,6 +21,7 @@ pub mod error;
 pub mod gc;
 pub mod git;
 pub mod github;
+mod handoff;
 pub mod help;
 pub mod metadata;
 pub mod names;

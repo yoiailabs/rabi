@@ -4,6 +4,9 @@
 
 ### Added
 
+- `rabi handoff show|path|add` stores original tasks and durable notes across parent providers. Recorded workspaces capture intent once, preserve it across `--fresh`, and append later tasks as requests. First/fresh launches inject up to 24 KiB; resume injects up to 8 KiB of new foreign notes. `--no-handoff` disables memory capture, injection and reminders.
+- Handoff-enabled parents receive only their memory directory through `--add-dir`, plus `RABI_RUN_ID`, `RABI_RUN_LAUNCH`, `RABI_RUN_PROVIDER` and workspace environment variables. Memory is private XDG state under `repositories/`, bound to workspace id and creation time; remove/gc/forget retain it. Existing run and workspace record storage stays in the git common directory.
+
 - `rabi run --provider claude` starts and resumes Claude Code parents with requested UUID sessions, enforced auto permission mode, result-derived answers, and INT-first cleanup. Resume follows the recorded provider; Codex remains the default.
 - `rabi run --provider cursor` starts and resumes Cursor CLI parents, with sandbox setup, result-derived answers, session verification, and audit notes for completed tool calls requesting execution outside the sandbox. Provider selection is available on first/fresh runs; resume uses the recorded provider and refuses a different selection before changing state. Codex remains the default. Run summaries include `provider`.
 - `rabi run SEL -- [TASK | -]` launches or resumes a selected workspace without changing directory; `-R/--repo` can select its repository when SEL is supplied. Existing task-only forms retain their meanings.

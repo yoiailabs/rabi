@@ -92,7 +92,13 @@ impl Provider {
     }
 
     /// Build argv and attach the saved prompt without launching a process.
-    pub fn command(self, workspace: &Path, dir: &Path, session: Session<'_>) -> Result<Command> {
+    pub fn command(
+        self,
+        workspace: &Path,
+        dir: &Path,
+        session: Session<'_>,
+        memory: Option<&Path>,
+    ) -> Result<Command> {
         match self {
             Self::Codex => {
                 let mut command = Command::new(self.binary());
@@ -102,6 +108,9 @@ impl Provider {
                     .args(["--approve-for-me", "-m", MODEL, "-c", EFFORT])
                     .arg("-o")
                     .arg(dir.join("answer.md"));
+                if let Some(memory) = memory {
+                    command.arg("--add-dir").arg(memory);
+                }
                 match session {
                     Session::New { requested } => {
                         // Codex allocates its own session id after launch.
@@ -117,8 +126,8 @@ impl Provider {
                 ));
                 Ok(command)
             }
-            Self::Cursor => cursor::command(workspace, dir, session),
-            Self::Claude => claude::command(workspace, dir, session),
+            Self::Cursor => cursor::command(workspace, dir, session, memory),
+            Self::Claude => claude::command(workspace, dir, session, memory),
         }
     }
 
@@ -406,6 +415,28 @@ mod tests {
     use std::io::Write;
 
     #[test]
+    fn memory_grant_precedes_codex_resume_subcommand() {
+        let root = std::env::temp_dir().join(format!("rabi-codex-memory-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&root).unwrap();
+        fs::write(root.join("prompt.md"), "saved prompt").unwrap();
+        for session in [
+            Session::New { requested: None },
+            Session::Resume { id: "session" },
+        ] {
+            let command = Provider::Codex
+                .command(&root, &root, session, Some(Path::new("/memory")))
+                .unwrap();
+            let args: Vec<_> = command.get_args().collect();
+            let grant = args.iter().position(|a| a == &"--add-dir").unwrap();
+            assert_eq!(args[grant + 1], "/memory");
+            if let Some(resume) = args.iter().position(|a| a == &"resume") {
+                assert!(grant < resume);
+            }
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn provider_name_round_trips_and_unknown_names_are_rejected() {
         assert_eq!("codex".parse::<Provider>().unwrap(), Provider::Codex);
         assert_eq!("cursor".parse::<Provider>().unwrap(), Provider::Cursor);
@@ -477,7 +508,9 @@ mod tests {
                 expected.extend(["resume", "thread-id"].into_iter().map(OsString::from));
             }
             expected.push(OsString::from("-"));
-            let mut command = Provider::Codex.command(&workspace, &dir, session).unwrap();
+            let mut command = Provider::Codex
+                .command(&workspace, &dir, session, None)
+                .unwrap();
             assert_eq!(command.get_program(), "codex");
             assert_eq!(command.get_args().collect::<Vec<_>>(), expected);
             assert_eq!(command.get_current_dir(), Some(workspace.as_path()));

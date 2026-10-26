@@ -6,13 +6,18 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-pub(super) fn command(workspace: &Path, dir: &Path, session: Session<'_>) -> Result<Command> {
+pub(super) fn command(
+    workspace: &Path,
+    dir: &Path,
+    session: Session<'_>,
+    memory: Option<&Path>,
+) -> Result<Command> {
     let binary = super::resolve_binary_in(std::env::var_os("PATH").as_deref(), &["claude"])
         .ok_or_else(|| Error::Spawn {
             command: "claude".into(),
             details: "Claude Code CLI was not found on PATH. Install Claude Code, then run `claude` to log in before retrying.".into(),
         })?;
-    command_with_binary(binary, workspace, dir, session)
+    command_with_binary(binary, workspace, dir, session, memory)
 }
 
 fn command_with_binary(
@@ -20,6 +25,7 @@ fn command_with_binary(
     workspace: &Path,
     dir: &Path,
     session: Session<'_>,
+    memory: Option<&Path>,
 ) -> Result<Command> {
     let mut command = Command::new(binary);
     command.args(["-p", "--output-format", "stream-json", "--verbose"]);
@@ -48,6 +54,9 @@ fn command_with_binary(
         "--effort",
         "high",
     ]);
+    if let Some(memory) = memory {
+        command.arg("--add-dir").arg(memory);
+    }
     command.current_dir(workspace).stdin(Stdio::from(
         fs::File::open(dir.join("prompt.md")).map_err(io_error)?,
     ));
@@ -260,7 +269,7 @@ mod tests {
             (Session::Resume { id: ID }, "--resume"),
         ] {
             let mut command =
-                command_with_binary(binary.clone(), &workspace, &dir, session).unwrap();
+                command_with_binary(binary.clone(), &workspace, &dir, session, None).unwrap();
             assert_eq!(command.get_program(), binary.as_os_str());
             assert_eq!(
                 command.get_args().collect::<Vec<_>>(),
@@ -295,7 +304,8 @@ mod tests {
             PathBuf::from("/bin/cat"),
             &workspace,
             &dir,
-            Session::New { requested: None }
+            Session::New { requested: None },
+            None,
         )
         .is_err());
         fs::remove_dir_all(dir).unwrap();

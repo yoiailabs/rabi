@@ -54,6 +54,8 @@ pub(crate) struct Launch {
     #[serde(default, skip_serializing_if = "is_zero")]
     insecure_tool_calls: u64,
     pub message: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    handoff: Option<crate::handoff::Injection>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -193,7 +195,11 @@ fn workspace_key(path: &str) -> String {
     format!("{:x}", Sha256::digest(path.as_bytes()))
 }
 
-fn prepare_launch(dir: &Path, record: &mut Record, prompt: &str) -> Result<PathBuf> {
+fn prepare_launch(
+    dir: &Path,
+    record: &mut Record,
+    prompt: impl FnOnce(usize) -> Result<(String, Option<crate::handoff::Injection>)>,
+) -> Result<PathBuf> {
     let launches = dir.join("launches");
     io(fs::create_dir_all(&launches))?;
     let mut n = record.launches.last().map_or(0, |launch| launch.n);
@@ -211,6 +217,7 @@ fn prepare_launch(dir: &Path, record: &mut Record, prompt: &str) -> Result<PathB
     let old_state = record.state.clone();
     let old_len = record.launches.len();
     let prepared = (|| {
+        let (prompt, handoff) = prompt(n)?;
         io(crate::atomic::write(
             &launch_dir.join("prompt.md"),
             prompt.as_bytes(),
@@ -227,6 +234,7 @@ fn prepare_launch(dir: &Path, record: &mut Record, prompt: &str) -> Result<PathB
                 .then(|| uuid::Uuid::new_v4().to_string()),
             insecure_tool_calls: 0,
             message: None,
+            handoff,
         });
         record.state = State::Running;
         save(dir, record)
@@ -274,6 +282,35 @@ fn read_previous(
     Ok(Some(record))
 }
 
+pub(crate) struct Options {
+    pub timeout: Duration,
+    pub handoff: bool,
+}
+
+pub(crate) fn validate_handoff_source(
+    common: &Path,
+    workspace_id: &str,
+    path: &str,
+    id: &str,
+    launch: usize,
+    provider: Provider,
+) -> bool {
+    if validate_id(id).is_err() {
+        return false;
+    }
+    fs::read(common.join("rabi/runs").join(id).join("state.json"))
+        .ok()
+        .and_then(|b| serde_json::from_slice::<Record>(&b).ok())
+        .is_some_and(|r| {
+            r.schema == 2
+                && r.id == id
+                && r.workspace.id.as_deref() == Some(workspace_id)
+                && r.workspace.path == path
+                && r.provider == provider.name()
+                && r.launches.iter().any(|l| l.n == launch)
+        })
+}
+
 pub(crate) fn execute(
     root: &Path,
     tree: &WorktreeInfo,
@@ -281,7 +318,7 @@ pub(crate) fn execute(
     fresh: bool,
     requested_provider: Option<Provider>,
     task: Option<&str>,
-    timeout: Duration,
+    options: Options,
 ) -> Result<Report> {
     let _signals = lifecycle::Signals::install()?;
     let common_dir = crate::git::git_common_dir(root)?;
@@ -357,12 +394,55 @@ pub(crate) fn execute(
     } else {
         format!("You are the parent agent for this rabi run in workspace {} on branch {}. You manage progress: delegate implementation and review to your own subagents, gather the information you need yourself (git, gh, tests), give follow-up instructions until the work is really done, and decide completion.\n\nFollow skill `{}`.\n\n{}", tree.path, tree.branch, record.skill, task.unwrap_or_default())
     };
+    let handoff_error = |e: Error| {
+        let message = format!(
+            "Cannot prepare handoff memory: {e}. Use `rabi run --no-handoff` to bypass memory."
+        );
+        if matches!(e, Error::Validation(_)) {
+            Error::validation(message)
+        } else {
+            Error::msg(message)
+        }
+    };
+    let memory = if options.handoff && tree.metadata.id.is_some() {
+        let memory = crate::handoff::Memory::locate(root, tree).map_err(handoff_error)?;
+        memory.ensure().map_err(handoff_error)?;
+        Some(memory)
+    } else {
+        if options.handoff {
+            crate::output::warning("handoff_unrecorded", "Workspace has no record; skipping handoff memory. Run `rabi adopt <workspace-path>` to enable it.");
+        }
+        None
+    };
+    let previous_started = record.launches.last().map(|l| l.started_at.clone());
+    let run_id = record.id.clone();
     let dir = runs.join(&record.id);
     if !resuming {
         io(fs::create_dir(&dir))?;
         save(&dir, &record)?;
     }
-    let launch_dir = prepare_launch(&dir, &mut record, &prompt)?;
+    let launch_dir = prepare_launch(&dir, &mut record, |n| {
+        if let Some(memory) = &memory {
+            let source = crate::handoff::Source {
+                run_id: run_id.clone(),
+                launch: n,
+                provider,
+            };
+            let excluded = memory.capture(task, source).map_err(handoff_error)?;
+            let snapshot = memory.read().map_err(handoff_error)?;
+            let resume = previous_started
+                .as_deref()
+                .map(|since| (run_id.as_str(), since));
+            let (stanza, injection) = snapshot.render(
+                tree.metadata.id.as_deref().unwrap_or_default(),
+                resume,
+                excluded.as_deref(),
+            );
+            Ok((format!("{stanza}{prompt}"), Some(injection)))
+        } else {
+            Ok((prompt, None))
+        }
+    })?;
     io(crate::atomic::write(&pointer, record.id.as_bytes()))?;
     if !crate::output::json() {
         crate::output::stderr(format_args!("rabi: running parent session (run {}) in {}. Ctrl-C stops it; `rabi run \"...\"` resumes.\n", record.id, crate::output::visible_text(&tree.path)));
@@ -388,12 +468,37 @@ pub(crate) fn execute(
     let launched = provider
         .prepare_workspace(Path::new(&record.workspace.path), &common_dir)
         .and_then(|()| {
-            lifecycle::launch(
-                provider,
+            let mut command = provider.command(
                 Path::new(&tree.path),
                 &launch_dir,
                 session,
-                timeout,
+                memory.as_ref().map(|m| m.path.as_path()),
+            )?;
+            if memory.is_some() {
+                let n = record.launches.last().map_or(0, |l| l.n);
+                command
+                    .env("RABI_RUN_ID", &run_id)
+                    .env("RABI_RUN_LAUNCH", n.to_string())
+                    .env("RABI_RUN_PROVIDER", provider.name())
+                    .env("RABI", "1")
+                    .env("RABI_REPO_PATH", root)
+                    .env("RABI_WORKSPACE", &tree.name)
+                    .env(
+                        "RABI_WORKSPACE_ID",
+                        tree.metadata.id.as_deref().unwrap_or_default(),
+                    )
+                    .env("RABI_WORKSPACE_PATH", &tree.path);
+            } else {
+                command
+                    .env_remove("RABI_RUN_ID")
+                    .env_remove("RABI_RUN_LAUNCH")
+                    .env_remove("RABI_RUN_PROVIDER");
+            }
+            lifecycle::launch(
+                provider,
+                command,
+                &launch_dir,
+                options.timeout,
                 &mut lock,
                 |observation| {
                     let mut stop = false;
@@ -650,11 +755,12 @@ mod tests {
             "workspace": {"id": null, "name": "test", "path": "/test", "branch": null},
             "provider": "codex", "sessionId": "test-session", "skill": "test", "state": "idle", "launches": []
         })).unwrap();
-        assert!(prepare_launch(&dir, &mut record, "test prompt").is_err());
+        assert!(prepare_launch(&dir, &mut record, |_| Ok(("test prompt".into(), None))).is_err());
         assert!(!dir.join("launches/1").exists());
         assert!(record.launches.is_empty());
         fs::remove_dir(dir.join("state.json")).unwrap();
-        let path = prepare_launch(&dir, &mut record, "retry prompt").unwrap();
+        let path =
+            prepare_launch(&dir, &mut record, |_| Ok(("retry prompt".into(), None))).unwrap();
         assert_eq!(path, dir.join("launches/1"));
         assert_eq!(
             fs::read_to_string(path.join("prompt.md")).unwrap(),

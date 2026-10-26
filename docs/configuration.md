@@ -29,7 +29,7 @@ Authentication is left to Git. `rabi` does not call `gh`. Git's progress is writ
 
 ## Targeting a repository
 
-The global `-R/--repo` option selects a repository. `run` and `skill list` use the current checkout and do not accept it. Workspace commands (`create`, `adopt`, `forget`, `list`, `show`, `path`, `remove`, `sync`, `gc`, `exec`, `set`, `setup`) accept `--repo <ref>` (`-R`) so they can run against a repository other than the current directory. It may precede the command or appear among its options. `rabi exec` is the exception: put rabi options before SEL and separate the child command with the required `--`. Everything after `--` is passed to the command.
+The global `-R/--repo` option selects a repository. `skill list` uses the current checkout and does not accept it; `run -R` requires an explicit `SEL --`. Workspace commands (`create`, `adopt`, `forget`, `list`, `show`, `path`, `remove`, `sync`, `gc`, `exec`, `set`, `setup`, `handoff show|path|add`) accept `--repo <ref>` (`-R`) so they can run against a repository other than the current directory. It may precede the command or appear among its options. `rabi exec` is the exception: put rabi options before SEL and separate the child command with the required `--`. Everything after `--` is passed to the command.
 
 A ref that starts with `/`, `.`, or `~` is a directory. It can be anywhere inside the repository, including a linked workspace, and resolves to the primary checkout. The selected primary checkout supplies `.worktreeinclude` and the copied files. With `-R`, hooks use the selected primary checkout; otherwise they use the invoking checkout; `setup` and `remove` can override the hook source with `--source-checkout`.
 

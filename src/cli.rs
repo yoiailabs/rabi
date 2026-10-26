@@ -814,7 +814,10 @@ fn run_parent(args: &[String]) -> Result<i32> {
         parsed.flag("fresh"),
         provider,
         task.as_deref(),
-        timeout,
+        crate::run::Options {
+            timeout,
+            handoff: !parsed.flag("no-handoff"),
+        },
     )?;
     if crate::output::json() {
         crate::output::data(
@@ -847,6 +850,98 @@ fn run_parent(args: &[String]) -> Result<i32> {
         );
     }
     Ok(report.exit)
+}
+
+fn handoff_root(args: &[String]) -> Result<i32> {
+    Err(Error::validation(format!(
+        "Unknown handoff subcommand: {}",
+        args.join(" ")
+    )))
+}
+fn handoff_show(args: &[String]) -> Result<i32> {
+    handoff_command(args, "show")
+}
+fn handoff_path(args: &[String]) -> Result<i32> {
+    handoff_command(args, "path")
+}
+fn handoff_add(args: &[String]) -> Result<i32> {
+    handoff_command(args, "add")
+}
+fn handoff_command(args: &[String], action: &str) -> Result<i32> {
+    use std::io::Read;
+    let parsed = args::parse(args, &command_options(&format!("handoff {action}")), true)?;
+    let (selector, text) =
+        if action == "add" {
+            match parsed.positionals.as_slice() {
+                [text] => (".", Some(text.as_str())),
+                [selector, text] => (selector.as_str(), Some(text.as_str())),
+                _ => return Err(Error::validation(
+                    "Usage: rabi handoff add [SEL] [--kind checkpoint|decision|note] (TEXT | -)",
+                )),
+            }
+        } else {
+            match parsed.positionals.as_slice() {
+                [] => (".", None),
+                [selector] => (selector.as_str(), None),
+                _ => {
+                    return Err(Error::validation(
+                        "Handoff show/path accepts at most one selector",
+                    ))
+                }
+            }
+        };
+    let kind = parsed.value("kind").unwrap_or("note");
+    if let Some(text) = text {
+        crate::handoff::validate_text(kind, text, false)?;
+    }
+    let text = text
+        .map(|text| {
+            if text == "-" {
+                let mut input = String::new();
+                std::io::stdin().read_to_string(&mut input).map_err(|e| {
+                    if e.kind() == std::io::ErrorKind::InvalidData {
+                        Error::validation("Handoff text must be UTF-8")
+                    } else {
+                        Error::msg(format!("Failed to read handoff text: {e}"))
+                    }
+                })?;
+                Ok(input)
+            } else {
+                Ok(text.to_owned())
+            }
+        })
+        .transpose()?;
+    if let Some(text) = &text {
+        crate::handoff::validate_text(kind, text, false)?;
+    }
+    let _hooks = crate::process::suppress_git_hooks();
+    let context = command_context(&parsed)?;
+    let tree = crate::selectors::resolve(&context, selector, true, None)?;
+    worktree::validate_checkout(&context, &tree, "handoff")?;
+    let memory = crate::handoff::Memory::locate(&context.git_root, &tree)?;
+    if let Some(text) = text {
+        let entry = memory.add(kind, &text, memory.source_from_env())?;
+        if crate::output::json() {
+            crate::output::data(&entry)?;
+        } else {
+            outln!("{}", entry.id);
+        }
+    } else if action == "path" {
+        memory.inspect_path()?;
+        if crate::output::json() {
+            crate::output::data(&serde_json::json!({"path": memory.path}))?;
+        } else {
+            outln!("{}", memory.path.display());
+        }
+    } else {
+        let snapshot = memory.read()?;
+        if crate::output::json() {
+            crate::output::data(&snapshot)?;
+        } else {
+            crate::output::stdout(format_args!("{}", snapshot.full_text()));
+        }
+    }
+    Ok(SUCCESS)
 }
 
 fn skill_root(args: &[String]) -> Result<i32> {
@@ -1812,11 +1907,15 @@ fn set(args: &[String]) -> Result<i32> {
 /// Shared by common-option extraction and command validation.
 fn command_options(key: &str) -> Vec<Opt> {
     let mut options = match key {
+        "handoff" => vec![],
+        "handoff show" | "handoff path" => vec![repo_flag()],
+        "handoff add" => vec![repo_flag(), value_flag("kind", None)],
         "run" => vec![
             repo_flag(),
             value_flag("provider", None),
             value_flag("skill", None),
             flag("fresh", None),
+            flag("no-handoff", None),
             value_flag("timeout", None),
         ],
         "sync" => vec![
@@ -2344,7 +2443,34 @@ static SKILL_COMMANDS: &[Command] = &[Command {
     children: &[],
 }];
 
+static HANDOFF_COMMANDS: &[Command] = &[
+    Command {
+        name: "show",
+        help_key: "handoff show",
+        run: handoff_show,
+        children: &[],
+    },
+    Command {
+        name: "path",
+        help_key: "handoff path",
+        run: handoff_path,
+        children: &[],
+    },
+    Command {
+        name: "add",
+        help_key: "handoff add",
+        run: handoff_add,
+        children: &[],
+    },
+];
+
 static COMMANDS: &[Command] = &[
+    Command {
+        name: "handoff",
+        help_key: "handoff",
+        run: handoff_root,
+        children: HANDOFF_COMMANDS,
+    },
     Command {
         name: "run",
         help_key: "run",
