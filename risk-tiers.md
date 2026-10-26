@@ -44,4 +44,4 @@ Any change that actually affects trust, hooks, delete/remove (including gc), or 
 
 Before merging, confirm required CI, review, any required security review, and the risk assessment cover the current HEAD. Approval covers one HEAD SHA. New commits require updated checks, fresh review, risk assessment, and renewed maintainer approval for high risk. Risk classification does not replace ordinary or security review. Follow the [review guide](REVIEW.md).
 
-Use `gh pr merge --squash --match-head-commit <sha>` with that verified SHA. For high risk, a maintainer merges after a maintainer approves that SHA; automation must not merge it.
+Use `gh pr merge --squash --match-head-commit <sha>` with that verified SHA. For high risk, merge only after a maintainer approves that SHA; automation must not merge it.
