@@ -310,20 +310,15 @@ impl Group {
         }
     }
 
-    fn can_signal_group(&self) -> bool {
-        // Cursor cleanup after reap is restricted to saved descendant identities;
-        // the old leader PID may now identify an unrelated process group.
-        // Preserve Codex's existing process-group cleanup behavior.
-        !self.reaped || self.policy.term_grace.is_none()
-    }
-
     fn send(&self, sig: i32) {
-        if self.can_signal_group() {
-            if let Ok(pid) = i32::try_from(self.id()) {
-                // SAFETY: CommandExt::process_group(0) isolated the child group.
-                unsafe {
-                    kill(-pid, sig);
-                }
+        // Signal the process group for every provider, even after the leader is
+        // reaped: surviving members keep the group (and so its id) alive, which
+        // is what lets the existing Codex cleanup reach them. Only the /proc
+        // ancestry root is dropped after reap; see refresh_saved_descendants.
+        if let Ok(pid) = i32::try_from(self.id()) {
+            // SAFETY: CommandExt::process_group(0) isolated the child group.
+            unsafe {
+                kill(-pid, sig);
             }
         }
         #[cfg(target_os = "linux")]
@@ -587,7 +582,7 @@ mod tests {
     }
 
     #[test]
-    fn child_wait_methods_mark_reaped_and_disable_cursor_group_signals() {
+    fn child_wait_methods_mark_reaped() {
         for provider in [Provider::Codex, Provider::Cursor] {
             for poll in [false, true] {
                 let child = std::process::Command::new("sh")
@@ -597,7 +592,6 @@ mod tests {
                     .unwrap();
                 let mut group = Group::new(child, provider.stop_policy());
                 assert!(!group.reaped);
-                assert!(group.can_signal_group());
                 if poll {
                     let start = Instant::now();
                     while group.try_wait().unwrap().is_none() {
@@ -608,8 +602,64 @@ mod tests {
                     group.wait().unwrap();
                 }
                 assert!(group.reaped);
-                assert_eq!(group.can_signal_group(), provider == Provider::Codex);
             }
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn running(pid: i32) -> bool {
+        // Zombies awaiting their new parent's reap count as stopped.
+        fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.rsplit_once(')')
+                .and_then(|(_, rest)| rest.split_whitespace().next())
+                .is_some_and(|state| state != "Z" && state != "X")
+        })
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn group_members_are_killed_after_the_leader_exits_and_is_reaped() {
+        for provider in [Provider::Codex, Provider::Cursor] {
+            let path =
+                std::env::temp_dir().join(format!("rabi-group-survivor-{}", uuid::Uuid::new_v4()));
+            // The leader leaves a same-group child behind and exits normally.
+            let child = std::process::Command::new("sh")
+                .arg("-c")
+                .arg(format!(
+                    "sh -c 'trap \"\" INT TERM; sleep 30' & echo $! > {}; exit 0",
+                    path.display()
+                ))
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            let mut group = Group::new(child, provider.stop_policy());
+            let start = Instant::now();
+            while group.try_wait().unwrap().is_none() {
+                assert!(start.elapsed() < Duration::from_secs(5));
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let pid: i32 = loop {
+                if let Ok(text) = fs::read_to_string(&path) {
+                    if let Ok(pid) = text.trim().parse() {
+                        break pid;
+                    }
+                }
+                assert!(start.elapsed() < Duration::from_secs(5));
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            assert!(running(pid), "survivor should still run");
+            drop(group);
+            let start = Instant::now();
+            while running(pid) {
+                assert!(
+                    start.elapsed() < Duration::from_secs(5),
+                    "{provider:?} left a group member running after leader reap"
+                );
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            fs::remove_file(path).unwrap();
         }
     }
 
