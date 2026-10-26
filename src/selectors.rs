@@ -411,7 +411,7 @@ mod tests {
     use super::source_urls_equal;
 
     #[test]
-    fn review10_source_url_matching_preserves_kind_and_number_validation() {
+    fn source_url_matching_preserves_kind_and_number_validation() {
         let expected = "https://github.com/acme/demo/pull/7";
         assert!(source_urls_equal(
             "https://GitHub.com/Acme/Demo/pull/7/?plain=1#details",

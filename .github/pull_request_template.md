@@ -5,13 +5,13 @@
 ## Testing
 
 - Commands and observed results:
-- Reviewed HEAD SHA, Codex verdict, and rounds-to-pass (or stopped):
+- Reviewed HEAD SHA and review result:
 - Separate fresh read-only security review result, if required:
 - Not verified / remaining gaps:
 
 ## Risk
 
-Replace every placeholder with the fresh read-only classifier's assessment of the current committed HEAD; see [risk-tiers.md](https://github.com/yoiailabs/rabi/blob/main/risk-tiers.md). Judge behavioral and security substance, not touched paths; name the changed behavior and supporting evidence in `reason`. Keep all six keys and quote `human_review` as a string.
+Replace every placeholder with the risk assessment of the current committed HEAD; see [risk-tiers.md](https://github.com/yoiailabs/rabi/blob/main/risk-tiers.md). Judge behavioral and security substance, not touched paths; name the changed behavior and supporting evidence in `reason`. Keep all six keys and quote `human_review` as a string.
 
 ```yaml
 tier: <low|medium|high>
@@ -23,10 +23,9 @@ uncertainty: "<remaining uncertainty or none>"
 assessed_sha: "<full git HEAD SHA>"
 ```
 
-- Low/medium requires `human_review: "no"`: the development bot may merge with authorization after required CI is green, Codex review passes, every finding has a response, and no Important remains open.
-- High (including unknown risk) requires `human_review: "yes"`: stop and report for a human decision; Shuhei's approval for this specific SHA is required, and the bot must not merge. Changes to risk classification or merge-gate rules are high under canonical [risk-tiers.md](https://github.com/yoiailabs/rabi/blob/main/risk-tiers.md), whether they relax or tighten the gates.
-- Approval covers one SHA; new HEAD requires reclassification and renewed approval when required.
-- If `human_review: "yes"`, approved HEAD SHA and approval reference (or pending):
+- Low/medium requires `human_review: "no"`: a maintainer may merge after required CI is green, review passes, every finding has a response, and no Important remains unresolved.
+- High (including unknown risk) requires `human_review: "yes"`: maintainer approval of this exact HEAD SHA is required before merge; automation must not merge it. Changes to risk classification or merge-gate rules are high under [risk-tiers.md](https://github.com/yoiailabs/rabi/blob/main/risk-tiers.md), whether they relax or tighten the gates.
+- Approval covers one SHA; a new HEAD requires reassessment and renewed approval for high risk.
 
 ## How to revert
 

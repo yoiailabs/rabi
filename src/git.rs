@@ -1248,7 +1248,7 @@ mod tests {
     }
 
     #[test]
-    fn review11_registration_scan_still_refuses_an_unregistered_checkout() {
+    fn registration_scan_still_refuses_an_unregistered_checkout() {
         let root =
             std::env::temp_dir().join(format!("rabi-git-registration-{}", uuid::Uuid::new_v4()));
         let repo = root.join("repo");

@@ -3549,7 +3549,7 @@ fn merge_own_changes_refuse_rebase_and_survive_explicit_merge() {
 }
 
 #[test]
-fn review3_published_commits_in_independent_fetch_destinations_are_protected() {
+fn published_commits_in_independent_fetch_destinations_are_protected() {
     for (source, destination) in [
         ("refs/heads/*", "refs/heads/published/*"),
         ("refs/heads/topic", "refs/heads/published/topic"),
@@ -3870,12 +3870,12 @@ fn rebase_keeps_own_commits_after_upstream_rewind_with_forkpoint_config() {
 }
 
 #[test]
-fn review9_adopt_without_base_skips_sync() {
+fn adopt_without_base_skips_sync() {
     check_adopted_sync_base(false);
 }
 
 #[test]
-fn review9_adopt_with_base_syncs_normally() {
+fn adopt_with_base_syncs_normally() {
     check_adopted_sync_base(true);
 }
 
@@ -3927,7 +3927,7 @@ fn check_adopted_sync_base(explicit_base: bool) {
 }
 
 #[test]
-fn review9_branch_with_unknown_default_stays_unknown_after_default_returns() {
+fn branch_with_unknown_default_stays_unknown_after_default_returns() {
     for selector in ["review", "--all"] {
         let r = Repo::new();
         r.git(&r.main, &["remote", "remove", "origin"]);
@@ -3963,7 +3963,7 @@ fn review9_branch_with_unknown_default_stays_unknown_after_default_returns() {
 }
 
 #[test]
-fn review9_branch_with_known_default_preserves_sync_fallback() {
+fn branch_with_known_default_preserves_sync_fallback() {
     let r = Repo::new();
     r.git(&r.main, &["branch", "topic"]);
     let out = r.rabi(
@@ -4620,7 +4620,7 @@ fn conservative_fetch_refuses_visible_symrefs_to_any_outside_namespace() {
 }
 
 #[test]
-fn review2_dry_run_propagates_earlier_workspace_tips_through_local_bases() {
+fn dry_run_propagates_earlier_workspace_tips_through_local_bases() {
     let r = Repo::new();
     let a = r.create("a");
     let b = r.create("b");
@@ -4650,12 +4650,12 @@ fn review2_dry_run_propagates_earlier_workspace_tips_through_local_bases() {
 }
 
 #[test]
-fn review4_dry_run_propagates_a_branch_named_like_a_full_ref() {
+fn dry_run_propagates_a_branch_named_like_a_full_ref() {
     check_ref_prefixed_branch_plan("refs/heads/refs/heads/a", "updated");
 }
 
 #[test]
-fn review4_dry_run_does_not_alias_a_ref_prefixed_branch_to_another_branch() {
+fn dry_run_does_not_alias_a_ref_prefixed_branch_to_another_branch() {
     check_ref_prefixed_branch_plan("refs/heads/a", "up-to-date");
 }
 
@@ -4726,7 +4726,7 @@ fn check_ref_prefixed_branch_plan(dependent_base: &str, expected_status: &str) {
 }
 
 #[test]
-fn review2_git_prune_negative_exclusions_tags_and_remote_head_remain_scoped() {
+fn git_prune_negative_exclusions_tags_and_remote_head_remain_scoped() {
     for dry_run in [true, false] {
         let r = Repo::new();
         let tree = r.create("topic");
@@ -4808,7 +4808,7 @@ fn review2_git_prune_negative_exclusions_tags_and_remote_head_remain_scoped() {
 }
 
 #[test]
-fn review2_effective_conditional_and_environment_fetch_config_is_retained() {
+fn effective_conditional_and_environment_fetch_config_is_retained() {
     let r = Repo::new();
     let tree = r.create("topic");
     // The remote mapping exists only in a condition matching the original Git
@@ -5220,7 +5220,7 @@ fn p8_invalid_scopes_and_strategies_are_usage_without_repository_context() {
 }
 
 #[test]
-fn review3_fetch_refuses_explicit_tag_destinations() {
+fn fetch_refuses_explicit_tag_destinations() {
     for dry_run in [true, false] {
         for destination in ["refs/tags/cache/*", "refs/tags/cache/release"] {
             let r = Repo::new();
@@ -5248,7 +5248,7 @@ fn review3_fetch_refuses_explicit_tag_destinations() {
 }
 
 #[test]
-fn review3_fetch_refuses_visible_tag_symrefs_without_explicit_tag_refspecs() {
+fn fetch_refuses_visible_tag_symrefs_without_explicit_tag_refspecs() {
     for dry_run in [true, false] {
         for target in [
             "refs/heads/release",
@@ -5273,7 +5273,7 @@ fn review3_fetch_refuses_visible_tag_symrefs_without_explicit_tag_refspecs() {
 }
 
 #[test]
-fn review3_unknown_planned_tips_propagate_through_workspace_dependencies() {
+fn unknown_planned_tips_propagate_through_workspace_dependencies() {
     for strategy in ["--rebase", "--merge"] {
         let r = Repo::new();
         let a = r.create("a");
@@ -5331,7 +5331,7 @@ fn review3_unknown_planned_tips_propagate_through_workspace_dependencies() {
 }
 
 #[test]
-fn review3_current_branch_fetch_destination_is_not_publication_evidence() {
+fn current_branch_fetch_destination_is_not_publication_evidence() {
     let r = Repo::new();
     let tree = r.create("topic");
     r.write_commit(&tree, "own", "unpublished\n");
@@ -5351,7 +5351,7 @@ fn review3_current_branch_fetch_destination_is_not_publication_evidence() {
 }
 
 #[test]
-fn review3_independent_local_upstream_is_publication_evidence() {
+fn independent_local_upstream_is_publication_evidence() {
     for explicit in [true, false] {
         let r = Repo::new();
         let tree = r.create("topic");
@@ -5384,7 +5384,7 @@ fn review3_independent_local_upstream_is_publication_evidence() {
 }
 
 #[test]
-fn review3_tag_symref_into_remote_tracking_namespace_is_allowed() {
+fn tag_symref_into_remote_tracking_namespace_is_allowed() {
     let r = Repo::new();
     r.git(
         &r.main,

@@ -20,7 +20,7 @@ Exec preserves child output and exit status, ignores `RABI_OUTPUT`, and refuses 
 
 ## Parent sessions and skill discovery
 
-`rabi run [--provider codex|cursor|claude] [--skill VALUE] [--fresh] [--timeout DURATION] [TASK | -]` launches one parent session in the checkout containing cwd. To target another workspace, use `rabi run [options] SEL -- [TASK | -]`, for example `rabi run --skill rabi-dev task/auth -- "Fix authentication"`. The selector follows the shared rules above. `rabi -R /path/to/repo run task/auth --` works from outside the repository. `-R/--repo` requires an explicit SEL; primary checkouts and orphaned workspaces are refused. Repository trust is checked against the selected repository before status inspection (`rabi trust add` or `RABI_TRUST_ALL=1`); untrusted runs exit 4 without prompting.
+`rabi run [--provider codex|cursor|claude] [--skill VALUE] [--fresh] [--timeout DURATION] [TASK | -]` launches one parent session in the checkout containing cwd. To target another workspace, use `rabi run [options] SEL -- [TASK | -]`, for example `rabi run --skill my-skill task/auth -- "Fix authentication"`. The selector follows the shared rules above. `rabi -R /path/to/repo run task/auth --` works from outside the repository. `-R/--repo` requires an explicit SEL; primary checkouts and orphaned workspaces are refused. Repository trust is checked against the selected repository before status inspection (`rabi trust add` or `RABI_TRUST_ALL=1`); untrusted runs exit 4 without prompting.
 
 The explicit `--` separates SEL from TASK: at most one positional before it selects the workspace, and at most one after it supplies the task. Without a positional before `--`, the current workspace is used. Without `--`, a single positional remains TASK: `rabi run "task"`, `rabi run -- "task"`, and `rabi run -` keep their existing meanings. Option values such as `--skill --` are consumed as values, not separators. `rabi run SEL --` resumes that workspace with `Continue.`; running inside it later resumes the same session. The parent runs with that workspace as cwd.
 
@@ -77,7 +77,7 @@ rabi create branch-example --base origin/main --reuse
 
 ## Several agents in one repository
 
-Start in primary with a local `main` branch and a fetchable `origin` remote. Each agent keeps its workspace name or absolute path in its work log; handing off work means sharing that identifier.
+Start in primary with a local `main` branch and a fetchable `origin` remote. Each agent records its workspace name or absolute path; handing off work means sharing that identifier.
 
 ```sh
 rabi create feature/auth --base main --purpose 'agent 1: authentication' --json
