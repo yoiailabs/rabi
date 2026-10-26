@@ -1905,11 +1905,11 @@
       ],
       "examples": [
         {
-          "command": "rabi run --provider cursor --fresh --skill rabi-dev \"Fix issue #123\"",
+          "command": "rabi run --provider cursor --fresh --skill my-skill \"Fix issue #123\"",
           "description": "Start a new Cursor parent in a trusted workspace"
         },
         {
-          "command": "rabi run --skill rabi-dev \"Fix issue #123\"",
+          "command": "rabi run --skill my-skill \"Fix issue #123\"",
           "description": "Start a parent session in a trusted workspace"
         },
         {
@@ -1917,7 +1917,7 @@
           "description": "Resume the same parent with Continue."
         },
         {
-          "command": "rabi run --skill rabi-dev task/auth -- \"Fix authentication\"",
+          "command": "rabi run --skill my-skill task/auth -- \"Fix authentication\"",
           "description": "Start a parent in a selected trusted workspace without cd"
         },
         {

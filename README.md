@@ -130,7 +130,7 @@ npx skills update rabi
 
 ## Parent sessions and skills
 
-`rabi run --skill rabi-dev "Fix issue #123"` starts one Codex parent session in the current workspace. The parent manages progress, delegates to its own subagents, gathers evidence and decides completion. Run `rabi run` again to resume the same parent; `--fresh --skill VALUE` starts over and retains old records. `--skill` passes a verbatim instruction without resolving files. `--timeout 30m` changes the per-launch limit (default `2h`). Trust is required; create a workspace before running. See [commands](docs/commands.md).
+`rabi run --skill my-skill "Fix issue #123"` starts one Codex parent session in the current workspace. The parent manages progress, delegates to its own subagents, gathers evidence and decides completion. Run `rabi run` again to resume the same parent; `--fresh --skill VALUE` starts over and retains old records. `--skill` passes a verbatim instruction without resolving files. `--timeout 30m` changes the per-launch limit (default `2h`). Trust is required; create a workspace before running. See [commands](docs/commands.md).
 
 Choose Cursor with `--provider cursor` or Claude Code with `--provider claude` on the first run or with `--fresh`. Resume follows the recorded provider; a different `--provider` requires `--fresh`. Codex remains the default. Cursor uses sandbox mode with automatic approval review; the review service can permit execution outside the sandbox, which rabi reports in the launch audit. Existing `.cursor/sandbox.json` files are preserved; otherwise rabi creates a GitHub network allowlist. Claude Code requires `claude` on PATH and login, uses model `opus` with effort `high`, and refuses to run unless its reported permission mode is `auto`. See [provider details](docs/commands.md#parent-sessions-and-skill-discovery).
 
@@ -140,12 +140,12 @@ Use `rabi run SEL -- [TASK]` to target a workspace without changing directory; a
 
 ```sh
 rabi skill list
-rabi run --skill rabi-dev "Fix issue #123"
+rabi run --skill my-skill "Fix issue #123"
 rabi run "Address the review findings"
 rabi run -R /path/to/repo task/auth -- "Address the review findings"
-rabi run --fresh --skill rabi-dev - < task.md
-rabi run --fresh --provider cursor --skill rabi-dev "Fix issue #123"
-rabi run --fresh --provider claude --skill rabi-dev "Fix issue #123"
+rabi run --fresh --skill my-skill - < task.md
+rabi run --fresh --provider cursor --skill my-skill "Fix issue #123"
+rabi run --fresh --provider claude --skill my-skill "Fix issue #123"
 ```
 
 ## Configuration
