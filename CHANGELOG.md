@@ -7,6 +7,10 @@
 - `rabi run SEL -- [TASK | -]` launches or resumes a selected workspace without changing directory; `-R/--repo` can select its repository when SEL is supplied. Existing task-only forms retain their meanings.
 - `rabi list` and `rabi show` expose the current parent run state, session id, and latest launch log/answer paths in JSON, with compact run state in text. Run inspection is read-only; stale running records display as stopped, and invalid records produce a warning without failing inspection.
 
+### Fixed
+
+- `rabi run` now stops and reaps the parent process group as soon as a resumed launch observes a different Codex thread id, after saving the observed launch id. The original session id is retained; the run records an error and exits 1 instead of letting the different conversation keep running.
+
 ## v7.1.0 (2026-10-25)
 
 ### Changed (Breaking)

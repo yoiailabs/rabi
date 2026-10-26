@@ -151,7 +151,9 @@ fn observe_session(record: &mut Record, id: String, resuming: bool) -> Result<bo
         .ok_or_else(|| Error::msg("Missing launch record"))?;
     let mismatch = resuming && record.session_id.as_deref() != Some(&id);
     if mismatch {
-        launch.message = Some(format!("Codex resumed a different thread id ({id}); expected {}. The recorded parent session was retained. Use `rabi run --fresh --skill <value>` to start over.", record.session_id.as_deref().unwrap_or_default()));
+        if launch.message.is_none() {
+            launch.message = Some(format!("Codex resumed a different thread id ({id}); expected {}. The recorded parent session was retained. Use `rabi run --fresh --skill <value>` to start over.", record.session_id.as_deref().unwrap_or_default()));
+        }
     } else {
         record.session_id = Some(id.clone());
     }
@@ -315,9 +317,10 @@ pub(crate) fn execute(
         timeout,
         &mut lock,
         |id| {
-            observe_session(&mut record, id, resuming)?;
+            let mismatch = observe_session(&mut record, id, resuming)?;
             save(&dir, &record)
-                .map_err(|e| Error::msg(format!("Failed to persist Codex session id: {e}")))
+                .map_err(|e| Error::msg(format!("Failed to persist Codex session id: {e}")))?;
+            Ok(mismatch)
         },
     );
     // Fast exits and a final line without a newline still use the complete log.

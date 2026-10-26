@@ -227,7 +227,7 @@ pub(super) fn launch(
     session: Option<&str>,
     timeout: Duration,
     lock: &mut Lock,
-    on_session: impl FnMut(String) -> Result<()>,
+    on_session: impl FnMut(String) -> Result<bool>,
 ) -> Result<Outcome> {
     let mut cmd = crate::provider::codex(workspace, dir, session)?;
     cmd.stdout(io(File::create(dir.join("events.jsonl")))?)
@@ -256,7 +256,7 @@ fn monitor<R: std::io::Read>(
     mut group: Group,
     timeout: Duration,
     mut events: Option<crate::provider::SessionIdReader<R>>,
-    mut on_session: impl FnMut(String) -> Result<()>,
+    mut on_session: impl FnMut(String) -> Result<bool>,
 ) -> Result<Outcome> {
     let start = Instant::now();
     loop {
@@ -279,9 +279,18 @@ fn monitor<R: std::io::Read>(
         if let Some(reader) = events.as_mut() {
             match reader.poll() {
                 Ok(Some(id)) => {
-                    // Only persistence errors stop the child. Group still
-                    // stops and reaps it before launch finalization.
-                    on_session(id)?;
+                    // A true callback result requests a controlled error stop
+                    // after saving the observed session. Persistence errors
+                    // still propagate, with Group reaping before finalization.
+                    if on_session(id)? {
+                        group.stop();
+                        let status = io(group.0.wait())?;
+                        return Ok(Outcome {
+                            parent_exit: code(status),
+                            exit: 1,
+                            reason: StopReason::Error,
+                        });
+                    }
                     events = None;
                 }
                 // Observation is best effort: defer unreadable or oversized
@@ -316,6 +325,59 @@ mod tests {
     use super::*;
     use std::cell::Cell;
     use std::rc::Rc;
+
+    #[test]
+    fn session_callback_can_request_a_controlled_error_stop() {
+        for stop in [false, true] {
+            let path = std::env::temp_dir().join(format!("rabi-callback-{}", uuid::Uuid::new_v4()));
+            let pause = if stop { "60" } else { ".05" };
+            let child = std::process::Command::new("sh")
+                .args([
+                    "-c",
+                    &format!(
+                        "trap 'exit 42' TERM; printf ready; sleep {pause}; printf completed; exit 42"
+                    ),
+                ])
+                .stdout(File::create(&path).unwrap())
+                .stderr(std::process::Stdio::null())
+                .process_group(0)
+                .spawn()
+                .unwrap();
+            let group = Group(child);
+            let start = Instant::now();
+            while fs::read_to_string(&path).unwrap().is_empty() {
+                assert!(start.elapsed() < Duration::from_secs(5), "child not ready");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            let event = b"{\"type\":\"thread.started\",\"thread_id\":\"observed-thread\"}\n";
+            let mut calls = 0;
+            let result = monitor(
+                group,
+                Duration::from_secs(5),
+                Some(crate::provider::SessionIdReader::new(std::io::Cursor::new(
+                    event,
+                ))),
+                |id| {
+                    calls += 1;
+                    assert_eq!(id, "observed-thread");
+                    Ok(stop)
+                },
+            )
+            .unwrap();
+            assert_eq!(calls, 1);
+            assert_eq!(result.parent_exit, 42, "preserve the observed TERM status");
+            assert_eq!(result.exit, if stop { 1 } else { 42 });
+            assert!(matches!(
+                (stop, result.reason),
+                (true, StopReason::Error) | (false, StopReason::ParentFailed)
+            ));
+            assert_eq!(
+                fs::read_to_string(&path).unwrap(),
+                if stop { "ready" } else { "readycompleted" }
+            );
+            fs::remove_file(path).unwrap();
+        }
+    }
 
     #[test]
     fn observer_read_failure_does_not_stop_child_or_change_its_status() {
