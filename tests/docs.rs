@@ -79,7 +79,7 @@ fn parent_session_guidance_and_discovery_replace_the_workflow_contract() {
         assert!(help["helps"].get(name).is_none());
     }
     for document in [README, README_JA, include_str!("../docs/commands.md")] {
-        for flag in ["--skill", "--fresh", "--timeout"] {
+        for flag in ["--skill", "--fresh", "--timeout", "--provider"] {
             assert!(document.contains(flag));
         }
         assert!(document.contains("rabi skill list"));

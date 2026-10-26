@@ -51,6 +51,8 @@ pub(crate) struct Launch {
     session_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     requested_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    insecure_tool_calls: u64,
     pub message: Option<String>,
 }
 
@@ -67,12 +69,17 @@ pub(crate) struct Record {
     launches: Vec<Launch>,
 }
 
+fn is_zero(value: &u64) -> bool {
+    *value == 0
+}
+
 pub(crate) struct Report {
     pub provider: Provider,
     pub run: Record,
     pub launch: Launch,
     pub answer: String,
     pub exit: i32,
+    pub failure: Option<Error>,
 }
 
 pub(crate) fn timeout(value: &str) -> Result<Duration> {
@@ -203,6 +210,7 @@ fn prepare_launch(dir: &Path, record: &mut Record, prompt: &str) -> Result<PathB
             skill: record.skill.clone(),
             session_id: None,
             requested_session_id: None,
+            insecure_tool_calls: 0,
             message: None,
         });
         record.state = State::Running;
@@ -218,51 +226,81 @@ fn prepare_launch(dir: &Path, record: &mut Record, prompt: &str) -> Result<PathB
     Ok(launch_dir)
 }
 
+fn read_previous(
+    runs: &Path,
+    pointer: &Path,
+    tree: &WorktreeInfo,
+    requested_provider: Option<Provider>,
+) -> Result<Option<Record>> {
+    let id = match fs::read_to_string(pointer) {
+        Ok(id) => id,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(broken(error)),
+    };
+    validate_id(&id).map_err(broken)?;
+    let bytes = fs::read(runs.join(&id).join("state.json")).map_err(broken)?;
+    let record: Record = serde_json::from_slice(&bytes).map_err(broken)?;
+    if record.schema != 2
+        || record.id != id
+        || record.provider.parse::<Provider>().is_err()
+        || record.workspace.path != tree.path
+    {
+        return Err(broken(
+            "invalid schema or mismatching run/workspace identity",
+        ));
+    }
+    let provider = record.provider.parse::<Provider>().map_err(broken)?;
+    if let Some(requested) = requested_provider.filter(|requested| *requested != provider) {
+        return Err(Error::validation(format!(
+            "Current parent uses {}; start a new parent with `rabi run --fresh --provider {} --skill <value>`",
+            provider.name(), requested.name()
+        )));
+    }
+    Ok(Some(record))
+}
+
 pub(crate) fn execute(
     root: &Path,
     tree: &WorktreeInfo,
     skill: Option<&str>,
     fresh: bool,
+    requested_provider: Option<Provider>,
     task: Option<&str>,
     timeout: Duration,
 ) -> Result<Report> {
     let _signals = lifecycle::Signals::install()?;
-    let runs = crate::git::git_common_dir(root)?.join("rabi/runs");
+    let common_dir = crate::git::git_common_dir(root)?;
+    let runs = common_dir.join("rabi/runs");
     let current = runs.join("current");
-    io(fs::create_dir_all(&current))?;
     let key = workspace_key(&tree.path);
+    let pointer = current.join(&key);
+    // A conflicting provider is a usage error before creating directories,
+    // taking over stale locks, probing a session, or updating any run files.
+    if !fresh && requested_provider.is_some() {
+        read_previous(&runs, &pointer, tree, requested_provider)?;
+    }
+    io(fs::create_dir_all(&current))?;
     let mut lock = lifecycle::Lock::acquire(current.join(format!("{key}.lock")))?;
-    let pointer = current.join(key);
+    // Re-read under the lock: another launcher may have completed since the
+    // read-only provider check above.
     let previous = if fresh {
         None
     } else {
-        match fs::read_to_string(&pointer) {
-            Ok(id) => Some(id),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => None,
-            Err(e) => return Err(broken(e)),
-        }
+        read_previous(&runs, &pointer, tree, requested_provider)?
     };
     let resuming = previous.is_some();
-    let mut record = if let Some(id) = previous {
-        validate_id(&id).map_err(broken)?;
-        let bytes = fs::read(runs.join(&id).join("state.json")).map_err(broken)?;
-        let record: Record = serde_json::from_slice(&bytes).map_err(broken)?;
-        if record.schema != 2
-            || record.id != id
-            || record.provider.parse::<Provider>().is_err()
-            || record.workspace.path != tree.path
-        {
-            return Err(broken(
-                "invalid schema or mismatching run/workspace identity",
-            ));
-        }
+    let mut record = if let Some(record) = previous {
         let session = record
             .session_id
             .as_deref()
             .filter(|s| !s.is_empty())
             .ok_or_else(|| broken("no recorded session id"))?;
         let provider = record.provider.parse::<Provider>().map_err(broken)?;
-        if provider.probe_session(session).map_err(broken)? == Probe::Missing {
+        if provider
+            .probe_session(session, Path::new(&record.workspace.path))
+            .map_err(broken)?
+            == Probe::Missing
+        {
             return Err(broken(format!(
                 "{} session rollout not found",
                 provider.display_name()
@@ -281,7 +319,7 @@ pub(crate) fn execute(
                 path: tree.path.clone(),
                 branch: (!tree.detached).then(|| tree.branch.clone()),
             },
-            provider: Provider::Codex.name().into(),
+            provider: requested_provider.unwrap_or(Provider::Codex).name().into(),
             session_id: None,
             skill: skill.into(),
             state: State::Idle,
@@ -325,41 +363,60 @@ pub(crate) fn execute(
         Some(id) => Session::Resume { id },
         None => Session::New { requested: None },
     };
-    let launched = lifecycle::launch(
-        provider,
-        Path::new(&tree.path),
-        &launch_dir,
-        session,
-        timeout,
-        &mut lock,
-        |id| {
-            let mismatch = observe_session(&mut record, id, resuming)?;
-            save(&dir, &record).map_err(|e| {
-                Error::msg(format!(
-                    "Failed to persist {} session id: {e}",
-                    provider.display_name()
-                ))
-            })?;
-            Ok(mismatch)
-        },
-    );
+    let launched = provider
+        .prepare_workspace(Path::new(&record.workspace.path), &common_dir)
+        .and_then(|()| {
+            lifecycle::launch(
+                provider,
+                Path::new(&tree.path),
+                &launch_dir,
+                session,
+                timeout,
+                &mut lock,
+                |id| {
+                    let mismatch = observe_session(&mut record, id, resuming)?;
+                    save(&dir, &record).map_err(|e| {
+                        Error::msg(format!(
+                            "Failed to persist {} session id: {e}",
+                            provider.display_name()
+                        ))
+                    })?;
+                    Ok(mismatch)
+                },
+            )
+        });
+    // Cursor finalization scans the full log once after process reaping even
+    // when the session id was already observed during launch.
+    let cursor_final =
+        (provider == Provider::Cursor).then(|| provider.finalize(&launch_dir.join("events.jsonl")));
     // Fast exits and a final line without a newline still use the complete log.
     // Once observed mid-launch, the first id is authoritative for this launch.
-    let session = record
-        .launches
-        .last()
-        .and_then(|launch| launch.session_id.clone())
-        .map(Ok)
-        .unwrap_or_else(|| {
-            provider
-                .finalize(&launch_dir.join("events.jsonl"))
-                .map(|finalized| finalized.session_id)
-        });
+    let session = if let Some(finalized) = &cursor_final {
+        finalized
+            .as_ref()
+            .ok()
+            .and_then(|finalized| {
+                (!finalized.session_id.is_empty()).then(|| Ok(finalized.session_id.clone()))
+            })
+            .unwrap_or_else(|| Err(Error::msg("Cursor did not report a session id")))
+    } else {
+        record
+            .launches
+            .last()
+            .and_then(|launch| launch.session_id.clone())
+            .map(Ok)
+            .unwrap_or_else(|| {
+                provider
+                    .finalize(&launch_dir.join("events.jsonl"))
+                    .map(|finalized| finalized.session_id)
+            })
+    };
     let launch = record
         .launches
         .last_mut()
         .ok_or_else(|| Error::msg("Missing launch record"))?;
     launch.finished_at = Some(crate::metadata::iso_now());
+    let mut failure = None;
     let mut exit = match launched {
         Ok(result) => {
             launch.exit_code = Some(result.parent_exit);
@@ -369,12 +426,17 @@ pub(crate) fn execute(
         Err(e) => {
             launch.message = Some(e.to_string());
             launch.stop_reason = Some(StopReason::Error);
+            if provider == Provider::Cursor {
+                failure = Some(e);
+            }
             1
         }
     };
     match session {
         Ok(id) => {
-            if observe_session(&mut record, id, resuming)? {
+            if observe_session(&mut record, id, resuming)?
+                && (provider == Provider::Codex || exit == 0)
+            {
                 record
                     .launches
                     .last_mut()
@@ -383,7 +445,7 @@ pub(crate) fn execute(
                 exit = 1;
             }
         }
-        Err(e) if launch.message.is_none() && exit == 0 => {
+        Err(e) if provider == Provider::Codex && launch.message.is_none() && exit == 0 => {
             launch.message = Some(e.to_string());
             launch.stop_reason = Some(StopReason::Error);
             exit = 1;
@@ -401,6 +463,30 @@ pub(crate) fn execute(
             _ => launch.message.take(),
         };
     }
+    if let Some(finalized) = cursor_final {
+        match finalized {
+            Ok(finalized) => {
+                if exit == 0 {
+                    if let Some(error) = finalized.protocol_error {
+                        launch.message = Some(error);
+                        launch.stop_reason = Some(StopReason::Error);
+                        exit = 1;
+                    } else if finalized.is_error {
+                        launch.message = Some("Cursor reported an error result".into());
+                        launch.stop_reason = Some(StopReason::ParentFailed);
+                        exit = 1;
+                    }
+                }
+                launch.insecure_tool_calls = finalized.insecure_tool_calls;
+            }
+            Err(error) if exit == 0 => {
+                launch.message = Some(error.to_string());
+                launch.stop_reason = Some(StopReason::Error);
+                exit = 1;
+            }
+            Err(_) => {}
+        }
+    }
     let answer = match fs::read_to_string(launch_dir.join("answer.md")) {
         Ok(answer) => answer,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
@@ -413,6 +499,13 @@ pub(crate) fn execute(
             String::new()
         }
     };
+    if launch.insecure_tool_calls > 0 {
+        let audit = format!("Cursor audit: {} completed tool call(s) requested TYPE_INSECURE_NONE (sandbox policy disabled).", launch.insecure_tool_calls);
+        launch.message = Some(match launch.message.take() {
+            Some(message) => format!("{message}; {audit}"),
+            None => audit,
+        });
+    }
     record.state = match launch.stop_reason {
         Some(StopReason::Completed) => State::Idle,
         Some(StopReason::Interrupted | StopReason::TimedOut | StopReason::ParentFailed) => {
@@ -431,6 +524,7 @@ pub(crate) fn execute(
         launch,
         answer,
         exit,
+        failure,
     })
 }
 
@@ -451,12 +545,18 @@ mod tests {
         });
         let mut record: Record = serde_json::from_value(value.clone()).unwrap();
         assert_eq!(record.launches[0].requested_session_id, None);
+        assert_eq!(record.launches[0].insecure_tool_calls, 0);
         assert_eq!(serde_json::to_value(&record).unwrap(), value);
         assert!(!serde_json::to_value(&record.launches[0])
             .unwrap()
             .as_object()
             .unwrap()
             .contains_key("requestedSessionId"));
+        record.launches[0].insecure_tool_calls = 2;
+        assert_eq!(
+            serde_json::to_value(&record.launches[0]).unwrap()["insecureToolCalls"],
+            2
+        );
         record.launches[0].requested_session_id = Some("requested".into());
         assert_eq!(
             serde_json::to_value(&record.launches[0]).unwrap()["requestedSessionId"],

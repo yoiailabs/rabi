@@ -132,6 +132,8 @@ npx skills update rabi
 
 `rabi run --skill rabi-dev "Fix issue #123"` starts one Codex parent session in the current workspace. The parent manages progress, delegates to its own subagents, gathers evidence and decides completion. Run `rabi run` again to resume the same parent; `--fresh --skill VALUE` starts over and retains old records. `--skill` passes a verbatim instruction without resolving files. `--timeout 30m` changes the per-launch limit (default `2h`). Trust is required; create a workspace before running. See [commands](docs/commands.md).
 
+Choose Cursor with `--provider cursor` on the first run or with `--fresh`. Resume follows the recorded provider; a different `--provider` requires `--fresh`. Codex remains the default. Cursor uses sandbox mode with automatic approval review; the review service can permit execution outside the sandbox, which rabi reports in the launch audit. Existing `.cursor/sandbox.json` files are preserved; otherwise rabi creates a GitHub network allowlist. See [Cursor details](docs/commands.md#parent-sessions-and-skill-discovery).
+
 Use `rabi run SEL -- [TASK]` to target a workspace without changing directory; add `-R REPO` from outside its repository. A single positional without `--` remains task text. `rabi list` and `rabi show` display the current parent run state; JSON also includes its session id and latest launch log/answer paths.
 
 `rabi skill list` lists direct child skills from checkout and user skill directories, including duplicates. It is independent of `rabi run`.
@@ -142,6 +144,7 @@ rabi run --skill rabi-dev "Fix issue #123"
 rabi run "Address the review findings"
 rabi run -R /path/to/repo task/auth -- "Address the review findings"
 rabi run --fresh --skill rabi-dev - < task.md
+rabi run --fresh --provider cursor --skill rabi-dev "Fix issue #123"
 ```
 
 ## Configuration

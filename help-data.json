@@ -312,7 +312,7 @@
         "--names and --paths select text output even with RABI_OUTPUT=json. They cannot be combined with each other or explicit JSON.",
         "All JSON uses schema 2: {schema:2, command, ok, data, warnings:[{code,message}], error:null|{code,message,details?}}. data preserves partial results and has no top-level version/schema. Parsers must ignore unknown fields. Exit codes: 0 success, 1 operational failure, 2 usage/ambiguous, 3 not found/not repository, 4 safety refusal (dirty/unpreserved/published/exists/exists_remote/untrusted; refused when the cause is unknown), 5 sync conflict, 6 partial persistent changes. Standalone exec preserves child statuses",
         "Workspace JSON includes setup {state, at, error}, or null when unrecorded. Text lists show setup:STATE whenever state is not ok. Interrupted is an observation only, with no locking or in-use detection.",
-        "Workspace JSON includes run: null or {id,state,sessionId,skill,launches,lastLaunch}; latest launch details include existing absolute log/answer paths. Text adds run:STATE. Inspection never writes run files or locks; stale running records display stopped. Invalid run data produces run:null and a run_read warning. --names/--paths are unchanged."
+        "Workspace JSON includes run: null or {id,provider,state,sessionId,skill,launches,lastLaunch}; latest launch details include existing absolute log/answer paths. Text adds run:STATE. Inspection never writes run files or locks; stale running records display stopped. Invalid run data produces run:null and a run_read warning. --names/--paths are unchanged."
       ]
     },
     "gc": {
@@ -1346,7 +1346,7 @@
         "SEL defaults to .; the primary checkout and other unrecorded checkouts report managed:false. Reads never rewrite workspace records.",
         "JSON returns data.workspace with id, name, kind, path, current, repo, managed, orphaned, branch, head, detached, dirty, base, createdFrom, upstream, purpose, links, setup, run, createdAt and updatedAt. Unknown values are null.",
         "All JSON uses schema 2: {schema:2, command, ok, data, warnings:[{code,message}], error:null|{code,message,details?}}. data preserves partial results and has no top-level version/schema. Parsers must ignore unknown fields. Exit codes: 0 success, 1 operational failure, 2 usage/ambiguous, 3 not found/not repository, 4 safety refusal (dirty/unpreserved/published/exists/exists_remote/untrusted; refused when the cause is unknown), 5 sync conflict, 6 partial persistent changes. Standalone exec preserves child statuses",
-        "Run is null without a current parent or with invalid data (run_read warning). Otherwise it includes state, sessionId, skill, launch count and latest launch details with existing absolute paths. Running requires a running record and a live lock pid or process group; stale running displays stopped. Text adds Run, Session, Last launch, Answer and Log when available. Inspection never writes run files or locks."
+        "Run is null without a current parent or with invalid data (run_read warning). Otherwise it includes provider, state, sessionId, skill, launch count and latest launch details with existing absolute paths. Running requires a running record and a live lock pid or process group; stale running displays stopped. Text adds Run, Session, Last launch, Answer and Log when available. Inspection never writes run files or locks."
       ]
     },
     "path": {
@@ -1841,9 +1841,14 @@
     },
     "run": {
       "name": "run",
-      "description": "Launch or resume one Codex parent session in a workspace",
-      "usage": "rabi run [--skill VALUE] [--fresh] [--timeout DURATION] [SEL --] [TASK | -]",
+      "description": "Launch or resume one Codex or Cursor parent session in a workspace",
+      "usage": "rabi run [--provider codex|cursor] [--skill VALUE] [--fresh] [--timeout DURATION] [SEL --] [TASK | -]",
       "options": [
+        {
+          "name": "provider",
+          "type": "string",
+          "description": "Parent provider: codex (default) or cursor on first/fresh runs. Resume follows the record; the same value confirms it, a different value requires --fresh."
+        },
         {
           "name": "repo",
           "short": "R",
@@ -1890,12 +1895,18 @@
       ],
       "notes": [
         "Uses the checkout containing cwd, or SEL before an explicit --. -R/--repo requires SEL. Primary and orphaned checkouts are refused. The selected repository must be trusted, without prompting, before status inspection.",
-        "SEL uses the shared workspace selector rules. At most one positional may precede -- (SEL), and one may follow (TASK). Without --, a single positional remains TASK. Option values, including --skill --, are not separators. Codex cwd and session identity use the selected checkout path.",
+        "SEL uses the shared workspace selector rules. At most one positional may precede -- (SEL), and one may follow (TASK). Without --, a single positional remains TASK. Option values, including --skill --, are not separators. Parent cwd and session identity use the selected checkout path.",
         "TASK is optional text; - reads stdin. Later launches resume the recorded parent session; with no message, send Continue. Missing sessions stop with a --fresh hint.",
-        "Codex manages progress and its own subagents. Parent exit 0 returns 0 without claiming task completion; other parent statuses pass through. Timeout exits 124; SIGINT/SIGTERM exits 130. The process group is terminated and reaped.",
+        "The parent manages progress and its own subagents. Parent exit 0 returns 0 without claiming task completion; Cursor also requires a valid non-error result. Other parent statuses pass through. Timeout exits 124; SIGINT/SIGTERM exits 130. The process group is terminated and reaped. Codex uses TERM then KILL; Cursor uses INT, TERM, KILL and best-effort Linux descendant cleanup. Detached Cursor workers may remain; macOS cleanup covers the process group.",
+        "Cursor requires cursor-agent (or agent) on PATH and login. It uses --trust --sandbox enabled --auto-review with grok-4.7-high and stdin prompts. Resume requires local chat metadata with hasConversation:true under HOME/.cursor/chats/md5(workspace)/ID/meta.json; missing sessions fail safely with --fresh guidance.",
+        "Cursor creates .cursor/sandbox.json with GitHub network domains only when absent, preserves existing user files, and excludes the path through the repository common directory info/exclude. Completed TYPE_INSECURE_NONE tool calls add an audit message and launch.insecureToolCalls count without failing the run. Cursor CLI commit attribution settings are preserved.",
         "Text prints the final parent answer. JSON data is {run,launch,answer}; raw stdout and stderr are saved per launch."
       ],
       "examples": [
+        {
+          "command": "rabi run --provider cursor --fresh --skill rabi-dev \"Fix issue #123\"",
+          "description": "Start a new Cursor parent in a trusted workspace"
+        },
         {
           "command": "rabi run --skill rabi-dev \"Fix issue #123\"",
           "description": "Start a parent session in a trusted workspace"
@@ -2055,6 +2066,7 @@
     "default_branch_unavailable",
     "pull_request_unavailable",
     "published_rewritten",
+    "run_audit",
     "run_read"
   ],
   "schemaVersion": 2

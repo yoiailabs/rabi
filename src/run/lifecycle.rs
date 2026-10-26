@@ -188,8 +188,73 @@ pub(super) fn group_is_alive(pgid: u32) -> bool {
     status == 0 || std::io::Error::last_os_error().raw_os_error() != Some(3)
 }
 
-struct Group(Child, StopPolicy);
+// Cursor tool shells may call setsid(), escaping their parent's process group.
+// Linux /proc snapshots retain their identities before signaling the leader.
+// This is best effort: children that reparent before a snapshot may be missed.
+#[derive(Clone, Copy)]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+struct Descendant {
+    pid: i32,
+    started: u64,
+}
+
+#[cfg(target_os = "linux")]
+fn process_identity(pid: i32) -> Option<(i32, u64)> {
+    let stat = fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    // comm may contain spaces and parentheses; fields after its final ')' are
+    // state (3), ppid (4), ... starttime (22).
+    let fields: Vec<_> = stat.rsplit_once(')')?.1.split_whitespace().collect();
+    Some((fields.get(1)?.parse().ok()?, fields.get(19)?.parse().ok()?))
+}
+
+struct Group(Child, StopPolicy, Vec<Descendant>);
 impl Group {
+    fn new(child: Child, policy: StopPolicy) -> Self {
+        Self(child, policy, Vec::new())
+    }
+
+    fn refresh_descendants(&mut self) {
+        if self.1.term_grace.is_none() {
+            return;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let Ok(root) = i32::try_from(self.0.id()) else {
+                return;
+            };
+            let Ok(entries) = fs::read_dir("/proc") else {
+                return;
+            };
+            let processes: Vec<_> = entries
+                .filter_map(|entry| {
+                    let pid = entry.ok()?.file_name().to_str()?.parse::<i32>().ok()?;
+                    let (parent, started) = process_identity(pid)?;
+                    Some((Descendant { pid, started }, parent))
+                })
+                .collect();
+            self.2.retain(|saved| {
+                processes.iter().any(|(current, _)| {
+                    saved.pid == current.pid && saved.started == current.started
+                })
+            });
+            loop {
+                let mut added = false;
+                for (process, parent) in &processes {
+                    if process.pid != root
+                        && (*parent == root || self.2.iter().any(|saved| saved.pid == *parent))
+                        && !self.2.iter().any(|saved| saved.pid == process.pid)
+                    {
+                        self.2.push(*process);
+                        added = true;
+                    }
+                }
+                if !added {
+                    break;
+                }
+            }
+        }
+    }
+
     fn send(&self, sig: i32) {
         if let Ok(pid) = i32::try_from(self.0.id()) {
             // SAFETY: CommandExt::process_group(0) isolated the child group.
@@ -197,20 +262,45 @@ impl Group {
                 kill(-pid, sig);
             }
         }
+        #[cfg(target_os = "linux")]
+        for process in &self.2 {
+            // Check starttime to avoid signaling a different process after PID
+            // reuse. Linux does not offer an atomic check-and-kill via /proc;
+            // this narrow race is why descendant cleanup remains best effort.
+            if process_identity(process.pid).is_some_and(|(_, started)| started == process.started)
+            {
+                // SAFETY: identity checked above; pid is a child observed in /proc.
+                unsafe {
+                    kill(process.pid, sig);
+                }
+            }
+        }
     }
-    fn stop(&mut self) {
-        self.send(self.1.signal);
-        // Keep the group alive through the grace period even if its leader
-        // exits: grandchildren may ignore SIGTERM. Always escalate the group.
+
+    fn grace(&mut self, duration: Duration) {
+        // Keep escalating even if the leader exits: descendants may ignore INT
+        // or TERM. Refresh snapshots to include newly spawned tool children.
         let start = Instant::now();
-        while start.elapsed() < self.1.grace {
+        while start.elapsed() < duration {
+            self.refresh_descendants();
             std::thread::sleep(Duration::from_millis(10));
+        }
+    }
+
+    fn stop(&mut self) {
+        self.refresh_descendants();
+        self.send(self.1.signal);
+        self.grace(self.1.grace);
+        if let Some(grace) = self.1.term_grace {
+            self.send(15);
+            self.grace(grace);
         }
         self.send(self.1.force_signal);
     }
 }
 impl Drop for Group {
     fn drop(&mut self) {
+        self.refresh_descendants();
         self.send(self.1.force_signal);
         let _ = self.0.wait();
     }
@@ -246,7 +336,7 @@ pub(super) fn launch(
     // Fail closed if the launcher dies between spawning and publishing the
     // child's pgid. Zero is unverifiable, never evidence of a dead group.
     lock.record_group(0)?;
-    let group = Group(
+    let group = Group::new(
         cmd.spawn().map_err(|e| Error::Spawn {
             command: provider.binary().into(),
             details: e.to_string(),
@@ -264,7 +354,12 @@ fn monitor<R: std::io::Read>(
     mut on_session: impl FnMut(String) -> Result<bool>,
 ) -> Result<Outcome> {
     let start = Instant::now();
+    let mut last_snapshot = None;
     loop {
+        if last_snapshot.is_none_or(|at: Instant| at.elapsed() >= Duration::from_millis(50)) {
+            group.refresh_descendants();
+            last_snapshot = Some(Instant::now());
+        }
         let reason = if INTERRUPTED.load(Ordering::Relaxed) {
             Some((StopReason::Interrupted, 130))
         } else if start.elapsed() >= timeout {
@@ -332,6 +427,32 @@ mod tests {
     use std::rc::Rc;
 
     #[test]
+    fn cursor_stop_sends_int_then_term_before_kill() {
+        let path =
+            std::env::temp_dir().join(format!("rabi-cursor-signals-{}", uuid::Uuid::new_v4()));
+        let child = std::process::Command::new("sh")
+            .args([
+                "-c",
+                "trap 'printf INT' INT; trap 'printf TERM' TERM; printf ready; while :; do :; done",
+            ])
+            .stdout(File::create(&path).unwrap())
+            .stderr(std::process::Stdio::null())
+            .process_group(0)
+            .spawn()
+            .unwrap();
+        let mut group = Group::new(child, Provider::Cursor.stop_policy());
+        let start = Instant::now();
+        while fs::read_to_string(&path).unwrap().is_empty() {
+            assert!(start.elapsed() < Duration::from_secs(5));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        group.stop();
+        assert_eq!(code(group.0.wait().unwrap()), 137);
+        assert_eq!(fs::read_to_string(&path).unwrap(), "readyINTTERM");
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn session_callback_can_request_a_controlled_error_stop() {
         for stop in [false, true] {
             let path = std::env::temp_dir().join(format!("rabi-callback-{}", uuid::Uuid::new_v4()));
@@ -348,7 +469,7 @@ mod tests {
                 .process_group(0)
                 .spawn()
                 .unwrap();
-            let group = Group(child, Provider::Codex.stop_policy());
+            let group = Group::new(child, Provider::Codex.stop_policy());
             let start = Instant::now();
             while fs::read_to_string(&path).unwrap().is_empty() {
                 assert!(start.elapsed() < Duration::from_secs(5), "child not ready");
@@ -404,7 +525,7 @@ mod tests {
                 .unwrap();
             let reads = Rc::new(Cell::new(0));
             let result = monitor(
-                Group(child, Provider::Codex.stop_policy()),
+                Group::new(child, Provider::Codex.stop_policy()),
                 Duration::from_secs(5),
                 Some(crate::provider::SessionIdReader::new(
                     Provider::Codex,

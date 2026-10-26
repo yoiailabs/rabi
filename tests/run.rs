@@ -1,4 +1,4 @@
-//! Fake-Codex integration coverage. No real provider or network is used.
+//! Fake-provider integration coverage. No real provider or network is used.
 #[path = "common/git.rs"]
 mod test_git;
 use serde_json::Value;
@@ -659,6 +659,8 @@ fn validation_trust_stdin_and_removed_commands() {
         vec!["run", "start"],
         vec!["run", "show"],
         vec!["run", "--provider", "codex"],
+        vec!["run", "--provider", "claude", "--skill", "x"],
+        vec!["run", "--provider", "Cursor", "--skill", "x"],
         vec!["run", "a", "b"],
         vec!["run", "-R", "."],
     ] {
@@ -2006,5 +2008,617 @@ fn run_read_diagnostics_escape_control_characters_from_invalid_records() {
                 }
             }
         }
+    }
+}
+
+impl Fixture {
+    fn fake_cursor(&self) {
+        // Isolate PATH so tests cannot accidentally launch a real Cursor binary.
+        for name in ["git", "python3"] {
+            let source = std::env::split_paths(&std::env::var_os("PATH").unwrap())
+                .map(|path| path.join(name))
+                .find(|path| path.is_file())
+                .unwrap();
+            std::os::unix::fs::symlink(source, self.root.join("bin").join(name)).unwrap();
+        }
+        let script = self.root.join("bin/cursor-agent");
+        fs::write(&script, r#"#!/usr/bin/env python3
+import hashlib, json, os, pathlib, signal, subprocess, sys, time, uuid
+args = sys.argv[1:]
+root = pathlib.Path(os.environ['FAKE_ROOT'])
+with (root/'argv.jsonl').open('a') as f: f.write(json.dumps(args)+'\n')
+(root/'input').write_bytes(sys.stdin.buffer.read())
+(root/'cwd').write_text(os.getcwd())
+(root/'binary').write_text(pathlib.Path(sys.argv[0]).name)
+workspace = args[args.index('--workspace')+1]
+sid = args[args.index('--resume')+1] if '--resume' in args else str(uuid.uuid4())
+sid = os.environ.get('CURSOR_OTHER_ID', sid)
+meta = pathlib.Path(os.environ['HOME'])/'.cursor/chats'/hashlib.md5(workspace.encode()).hexdigest()/sid/'meta.json'
+meta.parent.mkdir(parents=True, exist_ok=True)
+meta.write_text(json.dumps({'schemaVersion':1,'hasConversation':True,'cwd':workspace}))
+(root/'meta-path').write_text(str(meta))
+if os.environ.get('CURSOR_BLOCK'):
+    def capture_signal(signum, frame):
+        with (root/'signals').open('a') as f: f.write(str(signum)+'\n')
+    signal.signal(signal.SIGINT, capture_signal)
+    signal.signal(signal.SIGTERM, capture_signal)
+    child = subprocess.Popen([sys.executable,'-c','import os,signal,time; signal.signal(signal.SIGINT,signal.SIG_IGN); signal.signal(signal.SIGTERM,signal.SIG_IGN); os.write(1,b"ready\\n"); time.sleep(600)'], start_new_session=True, stdout=subprocess.PIPE)
+    assert child.stdout.readline() == b'ready\n'
+    (root/'pids').write_text(str(os.getpid())+' '+str(child.pid))
+if not os.environ.get('CURSOR_NO_INIT'):
+    print(json.dumps({'type':'system','subtype':'init','apiKeySource':'login','cwd':workspace,'session_id':sid,'model':'Grok 4.7 256K High','permissionMode':'default'}), flush=True)
+(root/'session-ready').write_text(str(os.getpid()))
+if os.environ.get('CURSOR_AUDIT'):
+    for subtype, policy in [('started','TYPE_INSECURE_NONE'), ('completed','TYPE_WORKSPACE_READWRITE'), ('completed','TYPE_INSECURE_NONE'), ('completed','TYPE_INSECURE_NONE')]:
+        print(json.dumps({'type':'tool_call','subtype':subtype,'session_id':sid,'tool_call':{'shellToolCall':{'args':{'command':'curl https://example.com','requestedSandboxPolicy':{'type':policy},'skipApproval':True},'result':{'success':{'exitCode':0,'stdout':'200'}}}}}), flush=True)
+if os.environ.get('CURSOR_BLOCK'): time.sleep(600)
+if os.environ.get('CURSOR_FIRST_RESULT'):
+    print(json.dumps({'type':'result','result':'Superseded result','is_error':False,'session_id':sid}), flush=True)
+if not os.environ.get('CURSOR_NO_RESULT'):
+    answer = 'x' * int(os.environ['CURSOR_ANSWER_SIZE']) if os.environ.get('CURSOR_ANSWER_SIZE') else 'Cursor final answer.\n'
+    event = {'type':'result','subtype':'success','duration_ms':1,'duration_api_ms':1,'is_error':bool(os.environ.get('CURSOR_IS_ERROR')),'result':answer,'session_id':os.environ.get('CURSOR_RESULT_ID',sid),'request_id':'fake-request','usage':{'inputTokens':10,'outputTokens':5}}
+    if os.environ.get('CURSOR_BAD_RESULT'): event['result'] = {'not':'text'}
+    if os.environ.get('CURSOR_BAD_ERROR'): event['is_error'] = 'false'
+    text = json.dumps(event)
+    if os.environ.get('CURSOR_TRUNCATE'): text = text[:-5]
+    print(text, end='' if os.environ.get('CURSOR_NO_NEWLINE') else '\n', flush=True)
+if os.environ.get('CURSOR_TRAILING_TRUNCATED'):
+    print('{"type":"result","result":"unfinished', end='', flush=True)
+print('fake Cursor stderr', file=sys.stderr, flush=True)
+(root/'completed').write_text('done')
+sys.exit(int(os.environ.get('CURSOR_EXIT','0')))
+"#).unwrap();
+        fs::set_permissions(script, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    fn cursor_command(&self, args: &[&str]) -> Command {
+        let mut command = self.command(args);
+        command.env("PATH", self.root.join("bin"));
+        command
+    }
+
+    fn cursor_json(&self, args: &[&str]) -> Value {
+        let out = self.cursor_command(args).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{:?}: {} {}",
+            args,
+            String::from_utf8_lossy(&out.stdout),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["data"].clone()
+    }
+
+    fn cursor_meta(&self) -> PathBuf {
+        PathBuf::from(fs::read_to_string(self.root.join("meta-path")).unwrap())
+    }
+}
+
+#[test]
+fn cursor_fresh_and_resume_preserve_argv_prompt_answer_and_provider_summary() {
+    let f = Fixture::new();
+    f.fake_cursor();
+    fs::copy(f.root.join("bin/cursor-agent"), f.root.join("bin/agent")).unwrap();
+    let first = f.cursor_json(&[
+        "run",
+        "--provider",
+        "cursor",
+        "--skill",
+        "x",
+        "initial task",
+        "--json",
+    ]);
+    assert_eq!(first["run"]["provider"], "cursor");
+    assert_eq!(first["run"]["schema"], 2);
+    assert_eq!(first["run"]["state"], "idle");
+    assert_eq!(first["answer"], "Cursor final answer.\n");
+    let dir = f.run_dir();
+    assert_eq!(
+        fs::read(f.root.join("input")).unwrap(),
+        fs::read(dir.join("launches/1/prompt.md")).unwrap()
+    );
+    assert!(fs::read_to_string(f.root.join("input"))
+        .unwrap()
+        .contains("initial task"));
+    assert_eq!(
+        fs::read_to_string(dir.join("launches/1/answer.md")).unwrap(),
+        "Cursor final answer.\n"
+    );
+    assert_eq!(
+        fs::read_to_string(f.root.join("cwd")).unwrap(),
+        f.workspace.to_str().unwrap()
+    );
+    assert_eq!(
+        fs::read_to_string(f.root.join("binary")).unwrap(),
+        "cursor-agent"
+    );
+    let expected = serde_json::json!([
+        "-p",
+        "--output-format",
+        "stream-json",
+        "--workspace",
+        f.workspace,
+        "--trust",
+        "--sandbox",
+        "enabled",
+        "--auto-review",
+        "--model",
+        "grok-4.7-high"
+    ]);
+    let calls = || {
+        fs::read_to_string(f.root.join("argv.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|line| serde_json::from_str::<Value>(line).unwrap())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(calls()[0], expected);
+    let second = f.cursor_json(&["run", "--json"]);
+    assert_eq!(second["run"]["id"], first["run"]["id"]);
+    assert_eq!(second["run"]["sessionId"], first["run"]["sessionId"]);
+    let mut resumed = expected.as_array().unwrap().clone();
+    resumed.extend([Value::from("--resume"), first["run"]["sessionId"].clone()]);
+    assert_eq!(calls()[1], Value::Array(resumed));
+    assert_eq!(
+        fs::read_to_string(f.root.join("input")).unwrap(),
+        "Continue."
+    );
+    let third = f.cursor_json(&["run", "--provider", "cursor", "--json"]);
+    assert_eq!(third["run"]["id"], first["run"]["id"]);
+    assert_eq!(observed_run(&f, "show")["provider"], "cursor");
+    let list = f.json(&["list", "--json"]);
+    assert_eq!(
+        list["workspaces"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|ws| ws["path"] == f.workspace.to_str().unwrap())
+            .unwrap()["run"]["provider"],
+        "cursor"
+    );
+    let saved = fs::read(dir.join("state.json")).unwrap();
+    let fresh = f.cursor_json(&[
+        "run",
+        "--fresh",
+        "--provider",
+        "cursor",
+        "--skill",
+        "x",
+        "--json",
+    ]);
+    assert_ne!(fresh["run"]["id"], first["run"]["id"]);
+    assert_eq!(fs::read(dir.join("state.json")).unwrap(), saved);
+    f.assert_unlocked();
+}
+
+#[test]
+fn cursor_provider_mismatch_is_usage_before_persistent_mutation() {
+    let f = Fixture::new();
+    f.fake_cursor();
+    f.cursor_json(&["run", "--provider", "cursor", "--skill", "x", "--json"]);
+    let state = fs::read(f.run_dir().join("state.json")).unwrap();
+    let pointer = fs::read(f.pointer()).unwrap();
+    let exclude = fs::read(f.repo.join(".git/info/exclude")).unwrap();
+    let sandbox = fs::read(f.workspace.join(".cursor/sandbox.json")).unwrap();
+    // Provider mismatch takes precedence even if local Cursor history is broken.
+    fs::remove_file(f.cursor_meta()).unwrap();
+    assert_error(
+        f.cursor_command(&["run", "--provider", "codex", "--json"])
+            .output()
+            .unwrap(),
+        2,
+        "--fresh --provider codex",
+    );
+    assert_eq!(fs::read(f.run_dir().join("state.json")).unwrap(), state);
+    assert_eq!(fs::read(f.pointer()).unwrap(), pointer);
+    assert_eq!(fs::read(f.repo.join(".git/info/exclude")).unwrap(), exclude);
+    assert_eq!(
+        fs::read(f.workspace.join(".cursor/sandbox.json")).unwrap(),
+        sandbox
+    );
+    assert_eq!(
+        fs::read_dir(f.run_dir().join("launches")).unwrap().count(),
+        1
+    );
+    assert_eq!(f.calls(), 1);
+    f.assert_unlocked();
+
+    let g = Fixture::new();
+    g.fake_cursor();
+    g.json(&["run", "--skill", "x", "--json"]);
+    let saved = fs::read(g.run_dir().join("state.json")).unwrap();
+    assert_error(
+        g.cursor_command(&["run", "--provider", "cursor", "--json"])
+            .output()
+            .unwrap(),
+        2,
+        "--fresh --provider cursor",
+    );
+    assert_eq!(fs::read(g.run_dir().join("state.json")).unwrap(), saved);
+    assert!(!g.workspace.join(".cursor").exists());
+    let switched = g.cursor_json(&[
+        "run",
+        "--fresh",
+        "--provider",
+        "cursor",
+        "--skill",
+        "x",
+        "--json",
+    ]);
+    assert_eq!(switched["run"]["provider"], "cursor");
+}
+
+#[test]
+fn cursor_probe_requires_valid_conversation_metadata_in_workspace_hash() {
+    for mode in [
+        "missing",
+        "false",
+        "malformed",
+        "unknown-id",
+        "wrong-workspace",
+        "missing-field",
+    ] {
+        let f = Fixture::new();
+        f.fake_cursor();
+        f.cursor_json(&["run", "--provider", "cursor", "--skill", "x", "--json"]);
+        let meta = f.cursor_meta();
+        match mode {
+            "missing" => fs::remove_file(meta).unwrap(),
+            "false" => fs::write(meta, r#"{"hasConversation":false}"#).unwrap(),
+            "malformed" => fs::write(meta, "{").unwrap(),
+            "missing-field" => fs::write(meta, "{}").unwrap(),
+            "unknown-id" => {
+                let mut state = f.state();
+                state["sessionId"] = Value::from(uuid::Uuid::new_v4().to_string());
+                fs::write(f.run_dir().join("state.json"), state.to_string()).unwrap();
+            }
+            _ => {
+                let elsewhere = f
+                    .home
+                    .join(".cursor/chats/incorrect-workspace-hash")
+                    .join(meta.parent().unwrap().file_name().unwrap());
+                fs::create_dir_all(&elsewhere).unwrap();
+                fs::rename(&meta, elsewhere.join("meta.json")).unwrap();
+            }
+        }
+        assert_error(
+            f.cursor_command(&["run", "--json"]).output().unwrap(),
+            1,
+            "--fresh",
+        );
+        assert_eq!(
+            f.calls(),
+            1,
+            "probe mode {mode} launched an empty conversation"
+        );
+        f.assert_unlocked();
+    }
+}
+
+#[test]
+fn cursor_sandbox_allowlist_is_excluded_idempotent_and_preserves_existing_content() {
+    for existing in [false, true] {
+        let f = Fixture::new();
+        f.fake_cursor();
+        let sandbox = f.workspace.join(".cursor/sandbox.json");
+        if existing {
+            fs::create_dir_all(sandbox.parent().unwrap()).unwrap();
+            fs::write(
+                &sandbox,
+                "user sandbox content is preserved, even if not JSON\n",
+            )
+            .unwrap();
+        }
+        fs::create_dir_all(f.repo.join(".git/info")).unwrap();
+        fs::write(
+            f.repo.join(".git/info/exclude"),
+            "# user exclusions\nexisting-pattern",
+        )
+        .unwrap();
+        f.cursor_json(&["run", "--provider", "cursor", "--skill", "x", "--json"]);
+        let bytes = fs::read(&sandbox).unwrap();
+        if existing {
+            assert_eq!(
+                bytes,
+                b"user sandbox content is preserved, even if not JSON\n"
+            );
+        } else {
+            let value: Value = serde_json::from_slice(&bytes).unwrap();
+            assert_eq!(
+                value,
+                serde_json::json!({"networkPolicy":{"allow":["github.com","*.github.com","*.githubusercontent.com"]}})
+            );
+        }
+        let exclude = fs::read(f.repo.join(".git/info/exclude")).unwrap();
+        let text = String::from_utf8(exclude.clone()).unwrap();
+        assert!(text.starts_with("# user exclusions\nexisting-pattern\n"));
+        assert_eq!(
+            text.lines()
+                .filter(|line| [".cursor/sandbox.json", "/.cursor/sandbox.json"].contains(line))
+                .count(),
+            1
+        );
+        let status = f
+            .command_at(&f.workspace, &["status", "--porcelain"], "git")
+            .output()
+            .unwrap();
+        assert!(status.status.success());
+        assert!(
+            status.stdout.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&status.stdout)
+        );
+        f.cursor_json(&["run", "--json"]);
+        assert_eq!(fs::read(&sandbox).unwrap(), bytes);
+        assert_eq!(fs::read(f.repo.join(".git/info/exclude")).unwrap(), exclude);
+    }
+}
+
+#[test]
+fn cursor_result_protocol_errors_and_parent_failures_keep_real_exit_code() {
+    for (setting, exit, stop) in [
+        ("CURSOR_NO_RESULT", 1, "error"),
+        ("CURSOR_BAD_RESULT", 1, "error"),
+        ("CURSOR_BAD_ERROR", 1, "error"),
+        ("CURSOR_TRUNCATE", 1, "error"),
+        ("CURSOR_TRAILING_TRUNCATED", 1, "error"),
+        ("CURSOR_IS_ERROR", 1, "parent_failed"),
+    ] {
+        let f = Fixture::new();
+        f.fake_cursor();
+        let out = f
+            .cursor_command(&["run", "--provider", "cursor", "--skill", "x", "--json"])
+            .env(setting, "1")
+            .output()
+            .unwrap();
+        assert_eq!(
+            out.status.code(),
+            Some(exit),
+            "{setting}: {}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let state = f.state();
+        assert_eq!(
+            state["state"],
+            if stop == "parent_failed" {
+                "stopped"
+            } else {
+                "error"
+            },
+            "{setting}"
+        );
+        assert_eq!(state["launches"][0]["stopReason"], stop, "{setting}");
+        assert_eq!(state["launches"][0]["exitCode"], 0, "{setting}");
+        assert!(state["launches"][0]["finishedAt"].is_string());
+        f.assert_unlocked();
+    }
+    let f = Fixture::new();
+    f.fake_cursor();
+    let out = f
+        .cursor_command(&["run", "--provider", "cursor", "--skill", "x", "--json"])
+        .env("CURSOR_EXIT", "42")
+        .env("CURSOR_NO_RESULT", "1")
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(42),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    assert_eq!(f.state()["launches"][0]["stopReason"], "parent_failed");
+    assert_eq!(f.state()["launches"][0]["exitCode"], 42);
+}
+
+#[test]
+fn cursor_last_result_large_answer_and_missing_final_newline_are_supported() {
+    for (size, no_init) in [(0, false), (131072, false), (131072, true)] {
+        let f = Fixture::new();
+        f.fake_cursor();
+        let mut command =
+            f.cursor_command(&["run", "--provider", "cursor", "--skill", "x", "--json"]);
+        if no_init {
+            command.env("CURSOR_NO_INIT", "1");
+        } else {
+            command.env("CURSOR_FIRST_RESULT", "1");
+        }
+        let out = command
+            .env("CURSOR_NO_NEWLINE", "1")
+            .env("CURSOR_ANSWER_SIZE", size.to_string())
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        let answer = fs::read(f.run_dir().join("launches/1/answer.md")).unwrap();
+        assert_eq!(answer.len(), size);
+        assert_eq!(answer, vec![b'x'; size]);
+        f.assert_unlocked();
+    }
+}
+
+#[test]
+fn cursor_init_and_result_session_mismatch_names_cursor_and_keeps_original_id() {
+    let f = Fixture::new();
+    f.fake_cursor();
+    let out = f
+        .cursor_command(&["run", "--provider", "cursor", "--skill", "x", "--json"])
+        .env("CURSOR_RESULT_ID", uuid::Uuid::new_v4().to_string())
+        .output()
+        .unwrap();
+    assert_error(out, 1, "Cursor");
+    assert_eq!(f.state()["launches"][0]["stopReason"], "error");
+    let saved = f.cursor_json(&[
+        "run",
+        "--fresh",
+        "--provider",
+        "cursor",
+        "--skill",
+        "x",
+        "--json",
+    ]);
+    fs::remove_file(f.root.join("completed")).unwrap();
+    let child = Running(Some(
+        f.cursor_command(&["run", "--json"])
+            .env("CURSOR_OTHER_ID", uuid::Uuid::new_v4().to_string())
+            .env("CURSOR_BLOCK", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+    ));
+    let pids = wait_for_file(&f.root.join("pids"));
+    let out = child.finish();
+    assert_error(out, 1, "Cursor");
+    assert_eq!(f.state()["sessionId"], saved["run"]["sessionId"]);
+    assert_ne!(
+        f.state()["launches"][1]["sessionId"],
+        saved["run"]["sessionId"]
+    );
+    assert_eq!(f.state()["launches"][1]["stopReason"], "error");
+    assert!(!f.root.join("completed").exists());
+    for pid in pids.split_whitespace() {
+        assert_dead(pid.parse().unwrap());
+    }
+    f.assert_unlocked();
+}
+
+#[test]
+fn cursor_binary_falls_back_to_agent_and_missing_binary_has_install_login_guidance() {
+    for mode in ["missing", "fallback"] {
+        let f = Fixture::new();
+        f.fake_cursor();
+        if mode == "fallback" {
+            fs::rename(f.root.join("bin/cursor-agent"), f.root.join("bin/agent")).unwrap();
+            let out = f.cursor_json(&["run", "--provider", "cursor", "--skill", "x", "--json"]);
+            assert_eq!(out["run"]["provider"], "cursor");
+            assert_eq!(fs::read_to_string(f.root.join("binary")).unwrap(), "agent");
+        } else {
+            fs::remove_file(f.root.join("bin/cursor-agent")).unwrap();
+            let out = f
+                .cursor_command(&["run", "--provider", "cursor", "--skill", "x", "--json"])
+                .output()
+                .unwrap();
+            assert_eq!(out.status.code(), Some(1));
+            let error: Value = serde_json::from_slice(&out.stdout).unwrap();
+            assert_eq!(error["error"]["code"], "spawn");
+            let text = String::from_utf8_lossy(&out.stdout);
+            assert!(text.contains("cursor-agent"), "{text}");
+            assert!(text.to_ascii_lowercase().contains("install"), "{text}");
+            assert!(text.contains("login") || text.contains("log in"), "{text}");
+            assert_eq!(f.calls(), 0);
+        }
+    }
+}
+
+#[test]
+fn cursor_completed_insecure_tool_calls_add_audit_without_failing() {
+    let f = Fixture::new();
+    f.fake_cursor();
+    let out = f
+        .cursor_command(&["run", "--provider", "cursor", "--skill", "x", "--json"])
+        .env("CURSOR_AUDIT", "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stdout)
+    );
+    let data: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(data["data"]["launch"]["insecureToolCalls"], 2);
+    assert!(data["data"]["launch"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("TYPE_INSECURE_NONE"));
+    let summary = observed_run(&f, "show");
+    assert_eq!(summary["lastLaunch"]["insecureToolCalls"], 2);
+    assert!(summary["lastLaunch"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("sandbox"));
+    assert_eq!(f.state()["state"], "idle");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn cursor_timeout_and_interrupt_kill_setsid_descendants_and_allow_resume() {
+    for interrupt in [false, true] {
+        let f = Fixture::new();
+        f.fake_cursor();
+        let timeout = if interrupt { "30s" } else { "2s" };
+        let child = Running(Some(
+            f.cursor_command(&[
+                "run",
+                "--provider",
+                "cursor",
+                "--skill",
+                "x",
+                "--timeout",
+                timeout,
+                "--json",
+            ])
+            .env("CURSOR_BLOCK", "1")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+        ));
+        let pids = wait_for_file(&f.root.join("pids"));
+        wait_for_session(&f, &pids);
+        let ids: Vec<u32> = pids
+            .split_whitespace()
+            .map(|pid| pid.parse().unwrap())
+            .collect();
+        let descendant_stat = fs::read_to_string(format!("/proc/{}/stat", ids[1])).unwrap();
+        let stat: Vec<_> = descendant_stat
+            .rsplit_once(')')
+            .unwrap()
+            .1
+            .split_whitespace()
+            .collect();
+        assert_eq!(
+            stat[2].parse::<u32>().unwrap(),
+            ids[1],
+            "fake shell must have its own process group"
+        );
+        if interrupt {
+            send(child.0.as_ref().unwrap().id(), 2);
+        }
+        let out = child.finish();
+        assert_eq!(
+            out.status.code(),
+            Some(if interrupt { 130 } else { 124 }),
+            "{}",
+            String::from_utf8_lossy(&out.stdout)
+        );
+        for pid in ids {
+            assert_dead(pid);
+        }
+        let signals = fs::read_to_string(f.root.join("signals")).unwrap();
+        assert_eq!(
+            signals.lines().next(),
+            Some("2"),
+            "Cursor must receive INT before TERM"
+        );
+        assert!(
+            signals.lines().any(|s| s == "15"),
+            "stubborn Cursor must receive TERM after INT"
+        );
+        let saved = f.state();
+        assert_eq!(saved["state"], "stopped");
+        assert_eq!(
+            saved["launches"][0]["stopReason"],
+            if interrupt {
+                "interrupted"
+            } else {
+                "timed_out"
+            }
+        );
+        f.assert_unlocked();
+        let resumed = f.cursor_json(&["run", "--json"]);
+        assert_eq!(resumed["run"]["sessionId"], saved["sessionId"]);
     }
 }
