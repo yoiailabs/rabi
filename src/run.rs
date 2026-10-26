@@ -1,10 +1,11 @@
-//! One resumable parent session per workspace. Task progress belongs to Codex.
+//! One resumable parent session per workspace. Task progress belongs to the parent.
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use crate::error::{Error, Result};
+use crate::provider::{Probe, Provider, Session};
 use crate::worktree::WorktreeInfo;
 
 mod inspect;
@@ -48,6 +49,8 @@ pub(crate) struct Launch {
     stop_reason: Option<StopReason>,
     skill: String,
     session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    requested_session_id: Option<String>,
     pub message: Option<String>,
 }
 
@@ -65,6 +68,7 @@ pub(crate) struct Record {
 }
 
 pub(crate) struct Report {
+    pub provider: Provider,
     pub run: Record,
     pub launch: Launch,
     pub answer: String,
@@ -145,6 +149,7 @@ fn broken(reason: impl std::fmt::Display) -> Error {
 }
 
 fn observe_session(record: &mut Record, id: String, resuming: bool) -> Result<bool> {
+    let provider = record.provider.parse::<Provider>()?;
     let launch = record
         .launches
         .last_mut()
@@ -152,7 +157,7 @@ fn observe_session(record: &mut Record, id: String, resuming: bool) -> Result<bo
     let mismatch = resuming && record.session_id.as_deref() != Some(&id);
     if mismatch {
         if launch.message.is_none() {
-            launch.message = Some(format!("Codex resumed a different thread id ({id}); expected {}. The recorded parent session was retained. Use `rabi run --fresh --skill <value>` to start over.", record.session_id.as_deref().unwrap_or_default()));
+            launch.message = Some(format!("{} resumed a different thread id ({id}); expected {}. The recorded parent session was retained. Use `rabi run --fresh --skill <value>` to start over.", provider.display_name(), record.session_id.as_deref().unwrap_or_default()));
         }
     } else {
         record.session_id = Some(id.clone());
@@ -197,6 +202,7 @@ fn prepare_launch(dir: &Path, record: &mut Record, prompt: &str) -> Result<PathB
             stop_reason: None,
             skill: record.skill.clone(),
             session_id: None,
+            requested_session_id: None,
             message: None,
         });
         record.state = State::Running;
@@ -243,7 +249,7 @@ pub(crate) fn execute(
         let record: Record = serde_json::from_slice(&bytes).map_err(broken)?;
         if record.schema != 2
             || record.id != id
-            || record.provider != "codex"
+            || record.provider.parse::<Provider>().is_err()
             || record.workspace.path != tree.path
         {
             return Err(broken(
@@ -255,8 +261,12 @@ pub(crate) fn execute(
             .as_deref()
             .filter(|s| !s.is_empty())
             .ok_or_else(|| broken("no recorded session id"))?;
-        if !crate::provider::has_rollout(session).map_err(broken)? {
-            return Err(broken("Codex session rollout not found"));
+        let provider = record.provider.parse::<Provider>().map_err(broken)?;
+        if provider.probe_session(session).map_err(broken)? == Probe::Missing {
+            return Err(broken(format!(
+                "{} session rollout not found",
+                provider.display_name()
+            )));
         }
         record
     } else {
@@ -271,13 +281,14 @@ pub(crate) fn execute(
                 path: tree.path.clone(),
                 branch: (!tree.detached).then(|| tree.branch.clone()),
             },
-            provider: "codex".into(),
+            provider: Provider::Codex.name().into(),
             session_id: None,
             skill: skill.into(),
             state: State::Idle,
             launches: Vec::new(),
         }
     };
+    let provider = record.provider.parse::<Provider>().map_err(broken)?;
     if let Some(skill) = skill {
         record.skill = skill.into();
     }
@@ -310,16 +321,25 @@ pub(crate) fn execute(
     } else {
         None
     };
+    let session = match session.as_deref() {
+        Some(id) => Session::Resume { id },
+        None => Session::New { requested: None },
+    };
     let launched = lifecycle::launch(
+        provider,
         Path::new(&tree.path),
         &launch_dir,
-        session.as_deref(),
+        session,
         timeout,
         &mut lock,
         |id| {
             let mismatch = observe_session(&mut record, id, resuming)?;
-            save(&dir, &record)
-                .map_err(|e| Error::msg(format!("Failed to persist Codex session id: {e}")))?;
+            save(&dir, &record).map_err(|e| {
+                Error::msg(format!(
+                    "Failed to persist {} session id: {e}",
+                    provider.display_name()
+                ))
+            })?;
             Ok(mismatch)
         },
     );
@@ -330,7 +350,11 @@ pub(crate) fn execute(
         .last()
         .and_then(|launch| launch.session_id.clone())
         .map(Ok)
-        .unwrap_or_else(|| crate::provider::session_id(&launch_dir.join("events.jsonl")));
+        .unwrap_or_else(|| {
+            provider
+                .finalize(&launch_dir.join("events.jsonl"))
+                .map(|finalized| finalized.session_id)
+        });
     let launch = record
         .launches
         .last_mut()
@@ -402,6 +426,7 @@ pub(crate) fn execute(
         None => e,
     })?;
     Ok(Report {
+        provider,
         run: record,
         launch,
         answer,
@@ -412,6 +437,33 @@ pub(crate) fn execute(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn old_record_loads_and_none_requested_session_id_is_omitted() {
+        let value = serde_json::json!({
+            "schema": 2, "id": format!("run_{}", uuid::Uuid::new_v4()),
+            "workspace": {"id": null, "name": "test", "path": "/test", "branch": null},
+            "provider": "codex", "sessionId": "test-session", "skill": "test", "state": "idle",
+            "launches": [{
+                "n": 1, "startedAt": "2026-10-26T00:00:00Z", "finishedAt": null,
+                "exitCode": null, "stopReason": null, "skill": "test", "sessionId": null,
+                "message": null
+            }]
+        });
+        let mut record: Record = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(record.launches[0].requested_session_id, None);
+        assert_eq!(serde_json::to_value(&record).unwrap(), value);
+        assert!(!serde_json::to_value(&record.launches[0])
+            .unwrap()
+            .as_object()
+            .unwrap()
+            .contains_key("requestedSessionId"));
+        record.launches[0].requested_session_id = Some("requested".into());
+        assert_eq!(
+            serde_json::to_value(&record.launches[0]).unwrap()["requestedSessionId"],
+            "requested"
+        );
+    }
+
     #[test]
     fn failed_launch_preparation_removes_directory_and_allows_retry() {
         let dir = std::env::temp_dir().join(format!("rabi-launch-{}", uuid::Uuid::new_v4()));

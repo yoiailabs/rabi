@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 use super::{io, StopReason};
 use crate::error::{Error, Result, REFUSED};
+use crate::provider::{Provider, Session, StopPolicy};
 
 extern "C" {
     fn kill(pid: i32, sig: i32) -> i32;
@@ -187,7 +188,7 @@ pub(super) fn group_is_alive(pgid: u32) -> bool {
     status == 0 || std::io::Error::last_os_error().raw_os_error() != Some(3)
 }
 
-struct Group(Child);
+struct Group(Child, StopPolicy);
 impl Group {
     fn send(&self, sig: i32) {
         if let Ok(pid) = i32::try_from(self.0.id()) {
@@ -198,19 +199,19 @@ impl Group {
         }
     }
     fn stop(&mut self) {
-        self.send(15);
+        self.send(self.1.signal);
         // Keep the group alive through the grace period even if its leader
         // exits: grandchildren may ignore SIGTERM. Always escalate the group.
         let start = Instant::now();
-        while start.elapsed() < Duration::from_millis(200) {
+        while start.elapsed() < self.1.grace {
             std::thread::sleep(Duration::from_millis(10));
         }
-        self.send(9);
+        self.send(self.1.force_signal);
     }
 }
 impl Drop for Group {
     fn drop(&mut self) {
-        self.send(9);
+        self.send(self.1.force_signal);
         let _ = self.0.wait();
     }
 }
@@ -222,18 +223,19 @@ pub(super) struct Outcome {
 }
 
 pub(super) fn launch(
+    provider: Provider,
     workspace: &Path,
     dir: &Path,
-    session: Option<&str>,
+    session: Session<'_>,
     timeout: Duration,
     lock: &mut Lock,
     on_session: impl FnMut(String) -> Result<bool>,
 ) -> Result<Outcome> {
-    let mut cmd = crate::provider::codex(workspace, dir, session)?;
+    let mut cmd = provider.command(workspace, dir, session)?;
     cmd.stdout(io(File::create(dir.join("events.jsonl")))?)
         .stderr(io(File::create(dir.join("stderr.log")))?)
         .process_group(0);
-    let events = crate::provider::SessionIdReader::open(&dir.join("events.jsonl")).ok();
+    let events = crate::provider::SessionIdReader::open(provider, &dir.join("events.jsonl")).ok();
     if INTERRUPTED.load(Ordering::Relaxed) {
         return Ok(Outcome {
             parent_exit: 130,
@@ -244,10 +246,13 @@ pub(super) fn launch(
     // Fail closed if the launcher dies between spawning and publishing the
     // child's pgid. Zero is unverifiable, never evidence of a dead group.
     lock.record_group(0)?;
-    let group = Group(cmd.spawn().map_err(|e| Error::Spawn {
-        command: "codex".into(),
-        details: e.to_string(),
-    })?);
+    let group = Group(
+        cmd.spawn().map_err(|e| Error::Spawn {
+            command: provider.binary().into(),
+            details: e.to_string(),
+        })?,
+        provider.stop_policy(),
+    );
     lock.record_group(group.0.id())?;
     monitor(group, timeout, events, on_session)
 }
@@ -343,7 +348,7 @@ mod tests {
                 .process_group(0)
                 .spawn()
                 .unwrap();
-            let group = Group(child);
+            let group = Group(child, Provider::Codex.stop_policy());
             let start = Instant::now();
             while fs::read_to_string(&path).unwrap().is_empty() {
                 assert!(start.elapsed() < Duration::from_secs(5), "child not ready");
@@ -354,9 +359,10 @@ mod tests {
             let result = monitor(
                 group,
                 Duration::from_secs(5),
-                Some(crate::provider::SessionIdReader::new(std::io::Cursor::new(
-                    event,
-                ))),
+                Some(crate::provider::SessionIdReader::new(
+                    Provider::Codex,
+                    std::io::Cursor::new(event),
+                )),
                 |id| {
                     calls += 1;
                     assert_eq!(id, "observed-thread");
@@ -398,11 +404,12 @@ mod tests {
                 .unwrap();
             let reads = Rc::new(Cell::new(0));
             let result = monitor(
-                Group(child),
+                Group(child, Provider::Codex.stop_policy()),
                 Duration::from_secs(5),
-                Some(crate::provider::SessionIdReader::new(FailedRead(
-                    reads.clone(),
-                ))),
+                Some(crate::provider::SessionIdReader::new(
+                    Provider::Codex,
+                    FailedRead(reads.clone()),
+                )),
                 |_| panic!("a failed observer must not report a session"),
             )
             .unwrap();

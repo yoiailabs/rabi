@@ -822,7 +822,7 @@ fn run_parent(args: &[String]) -> Result<i32> {
     } else if report.exit != 0 {
         crate::output::failure(
             Error::CommandFailed {
-                command: "codex".into(),
+                command: report.provider.binary().into(),
                 code: report.exit,
             }
             .to_json(GENERAL)
