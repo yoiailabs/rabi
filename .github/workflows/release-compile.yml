@@ -77,6 +77,15 @@ jobs:
           ' <<< "$releases")
           release_id=$(jq -er '.id | select(type == "number" and . > 0 and floor == .)' <<< "$release")
           prerelease=$(jq -er '.prerelease | if type == "boolean" then tostring else error("Invalid prerelease") end' <<< "$release")
+          if [[ "${TAG%%+*}" == *-* ]]; then
+            if [[ "$prerelease" != true ]]; then
+              echo "::error::Tag has a prerelease suffix; recreate the draft with --prerelease"
+              exit 1
+            fi
+          elif [[ "$prerelease" != false ]]; then
+            echo "::error::Tag has no prerelease suffix; recreate the draft without --prerelease"
+            exit 1
+          fi
           if [[ "$prerelease" == true && "$MAKE_LATEST" != false ]]; then
             echo "::notice::Prereleases cannot be Latest; forcing make_latest=false"
             MAKE_LATEST=false
@@ -123,11 +132,11 @@ jobs:
           fi
           # Both existing tags and new-tag targets must belong to main's history.
           if ! status=$(gh api "repos/$GITHUB_REPOSITORY/compare/$sha...main" --jq '.status'); then
-            echo "::error::Cannot compare release commit with main"
+            echo "::error::Cannot compare release commit with main; for a new tag, recreate the draft with --target <merge commit SHA> on main"
             exit 1
           fi
           if [[ "$status" != identical && "$status" != ahead ]]; then
-            echo "::error::Release commit must be reachable from main"
+            echo "::error::Release commit must be reachable from main; for a new tag, recreate the draft with --target <merge commit SHA> on main"
             exit 1
           fi
           resolved=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" --jq '.sha')

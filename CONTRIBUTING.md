@@ -161,7 +161,7 @@ To release a new version of rabi:
 
    Before the first ship, enable release immutability in Settings → General → Releases → "Enable release immutability". Once published, the assets and tag are locked. CI fails after publishing if the release API reports immutability is disabled, and warns if the field is absent.
 
-   Create the draft without Latest flags; add only `--prerelease` for prereleases. Choose Latest when dispatching with `-f make_latest=true|false|legacy` (default `true`). Stable 7.x releases use `true`, even during the v7 beta. Prereleases are forced to `false`, with a notice if a different value was requested.
+   Create the draft without Latest flags; add only `--prerelease` for prereleases. Choose Latest when dispatching with `-f make_latest=true|false|legacy` (default `true`). Stable 7.x releases use `true`, even during the v7 beta. Backports to an older release line (for example, a patch for an older minor after a newer minor has shipped) dispatch with `-f make_latest=false`. Prereleases are forced to `false`, with a notice if a different value was requested.
 
    ```bash
    # Stable release: use the full 40-hex merge commit SHA, not a branch name.
@@ -183,7 +183,7 @@ To release a new version of rabi:
    gh run watch <run-id>
    ```
 
-   Create exactly one release for the tag. A new tag is created from the draft's full target SHA when CI publishes. An existing tag is also supported, but it must resolve to the intended release commit and match any full target SHA on the draft. In both cases the release commit must be reachable from `main`. The committed `Cargo.toml` version must match the tag without `v`.
+   Create exactly one release for the tag. The draft's `prerelease` flag must match whether the tag has a prerelease suffix (a `-` before any `+` build metadata). A new tag is created from the draft's full target SHA when CI publishes. An existing tag is also supported, but it must resolve to the intended release commit and match any full target SHA on the draft. In both cases the release commit must be reachable from `main`. The committed `Cargo.toml` version must match the tag without `v`.
 
    Artifact attestations name the `main` workflow commit that ran the build. The built commit is the resolved release commit shown in the run summary, alongside the tag, release ID, workflow commit and all six asset SHA256s. GitHub's own immutable-release attestation binds the tag, commit and assets.
 
