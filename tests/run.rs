@@ -28,7 +28,10 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!("rabi-parent-{}", uuid::Uuid::new_v4()));
+        let root = std::env::temp_dir()
+            .canonicalize()
+            .unwrap()
+            .join(format!("rabi-parent-{}", uuid::Uuid::new_v4()));
         let repo = root.join("repo");
         let home = root.join("home");
         let codex = root.join("codex-home");
@@ -733,6 +736,7 @@ fn untrusted_run_does_not_execute_fsmonitor() {
 #[test]
 fn text_answer_has_newline_and_progress_is_only_on_text_stderr() {
     let f = Fixture::new();
+    f.record_workspace();
     for answer in ["answer without newline", "answer with newline\n", ""] {
         let out = f
             .command(&["run", "--fresh", "--skill", "x"])
@@ -1469,7 +1473,15 @@ fn new_help_and_completions_come_from_the_contract_without_retired_commands() {
         let out = f.run(&["completions", shell]);
         assert!(out.status.success());
         let script = String::from_utf8(out.stdout).unwrap();
-        for expected in ["--skill", "--fresh", "--timeout", "skill list"] {
+        for expected in [
+            "--skill",
+            "--fresh",
+            "--no-handoff",
+            "--timeout",
+            "skill list",
+            "handoff add",
+            "--kind",
+        ] {
             assert!(script.contains(expected), "{shell}: {expected}");
         }
         for removed in ["workflow", "run start", "run show"] {
@@ -3386,4 +3398,1255 @@ fn claude_stubborn_parent_escalates_int_then_term_then_kill_with_setsid_cleanup(
     }
     assert_eq!(f.state()["launches"][0]["stopReason"], "timed_out");
     f.assert_unlocked();
+}
+
+impl Fixture {
+    fn record_workspace(&self) {
+        self.json(&["adopt", self.workspace.to_str().unwrap(), "--json"]);
+    }
+    fn memory(&self) -> PathBuf {
+        PathBuf::from(
+            self.json(&["handoff", "path", "--json"])["path"]
+                .as_str()
+                .unwrap(),
+        )
+    }
+    fn handoff(&self) -> Value {
+        self.json(&["handoff", "show", "--json"])
+    }
+    fn provider_run(&self, provider: &str, args: &[&str]) -> Value {
+        match provider {
+            "cursor" => self.cursor_json(args),
+            "claude" => self.claude_json(args),
+            _ => self.json(args),
+        }
+    }
+}
+
+#[test]
+fn handoff_cli_validates_selectors_json_stdin_and_private_storage() {
+    let f = Fixture::new();
+    assert_error(f.run(&["handoff", "show"]), 1, "rabi adopt");
+    let unrecorded = f.run(&["run", "--skill", "x", "--json"]);
+    let envelope: Value = serde_json::from_slice(&unrecorded.stdout).unwrap();
+    assert!(envelope["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|w| w["code"] == "handoff_unrecorded"));
+    assert!(envelope["data"]["launch"]["handoff"].is_null());
+    f.record_workspace();
+    let memory = f.memory();
+    assert!(!memory.exists());
+    assert!(f.handoff()["intent"].is_null());
+    assert!(!f.root.join("state/rabi/repositories").exists());
+    for args in [
+        vec!["handoff", "add"],
+        vec!["handoff", "add", "--kind", "request", "x"],
+        vec!["handoff", "add", " "],
+        vec!["handoff", "add", "--kind", "bad", "x"],
+    ] {
+        assert_error(f.run(&args), 2, "");
+    }
+    assert_error(f.run(&["handoff", "add", &"é".repeat(4097)]), 2, "8192");
+    let entry = f.json(&[
+        "handoff",
+        "add",
+        "--kind",
+        "decision",
+        &"é".repeat(4096),
+        "--json",
+    ]);
+    assert!(entry["id"].as_str().unwrap().starts_with("ho_"));
+    assert_eq!(entry["kind"], "decision");
+    assert!(entry.get("source").is_none());
+    let mut child = f
+        .command(&["handoff", "add", "-", "--json"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"stdin note\n\n")
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    assert!(out.status.success());
+    assert_eq!(f.handoff()["entries"][1]["text"], "stdin note");
+    let out = f
+        .command_at(
+            &f.root,
+            &[
+                "-R",
+                f.repo.to_str().unwrap(),
+                "handoff",
+                "show",
+                f.workspace.to_str().unwrap(),
+                "--json",
+            ],
+            env!("CARGO_BIN_EXE_rabi"),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["data"],
+        f.handoff()
+    );
+    let out = f
+        .command_at(
+            &f.repo,
+            &["handoff", "show", "."],
+            env!("CARGO_BIN_EXE_rabi"),
+        )
+        .output()
+        .unwrap();
+    assert_error(out, 4, "primary");
+    for name in ["identity.json", "handoff.jsonl", ".lock"] {
+        assert_eq!(
+            fs::metadata(memory.join(name))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777,
+            0o600
+        );
+    }
+    for path in [
+        memory.clone(),
+        memory.parent().unwrap().to_path_buf(),
+        memory.parent().unwrap().parent().unwrap().to_path_buf(),
+    ] {
+        assert_eq!(
+            fs::metadata(path).unwrap().permissions().mode() & 0o777,
+            0o700
+        );
+    }
+    let state = memory.parent().unwrap().parent().unwrap();
+    let key = state.file_name().unwrap().to_str().unwrap();
+    assert_eq!(key.len(), 64);
+    assert!(key
+        .bytes()
+        .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+    let repository: Value =
+        serde_json::from_slice(&fs::read(state.join("repository.json")).unwrap()).unwrap();
+    assert_eq!(
+        repository["commonDir"],
+        f.repo
+            .join(".git")
+            .canonicalize()
+            .unwrap()
+            .to_str()
+            .unwrap()
+    );
+    assert!(!state.join("runs").exists());
+    assert!(!state.join("workspaces").exists());
+}
+
+#[test]
+fn handoff_add_trims_only_trailing_whitespace_before_validation_and_storage() {
+    let f = Fixture::new();
+    f.record_workspace();
+    let limit = "é".repeat(4096);
+    let cases = [
+        ("x\n".to_owned(), "x"),
+        (
+            "  first\n\n \tsecond\r\n\r\n \t\u{2003}".to_owned(),
+            "  first\n\n \tsecond",
+        ),
+        ("- \n".to_owned(), "-"),
+        (
+            "  first\r\n  second\n\nlast\n".to_owned(),
+            "  first\r\n  second\n\nlast",
+        ),
+        (format!("{limit}\r\n \t\u{2003}"), limit.as_str()),
+        (" \r\n\t\u{2003}".to_owned(), ""),
+        (format!("{limit}é\n"), ""),
+    ];
+    let mut stored = Vec::new();
+    for (input, expected) in cases {
+        for stdin in [false, true] {
+            let out = if stdin {
+                let mut child = f
+                    .command(&["handoff", "add", "--kind", "checkpoint", "-", "--json"])
+                    .stdin(Stdio::piped())
+                    .stdout(Stdio::piped())
+                    .stderr(Stdio::piped())
+                    .spawn()
+                    .unwrap();
+                child
+                    .stdin
+                    .take()
+                    .unwrap()
+                    .write_all(input.as_bytes())
+                    .unwrap();
+                child.wait_with_output().unwrap()
+            } else {
+                f.run(&[
+                    "handoff",
+                    "add",
+                    "--kind",
+                    "checkpoint",
+                    "--json",
+                    "--",
+                    &input,
+                ])
+            };
+            if expected.is_empty() {
+                assert_error(out, 2, "nonblank UTF-8 and at most 8192 bytes");
+            } else {
+                assert!(
+                    out.status.success(),
+                    "{}",
+                    String::from_utf8_lossy(&out.stderr)
+                );
+                let entry: Value = serde_json::from_slice(&out.stdout).unwrap();
+                assert_eq!(entry["data"]["text"], expected);
+                stored.push(expected.to_owned());
+            }
+        }
+    }
+    let snapshot = f.handoff();
+    let texts: Vec<_> = snapshot["entries"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|e| e["text"].as_str().unwrap())
+        .collect();
+    assert_eq!(texts, stored);
+}
+
+#[test]
+fn handoff_injected_heredoc_supplies_stdin_and_stores_a_checkpoint() {
+    let f = Fixture::new();
+    f.record_workspace();
+    f.json(&["run", "--skill", "x", "task", "--json"]);
+    let prompt = fs::read_to_string(f.run_dir().join("launches/1/prompt.md")).unwrap();
+    let command = prompt
+        .split_once("```sh\n")
+        .unwrap()
+        .1
+        .split_once("\n```")
+        .unwrap()
+        .0;
+    let out = f
+        .command_at(&f.workspace, &["-c", command], "bash")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let snapshot = f.handoff();
+    assert_eq!(snapshot["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(snapshot["entries"][0]["kind"], "checkpoint");
+    assert_eq!(
+        snapshot["entries"][0]["text"],
+        "Decisions, constraints, verification and remaining work."
+    );
+}
+
+#[test]
+fn handoff_concurrent_appends_and_torn_tail_preserve_history() {
+    let f = Fixture::new();
+    f.record_workspace();
+    let mut children = Vec::new();
+    for i in 0..12 {
+        children.push(
+            f.command(&[
+                "handoff",
+                "add",
+                &format!("writer {i}: {}", "あ".repeat(2000)),
+                "--json",
+            ])
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap(),
+        );
+    }
+    for child in children {
+        let out = child.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    assert_eq!(f.handoff()["entries"].as_array().unwrap().len(), 12);
+    let ledger = f.memory().join("handoff.jsonl");
+    let before = fs::read(&ledger).unwrap();
+    fs::OpenOptions::new()
+        .append(true)
+        .open(&ledger)
+        .unwrap()
+        .write_all(b"{torn")
+        .unwrap();
+    let out = f.run(&["handoff", "show", "--json"]);
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(result["data"]["entries"].as_array().unwrap().len(), 12);
+    assert_eq!(result["warnings"][0]["code"], "handoff_invalid_line");
+    f.json(&["handoff", "add", "after torn tail", "--json"]);
+    let after = fs::read(&ledger).unwrap();
+    assert!(after.starts_with(&before));
+    assert!(String::from_utf8_lossy(&after).contains("{torn\x1e\n{"));
+    assert_eq!(f.handoff()["entries"].as_array().unwrap().len(), 13);
+    let valid = f.handoff()["entries"][0].clone();
+    let mut unknown = valid.clone();
+    unknown["schema"] = Value::from(99);
+    let mut unknown_kind = valid;
+    unknown_kind["kind"] = Value::from("unknown");
+    let mut file = fs::OpenOptions::new().append(true).open(&ledger).unwrap();
+    writeln!(file, "{unknown}\n{unknown_kind}").unwrap();
+    assert_eq!(f.handoff()["entries"].as_array().unwrap().len(), 13);
+}
+
+#[test]
+fn handoff_identity_mismatch_reads_empty_and_writes_archive() {
+    let f = Fixture::new();
+    f.record_workspace();
+    f.json(&["handoff", "add", "old incarnation", "--json"]);
+    let memory = f.memory();
+    let records = f.repo.join(".git/rabi/workspaces");
+    let record = fs::read_dir(records)
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path();
+    let mut value: Value = serde_json::from_slice(&fs::read(&record).unwrap()).unwrap();
+    value["createdAt"] = Value::from("2026-10-27T12:00:00.000Z");
+    fs::write(record, serde_json::to_vec(&value).unwrap()).unwrap();
+    let before = fs::read(memory.join("identity.json")).unwrap();
+    let out = f.run(&["handoff", "show", "--json"]);
+    let result: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(result["data"]["entries"].as_array().unwrap().is_empty());
+    assert_eq!(result["warnings"][0]["code"], "handoff_identity");
+    assert_eq!(fs::read(memory.join("identity.json")).unwrap(), before);
+    let out = f.run(&["run", "--skill", "x", "new task", "--json"]);
+    assert!(out.status.success());
+    let envelope: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(envelope["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|w| w["code"] == "handoff_identity"));
+    assert!(f.handoff()["entries"].as_array().unwrap().is_empty());
+    assert_eq!(f.handoff()["intent"], "new task");
+    let stale = fs::read_dir(memory.parent().unwrap())
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| p.file_name().unwrap().to_string_lossy().contains(".stale-"))
+        .unwrap();
+    assert!(fs::read_to_string(stale.join("handoff.jsonl"))
+        .unwrap()
+        .contains("old incarnation"));
+}
+
+#[test]
+fn handoff_all_providers_capture_inject_grant_and_attribute_appends() {
+    for provider in ["codex", "cursor", "claude"] {
+        let f = Fixture::new();
+        f.record_workspace();
+        if provider == "cursor" {
+            f.fake_cursor();
+        }
+        if provider == "claude" {
+            f.fake_claude();
+        }
+        let binary = f.root.join("bin").join(match provider {
+            "cursor" => "cursor-agent",
+            "claude" => "claude",
+            _ => "codex",
+        });
+        let script = fs::read_to_string(&binary).unwrap().replace("(root/'cwd').write_text(os.getcwd())", r#"(root/'cwd').write_text(os.getcwd())
+(root/'run-env.json').write_text(json.dumps({k:os.environ.get(k) for k in ['RABI_BIN','RABI_RUN_ID','RABI_RUN_LAUNCH','RABI_RUN_PROVIDER','RABI_WORKSPACE_ID']}))
+if os.environ.get('ADD_HANDOFF'):
+    subprocess.run([os.environ['RABI_BIN'], 'handoff', 'add', '--kind', 'checkpoint', 'parent checkpoint'], check=True, stdout=subprocess.DEVNULL)
+"#);
+        fs::write(&binary, script).unwrap();
+        let first = f.provider_run(
+            provider,
+            &[
+                "run",
+                "--provider",
+                provider,
+                "--skill",
+                "x",
+                "original task",
+                "--json",
+            ],
+        );
+        let memory = f.memory();
+        let rabi_bin = fs::canonicalize(env!("CARGO_BIN_EXE_rabi")).unwrap();
+        let command = if rabi_bin
+            .as_os_str()
+            .as_encoded_bytes()
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || b"/_-.@%+=:,".contains(b))
+        {
+            rabi_bin.to_str().unwrap().to_owned()
+        } else {
+            format!("'{}'", rabi_bin.to_str().unwrap().replace('\'', "'\\''"))
+        };
+        let reminder_command = format!("{command} handoff add --kind checkpoint - <<'EOF'\nDecisions, constraints, verification and remaining work.\nEOF");
+        assert_eq!(f.handoff()["intent"], "original task");
+        let prompt = fs::read_to_string(f.run_dir().join("launches/1/prompt.md")).unwrap();
+        assert!(prompt.starts_with("Record durable context"));
+        assert!(!prompt.contains("Original task"));
+        assert_eq!(prompt.matches("original task").count(), 1);
+        assert!(prompt.contains(&reminder_command));
+        assert!(prompt.ends_with("Follow skill `x`.\n\noriginal task"));
+        assert_eq!(
+            first["launch"]["handoff"]["bytes"].as_u64().unwrap() as usize,
+            prompt.find("You are the parent").unwrap()
+        );
+        let calls: Vec<Value> = fs::read_to_string(f.root.join("argv.jsonl"))
+            .unwrap()
+            .lines()
+            .map(|s| serde_json::from_str(s).unwrap())
+            .collect();
+        let args = calls[0].as_array().unwrap();
+        let grant = args.iter().position(|a| a == "--add-dir").unwrap();
+        assert_eq!(args[grant + 1], memory.to_str().unwrap());
+        let env: Value =
+            serde_json::from_slice(&fs::read(f.root.join("run-env.json")).unwrap()).unwrap();
+        assert_eq!(env["RABI_BIN"], rabi_bin.to_str().unwrap());
+        assert_eq!(env["RABI_RUN_ID"], first["run"]["id"]);
+        assert_eq!(env["RABI_RUN_LAUNCH"], "1");
+        assert_eq!(env["RABI_RUN_PROVIDER"], provider);
+        let mut cmd = f.command(&["run", "--json"]);
+        if provider != "codex" {
+            cmd.env("PATH", f.root.join("bin"));
+        }
+        let out = cmd.env("ADD_HANDOFF", "1").output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let source = f.handoff()["entries"][0]["source"].clone();
+        assert_eq!(source["runId"], first["run"]["id"]);
+        assert_eq!(source["launch"], 2);
+        assert_eq!(source["provider"], provider);
+        f.json(&["handoff", "add", "foreign human note", "--json"]);
+        let resumed = f.provider_run(provider, &["run", "--json"]);
+        let prompt = fs::read_to_string(f.run_dir().join("launches/3/prompt.md")).unwrap();
+        assert!(prompt.contains(&reminder_command));
+        assert!(prompt.contains("foreign human note"));
+        assert!(!prompt.contains("parent checkpoint"));
+        assert!(!prompt.contains("original task"));
+        assert!(prompt.ends_with("Continue."));
+        assert_eq!(
+            resumed["launch"]["handoff"]["injectedEntryIds"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let fresh = f.provider_run(
+            provider,
+            &[
+                "run",
+                "--fresh",
+                "--provider",
+                provider,
+                "--skill",
+                "y",
+                "new request",
+                "--json",
+            ],
+        );
+        assert_ne!(fresh["run"]["id"], first["run"]["id"]);
+        let snapshot = f.handoff();
+        assert_eq!(snapshot["intent"], "original task");
+        assert_eq!(snapshot["entries"][2]["kind"], "request");
+        assert_eq!(snapshot["entries"][2]["text"], "new request");
+        let prompt = fs::read_to_string(f.run_dir().join("launches/1/prompt.md")).unwrap();
+        assert!(prompt.contains("original task"));
+        assert!(prompt.contains("parent checkpoint"));
+        assert!(prompt.contains(&reminder_command));
+        assert_eq!(prompt.matches("new request").count(), 1);
+        let before = fs::read(memory.join("handoff.jsonl")).unwrap();
+        let disabled = f.provider_run(
+            provider,
+            &["run", "--no-handoff", "disabled task", "--json"],
+        );
+        assert!(disabled["launch"]["handoff"].is_null());
+        assert_eq!(
+            fs::read_to_string(f.root.join("input")).unwrap(),
+            "disabled task"
+        );
+        assert_eq!(fs::read(memory.join("handoff.jsonl")).unwrap(), before);
+        let last: Value = serde_json::from_str(
+            fs::read_to_string(f.root.join("argv.jsonl"))
+                .unwrap()
+                .lines()
+                .last()
+                .unwrap(),
+        )
+        .unwrap();
+        assert!(!last.as_array().unwrap().contains(&Value::from("--add-dir")));
+        let env: Value =
+            serde_json::from_slice(&fs::read(f.root.join("run-env.json")).unwrap()).unwrap();
+        assert!(env["RABI_BIN"].is_null());
+        assert!(env["RABI_RUN_ID"].is_null());
+    }
+}
+
+#[test]
+fn handoff_resume_uses_snapshot_time_with_legacy_started_at_fallback() {
+    for legacy in [false, true] {
+        let f = Fixture::new();
+        f.record_workspace();
+        let old = f.json(&["handoff", "add", "already delivered", "--json"]);
+        let first = f.json(&["run", "--skill", "x", "original task", "--json"]);
+        let snapshot_at = first["launch"]["handoff"]["snapshotAt"].as_str().unwrap();
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(snapshot_at).unwrap()
+                <= chrono::DateTime::parse_from_rfc3339(
+                    first["launch"]["startedAt"].as_str().unwrap()
+                )
+                .unwrap()
+        );
+        assert_eq!(
+            first["launch"]["handoff"]["injectedEntryIds"],
+            serde_json::json!([old["id"]])
+        );
+        let note = f.json(&["handoff", "add", "after snapshot before start", "--json"]);
+        let mut state = f.state();
+        let launch = &mut state["launches"][0];
+        if legacy {
+            launch["startedAt"] = snapshot_at.into();
+            launch["handoff"]
+                .as_object_mut()
+                .unwrap()
+                .remove("snapshotAt");
+        } else {
+            // Model a note appended after snapshot read but before prompt fsync
+            // and startedAt publication, without a timing-sensitive race.
+            launch["startedAt"] = note["createdAt"].clone();
+        }
+        fs::write(
+            f.run_dir().join("state.json"),
+            serde_json::to_vec(&state).unwrap(),
+        )
+        .unwrap();
+        let resumed = f.json(&["run", "--json"]);
+        assert_eq!(
+            resumed["launch"]["handoff"]["injectedEntryIds"],
+            serde_json::json!([note["id"]])
+        );
+        let prompt = fs::read_to_string(f.run_dir().join("launches/2/prompt.md")).unwrap();
+        assert!(prompt.contains("after snapshot before start"));
+        assert!(!prompt.contains("already delivered"));
+        assert!(!prompt.contains("Original task"));
+    }
+}
+
+#[test]
+fn handoff_resume_retries_undelivered_snapshot_after_immediate_provider_failure() {
+    for prior_delivery in [false, true] {
+        let f = Fixture::new();
+        f.record_workspace();
+        f.json(&["run", "--skill", "x", "original task", "--json"]);
+        if !prior_delivery {
+            f.json(&["run", "--fresh", "--no-handoff", "--skill", "x", "--json"]);
+        }
+        let note = f.json(&["handoff", "add", "unseen human note", "--json"]);
+        let calls = f.calls();
+        let out = f
+            .command(&["run", "--json"])
+            .env("FAKE_NO_THREAD", "1")
+            .env("FAKE_EXIT", "1")
+            .output()
+            .unwrap();
+        assert_error(out, 1, "");
+        assert_eq!(f.calls(), calls + 1); // Binary/preparation preflight succeeded.
+        let state = f.state();
+        let failed = &state["launches"][1];
+        assert!(!state["sessionId"].is_null()); // A run-level session id is not evidence for this launch.
+        assert!(failed["sessionId"].is_null());
+        assert_eq!(failed["exitCode"], 1);
+        assert_eq!(
+            failed["handoff"]["injectedEntryIds"],
+            serde_json::json!([note["id"]])
+        );
+        let resumed = f.json(&["run", "--json"]);
+        assert_eq!(
+            resumed["launch"]["handoff"]["injectedEntryIds"],
+            serde_json::json!([note["id"]])
+        );
+        let prompt = fs::read_to_string(f.run_dir().join("launches/3/prompt.md")).unwrap();
+        assert!(prompt.contains("unseen human note"));
+        assert_eq!(prompt.contains("Original task"), !prior_delivery);
+        let again = f.json(&["run", "--json"]);
+        assert!(again["launch"]["handoff"]["injectedEntryIds"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[test]
+fn handoff_resume_accepts_observed_session_or_zero_exit_as_delivery() {
+    for observed_session in [false, true] {
+        let f = Fixture::new();
+        f.record_workspace();
+        f.json(&["run", "--skill", "x", "original task", "--json"]);
+        let note = f.json(&["handoff", "add", "delivered note", "--json"]);
+        let mut command = f.command(&["run", "--json"]);
+        if observed_session {
+            command.env("FAKE_EXIT", "1");
+        } else {
+            command.env("FAKE_NO_THREAD", "1");
+        }
+        // No-session exit 0 still reports a protocol error to the caller.
+        assert_error(command.output().unwrap(), 1, "");
+        let state = f.state();
+        let delivered = &state["launches"][1];
+        assert_eq!(delivered["sessionId"].is_string(), observed_session);
+        assert_eq!(delivered["exitCode"], if observed_session { 1 } else { 0 });
+        assert_eq!(
+            delivered["handoff"]["injectedEntryIds"],
+            serde_json::json!([note["id"]])
+        );
+        let resumed = f.json(&["run", "--json"]);
+        assert!(resumed["launch"]["handoff"]["injectedEntryIds"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[test]
+fn handoff_heredoc_intent_and_requests_deduplicate_trailing_whitespace_verbatim() {
+    let f = Fixture::new();
+    f.record_workspace();
+    let task = "  same task\nsecond line";
+    let out = f
+        .command_at(
+            &f.workspace,
+            &[
+                "-c",
+                "\"$1\" run --skill x - --json <<'EOF'\n  same task\nsecond line\nEOF\n",
+                "handoff-test",
+                env!("CARGO_BIN_EXE_rabi"),
+            ],
+            "bash",
+        )
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let intent = format!("{task}\n");
+    for repeated in [task.to_owned(), format!("{task}\r\n \t\u{2003}")] {
+        f.json(&["run", "--fresh", "--skill", "x", &repeated, "--json"]);
+        assert_eq!(
+            fs::read_to_string(f.memory().join("intent.md")).unwrap(),
+            intent
+        );
+        assert!(f.handoff()["entries"].as_array().unwrap().is_empty());
+        let prompt = fs::read_to_string(f.run_dir().join("launches/1/prompt.md")).unwrap();
+        assert!(!prompt.contains("Original task"));
+        assert_eq!(prompt.matches(task).count(), 1);
+        assert!(prompt.ends_with(&repeated));
+    }
+    let request = "  next request\nkeep internal lines\n";
+    f.json(&["run", request, "--json"]);
+    f.json(&["handoff", "add", "intervening note", "--json"]);
+    let ledger = fs::read(f.memory().join("handoff.jsonl")).unwrap();
+    for repeated in [
+        request.trim_end().to_owned(),
+        format!("{request}\r\n \t\u{2003}"),
+    ] {
+        f.json(&["run", "--fresh", "--skill", "x", &repeated, "--json"]);
+        assert_eq!(fs::read(f.memory().join("handoff.jsonl")).unwrap(), ledger);
+        assert_eq!(f.handoff()["entries"][0]["text"], request);
+        let prompt = fs::read_to_string(f.run_dir().join("launches/1/prompt.md")).unwrap();
+        assert_eq!(prompt.matches(request.trim_end()).count(), 1);
+        assert!(prompt.ends_with(&repeated));
+    }
+}
+
+#[test]
+fn handoff_resume_uses_last_injection_across_disabled_and_failed_launches() {
+    for failed_preflight in [false, true] {
+        let f = Fixture::new();
+        f.record_workspace();
+        f.json(&["run", "--skill", "x", "original task", "--json"]);
+        let note = f.json(&["handoff", "add", "unseen human note", "--json"]);
+        if failed_preflight {
+            // Keep the fake provider isolated while making the binary check fail.
+            f.fake_claude();
+            let binary = f.root.join("bin/codex");
+            let saved = f.root.join("saved-codex");
+            fs::rename(&binary, &saved).unwrap();
+            let out = f
+                .command(&["run", "--json"])
+                .env("PATH", f.root.join("bin"))
+                .output()
+                .unwrap();
+            assert_error(out, 1, "not found on PATH");
+            fs::rename(saved, binary).unwrap();
+        } else {
+            f.json(&["run", "--no-handoff", "--json"]);
+        }
+        assert!(f.state()["launches"][1]["handoff"].is_null());
+        let resumed = f.json(&["run", "--json"]);
+        assert_eq!(
+            resumed["launch"]["handoff"]["injectedEntryIds"],
+            serde_json::json!([note["id"]])
+        );
+        let prompt = fs::read_to_string(f.run_dir().join("launches/3/prompt.md")).unwrap();
+        assert!(prompt.contains("unseen human note"));
+        assert!(!prompt.contains("Original task"));
+        let again = f.json(&["run", "--json"]);
+        assert!(again["launch"]["handoff"]["injectedEntryIds"]
+            .as_array()
+            .unwrap()
+            .is_empty());
+    }
+}
+
+#[test]
+fn handoff_resume_without_prior_injection_carries_full_snapshot() {
+    let f = Fixture::new();
+    f.record_workspace();
+    f.json(&["run", "--skill", "x", "original task", "--json"]);
+    let note = f.json(&["handoff", "add", "older human note", "--json"]);
+    f.json(&["run", "--fresh", "--no-handoff", "--skill", "x", "--json"]);
+    assert!(f.state()["launches"][0]["handoff"].is_null());
+    let resumed = f.json(&["run", "--json"]);
+    assert_eq!(
+        resumed["launch"]["handoff"]["injectedEntryIds"],
+        serde_json::json!([note["id"]])
+    );
+    let prompt = fs::read_to_string(f.run_dir().join("launches/2/prompt.md")).unwrap();
+    assert!(prompt.contains("## Original task (verbatim)\n  original task\n"));
+    assert!(prompt.contains("older human note"));
+}
+
+#[test]
+fn handoff_fresh_retry_after_capture_does_not_duplicate_intent() {
+    let f = Fixture::new();
+    f.record_workspace();
+    let task = "Run cmd < file and check Vec<String>";
+    let out = f
+        .command(&["run", "--skill", "x", task, "--json"])
+        .env("FAKE_NO_THREAD", "1")
+        .env("FAKE_EXIT", "1")
+        .output()
+        .unwrap();
+    assert_error(out, 1, "");
+    assert_eq!(f.handoff()["intent"], task);
+    assert!(f.state()["sessionId"].is_null());
+    let failed_run = f.state()["id"].clone();
+    let fresh = f.json(&["run", "--fresh", "--skill", "x", task, "--json"]);
+    assert_ne!(fresh["run"]["id"], failed_run);
+    let snapshot = f.handoff();
+    assert_eq!(snapshot["intent"], task);
+    assert!(snapshot["entries"].as_array().unwrap().is_empty());
+    let prompt = fs::read_to_string(f.run_dir().join("launches/1/prompt.md")).unwrap();
+    assert!(!prompt.contains("Original task"));
+    assert_eq!(prompt.matches(task).count(), 1);
+    assert!(prompt.ends_with(task));
+
+    // A different task still carries the original command and type verbatim.
+    f.json(&["run", "--fresh", "--skill", "x", "different task", "--json"]);
+    let prompt = fs::read_to_string(f.run_dir().join("launches/1/prompt.md")).unwrap();
+    assert!(prompt.contains(&format!("## Original task (verbatim)\n  {task}\n")));
+    assert_eq!(prompt.matches(task).count(), 1);
+}
+
+#[test]
+fn handoff_cross_provider_switch_stdin_and_no_handoff_exact_prompt() {
+    let f = Fixture::new();
+    f.record_workspace();
+    f.fake_claude();
+    let task = "  original from stdin\ninternal line\r\n\n \t\u{2003}";
+    let mut child = f
+        .command(&[
+            "run",
+            "--provider",
+            "claude",
+            "--skill",
+            "design",
+            "-",
+            "--json",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(task.as_bytes())
+        .unwrap();
+    assert!(child.wait_with_output().unwrap().status.success());
+    assert_eq!(
+        fs::read(f.memory().join("intent.md")).unwrap(),
+        task.as_bytes()
+    );
+    f.json(&[
+        "handoff",
+        "add",
+        "--kind",
+        "decision",
+        "design approved",
+        "--json",
+    ]);
+    f.json(&[
+        "run",
+        "--fresh",
+        "--skill",
+        "implement",
+        "  implement it\nnext line\r\n \t\u{2003}",
+        "--json",
+    ]);
+    assert_eq!(f.state()["provider"], "codex");
+    let snapshot = f.handoff();
+    assert_eq!(snapshot["intent"], task);
+    assert_eq!(
+        snapshot["entries"][1]["text"],
+        "  implement it\nnext line\r\n \t\u{2003}"
+    );
+    let prompt = fs::read_to_string(f.run_dir().join("launches/1/prompt.md")).unwrap();
+    assert!(prompt.contains("design approved"));
+    assert!(prompt.contains(&task.replace('\n', "\n  ")));
+    assert!(!prompt.contains("\\u{a}"));
+    let fresh = f.json(&[
+        "run",
+        "--fresh",
+        "--no-handoff",
+        "--skill",
+        "legacy",
+        "task",
+        "--json",
+    ]);
+    assert!(fresh["launch"]["handoff"].is_null());
+    assert_eq!(fs::read_to_string(f.root.join("input")).unwrap(), format!("You are the parent agent for this rabi run in workspace {} on branch feat/parent. You manage progress: delegate implementation and review to your own subagents, gather the information you need yourself (git, gh, tests), give follow-up instructions until the work is really done, and decide completion.\n\nFollow skill `legacy`.\n\ntask", f.workspace.display()));
+}
+
+#[test]
+fn handoff_refuses_symlinks_and_repository_collision_before_spawn() {
+    let f = Fixture::new();
+    f.record_workspace();
+    f.json(&["handoff", "add", "saved", "--json"]);
+    let memory = f.memory();
+    let target = f.root.join("untouched");
+    fs::write(&target, "untouched").unwrap();
+    for name in ["identity.json", "handoff.jsonl", "intent.md", ".lock"] {
+        let file = memory.join(name);
+        let backup = memory.join(format!("{name}.backup"));
+        if file.exists() {
+            fs::rename(&file, &backup).unwrap();
+        }
+        std::os::unix::fs::symlink(&target, &file).unwrap();
+        assert_error(f.run(&["handoff", "add", "blocked"]), 1, "Handoff");
+        let calls = f.calls();
+        assert_error(
+            f.run(&["run", "--fresh", "--skill", "x"]),
+            1,
+            "--no-handoff",
+        );
+        assert_eq!(f.calls(), calls);
+        fs::remove_file(&file).unwrap();
+        if backup.exists() {
+            fs::rename(backup, file).unwrap();
+        }
+    }
+    assert_eq!(fs::read_to_string(&target).unwrap(), "untouched");
+    let parent = memory.parent().unwrap();
+    let real = parent.join("saved-memory");
+    fs::rename(&memory, &real).unwrap();
+    std::os::unix::fs::symlink(&real, &memory).unwrap();
+    assert_error(f.run(&["handoff", "show"]), 1, "Handoff");
+    assert_error(f.run(&["handoff", "path"]), 1, "Handoff");
+    fs::remove_file(&memory).unwrap();
+    fs::rename(&real, &memory).unwrap();
+    let identity = memory.join("identity.json");
+    let saved_identity = fs::read(&identity).unwrap();
+    fs::remove_file(&identity).unwrap();
+    assert!(f.handoff()["entries"].as_array().unwrap().is_empty());
+    assert_error(
+        f.run(&["run", "--fresh", "--skill", "x"]),
+        1,
+        "--no-handoff",
+    );
+    assert_error(f.run(&["handoff", "add", "blocked"]), 1, "no identity.json");
+    fs::write(&identity, saved_identity).unwrap();
+    let manifest = parent.parent().unwrap().join("repository.json");
+    fs::write(&manifest, r#"{"schema":1,"commonDir":"/different/.git"}"#).unwrap();
+    assert_error(f.run(&["handoff", "show"]), 1, "commonDir mismatch");
+    assert_error(
+        f.run(&["run", "--fresh", "--skill", "x"]),
+        1,
+        "--no-handoff",
+    );
+    f.json(&["run", "--fresh", "--no-handoff", "--skill", "x", "--json"]);
+}
+
+#[test]
+fn handoff_retained_on_forget_and_invalid_source_omitted() {
+    let f = Fixture::new();
+    f.record_workspace();
+    let out = f
+        .command(&["handoff", "add", "human", "--json"])
+        .env("RABI_RUN_ID", "run_00000000-0000-4000-8000-000000000000")
+        .env("RABI_RUN_LAUNCH", "1")
+        .env("RABI_RUN_PROVIDER", "codex")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    let entry: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(entry["data"].get("source").is_none());
+    let memory = f.memory();
+    let before = fs::read(memory.join("handoff.jsonl")).unwrap();
+    f.json(&["forget", ".", "--json"]);
+    assert_eq!(fs::read(memory.join("handoff.jsonl")).unwrap(), before);
+    assert_error(f.run(&["handoff", "show"]), 1, "rabi adopt");
+}
+
+#[test]
+fn handoff_full_show_request_limits_output_env_and_no_handoff_first_launch() {
+    let f = Fixture::new();
+    f.record_workspace();
+    let memory = f.memory();
+    f.json(&["run", "--no-handoff", "--skill", "x", "omitted", "--json"]);
+    assert!(!memory.exists());
+    assert!(!f.root.join("state/rabi/repositories").exists());
+    f.json(&["run", "--json"]);
+    assert!(memory.exists());
+    assert!(f.handoff()["intent"].is_null());
+    f.json(&["run", "first nonblank", "--json"]);
+    assert_eq!(f.handoff()["intent"], "first nonblank");
+    let large = "q".repeat(65536);
+    f.json(&["run", "--fresh", "--skill", "x", &large, "--json"]);
+    assert_eq!(f.handoff()["entries"][0]["text"], large);
+    let before = fs::read(memory.join("handoff.jsonl")).unwrap();
+    let out = f.run(&["run", &"q".repeat(65537), "--json"]);
+    assert!(out.status.success());
+    let envelope: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert!(envelope["warnings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|w| w["code"] == "handoff_request_skipped"));
+    assert_eq!(fs::read(memory.join("handoff.jsonl")).unwrap(), before);
+    let out = f.run(&["handoff", "show"]);
+    assert!(out.status.success());
+    assert!(String::from_utf8(out.stdout).unwrap().contains(&large));
+    let out = f
+        .command(&["handoff", "add", "--", "--literal text"])
+        .env("RABI_OUTPUT", "json")
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["data"]["text"],
+        "--literal text"
+    );
+    let mut child = f
+        .command(&["handoff", "add", "-"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child.stdin.take().unwrap().write_all(b"\xff").unwrap();
+    assert_error(child.wait_with_output().unwrap(), 2, "UTF-8");
+    let alias = f.root.join("workspace-alias");
+    std::os::unix::fs::symlink(&f.workspace, &alias).unwrap();
+    let out = f
+        .command_at(
+            &alias,
+            &["handoff", "path", "--json"],
+            env!("CARGO_BIN_EXE_rabi"),
+        )
+        .output()
+        .unwrap();
+    assert!(out.status.success());
+    assert_eq!(
+        serde_json::from_slice::<Value>(&out.stdout).unwrap()["data"]["path"],
+        memory.to_str().unwrap()
+    );
+}
+
+#[test]
+fn handoff_complete_json_without_newline_never_becomes_committed() {
+    let f = Fixture::new();
+    f.record_workspace();
+    let entry = f.json(&["handoff", "add", "uncommitted", "--json"]);
+    let ledger = f.memory().join("handoff.jsonl");
+    fs::write(&ledger, serde_json::to_vec(&entry).unwrap()).unwrap();
+    assert!(f.handoff()["entries"].as_array().unwrap().is_empty());
+    f.json(&["handoff", "add", "committed", "--json"]);
+    let snapshot = f.handoff();
+    assert_eq!(snapshot["entries"].as_array().unwrap().len(), 1);
+    assert_eq!(snapshot["entries"][0]["text"], "committed");
+    assert!(fs::read(&ledger)
+        .unwrap()
+        .windows(2)
+        .any(|w| w == b"\x1e\n"));
+}
+
+#[test]
+fn handoff_missing_provider_preserves_memory_and_repeated_requests_are_deduplicated() {
+    for provider in ["codex", "cursor", "claude"] {
+        let f = Fixture::new();
+        f.record_workspace();
+        // Installs git/python and isolates PATH for every missing-binary check.
+        f.fake_claude();
+        fs::remove_file(f.root.join("bin/claude")).unwrap();
+        let memory = f.memory();
+        if provider == "codex" {
+            fs::remove_file(f.root.join("bin/codex")).unwrap();
+        }
+        let out = f
+            .claude_command(&[
+                "run",
+                "--provider",
+                provider,
+                "--skill",
+                "x",
+                "failed intent",
+                "--json",
+            ])
+            .env("PATH", f.root.join("bin"))
+            .output()
+            .unwrap();
+        assert_error(out, 1, "not found on PATH");
+        assert!(!memory.exists());
+        f.json(&["handoff", "add", "existing note", "--json"]);
+        let before = fs::read(memory.join("handoff.jsonl")).unwrap();
+        assert!(!memory.join("intent.md").exists());
+        fs::write(memory.join("intent.md"), "preserved intent").unwrap();
+        let out = f
+            .claude_command(&[
+                "run",
+                "--fresh",
+                "--provider",
+                provider,
+                "--skill",
+                "x",
+                "failed task",
+                "--json",
+            ])
+            .env("PATH", f.root.join("bin"))
+            .output()
+            .unwrap();
+        assert_error(out, 1, "not found on PATH");
+        assert_eq!(fs::read(memory.join("handoff.jsonl")).unwrap(), before);
+        assert_eq!(
+            fs::read_to_string(memory.join("intent.md")).unwrap(),
+            "preserved intent"
+        );
+        assert_eq!(f.calls(), 0);
+    }
+
+    let f = Fixture::new();
+    f.record_workspace();
+    f.json(&["run", "--skill", "x", "intent", "--json"]);
+    f.json(&["run", "request", "--json"]);
+    f.json(&["handoff", "add", "intervening note", "--json"]);
+    let before = fs::read(f.memory().join("handoff.jsonl")).unwrap();
+    f.json(&["run", "--fresh", "--skill", "x", "request", "--json"]);
+    assert_eq!(fs::read(f.memory().join("handoff.jsonl")).unwrap(), before);
+    let prompt = fs::read_to_string(f.run_dir().join("launches/1/prompt.md")).unwrap();
+    assert_eq!(prompt.matches("request").count(), 1);
+}
+
+#[test]
+fn handoff_large_intent_is_verbatim_and_show_makes_control_characters_visible() {
+    let f = Fixture::new();
+    f.record_workspace();
+    let intent = format!("\x1b]52;c;clipboard\x07{}\n", "original ".repeat(25000));
+    let mut child = f
+        .command(&["run", "--skill", "x", "-", "--json"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(intent.as_bytes())
+        .unwrap();
+    assert!(child.wait_with_output().unwrap().status.success());
+    assert_eq!(
+        fs::read(f.memory().join("intent.md")).unwrap(),
+        intent.as_bytes()
+    );
+    let note = "note\x1b]0;title\x07\nnext";
+    f.json(&["handoff", "add", note, "--json"]);
+    let snapshot = f.handoff();
+    assert_eq!(snapshot["intent"], intent);
+    assert_eq!(snapshot["entries"][0]["text"], note);
+    let out = f.run(&["handoff", "show"]);
+    assert!(out.status.success());
+    let text = String::from_utf8(out.stdout).unwrap();
+    assert!(!text.contains('\x1b'));
+    assert!(!text.contains('\x07'));
+    assert!(text.contains("\\u{1b}]52;c;clipboard\\u{7}"));
+    assert!(text.contains("note\\u{1b}]0;title\\u{7}\n  next\n"));
+    assert!(!text.contains("\\u{a}"));
+    f.json(&["run", "--fresh", "--skill", "x", "next task", "--json"]);
+    let prompt = fs::read_to_string(f.run_dir().join("launches/1/prompt.md")).unwrap();
+    assert!(prompt.contains("intent truncated;"));
+    assert!(prompt.find("You are the parent").unwrap() <= 24576);
+}
+
+#[test]
+fn handoff_accepts_symlinks_through_state_root_but_refuses_descendant_symlinks() {
+    for initialized in [false, true] {
+        for component in ["state", "state/rabi"] {
+            let f = Fixture::new();
+            f.record_workspace();
+            if initialized {
+                f.json(&["handoff", "add", "before link", "--json"]);
+            }
+            let original = f.root.join(component);
+            fs::create_dir_all(&original).unwrap();
+            let original_memory = f.memory();
+            let real = f.root.join("real-state");
+            fs::rename(&original, &real).unwrap();
+            std::os::unix::fs::symlink(&real, &original).unwrap();
+            let memory = f.memory();
+            assert_eq!(
+                memory,
+                real.join(original_memory.strip_prefix(&original).unwrap())
+            );
+            assert_eq!(memory.exists(), initialized);
+            f.json(&["run", "--skill", "x", "task through link", "--json"]);
+            let args: Value = serde_json::from_str(
+                fs::read_to_string(f.root.join("argv.jsonl"))
+                    .unwrap()
+                    .lines()
+                    .next()
+                    .unwrap(),
+            )
+            .unwrap();
+            let args = args.as_array().unwrap();
+            let grant = args.iter().position(|a| a == "--add-dir").unwrap();
+            assert_eq!(args[grant + 1], memory.to_str().unwrap());
+            assert_eq!(memory, memory.canonicalize().unwrap());
+            f.json(&["handoff", "add", "after link", "--json"]);
+            assert_eq!(
+                f.handoff()["entries"].as_array().unwrap().len(),
+                if initialized { 2 } else { 1 }
+            );
+            let repositories = f.root.join("state/rabi/repositories");
+            let moved = f.root.join("real-repositories");
+            fs::rename(&repositories, &moved).unwrap();
+            std::os::unix::fs::symlink(&moved, &repositories).unwrap();
+            assert_error(f.run(&["handoff", "show"]), 1, "Handoff");
+            assert_error(f.run(&["handoff", "add", "blocked"]), 1, "Handoff");
+        }
+    }
+}
+
+#[test]
+fn handoff_refuses_hard_links_without_modifying_targets() {
+    let f = Fixture::new();
+    f.record_workspace();
+    f.json(&["run", "--skill", "x", "intent", "--json"]);
+    f.json(&["handoff", "add", "note", "--json"]);
+    let memory = f.memory();
+    for path in [
+        memory.join("identity.json"),
+        memory.join("intent.md"),
+        memory.join("handoff.jsonl"),
+        memory.join(".lock"),
+        memory
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("repository.json"),
+    ] {
+        let original = fs::read(&path).unwrap();
+        let external = f.root.join("hard-link-target");
+        fs::rename(&path, &external).unwrap();
+        fs::hard_link(&external, &path).unwrap();
+        assert_error(f.run(&["handoff", "show"]), 1, "hard link");
+        assert_error(f.run(&["handoff", "add", "blocked"]), 1, "hard link");
+        assert_error(f.run(&["run", "blocked"]), 1, "hard link");
+        assert_eq!(fs::read(&external).unwrap(), original);
+        fs::remove_file(&path).unwrap();
+        fs::rename(&external, &path).unwrap();
+    }
+}
+
+#[test]
+fn handoff_busy_lock_refuses_with_bounded_wait_and_run_preserves_status() {
+    let f = Fixture::new();
+    f.record_workspace();
+    f.json(&["handoff", "add", "note", "--json"]);
+    let memory = f.memory();
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(memory.join(".lock"))
+        .unwrap();
+    lock.lock().unwrap();
+    let before = fs::read(memory.join("handoff.jsonl")).unwrap();
+    let started = Instant::now();
+    let out = f.run(&["run", "--skill", "x", "blocked", "--json"]);
+    assert!(started.elapsed() >= Duration::from_secs(10));
+    assert!(started.elapsed() < Duration::from_secs(20));
+    assert_eq!(out.status.code(), Some(4));
+    let envelope: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(envelope["error"]["code"], "refused");
+    assert!(envelope["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("busy"));
+    assert_eq!(fs::read(memory.join("handoff.jsonl")).unwrap(), before);
+    assert_eq!(f.calls(), 0);
+    // Read-only operations do not wait for the append lock.
+    assert_eq!(f.handoff()["entries"].as_array().unwrap().len(), 1);
+}
+
+#[test]
+fn handoff_workspace_preparation_failure_preserves_memory() {
+    let f = Fixture::new();
+    f.record_workspace();
+    f.fake_cursor();
+    f.json(&["handoff", "add", "preserved", "--json"]);
+    let memory = f.memory();
+    let before = fs::read(memory.join("handoff.jsonl")).unwrap();
+    let exclude = f.repo.join(".git/info/exclude");
+    fs::create_dir_all(exclude.parent().unwrap()).unwrap();
+    std::os::unix::fs::symlink(f.root.join("unwritten"), &exclude).unwrap();
+    let out = f
+        .cursor_command(&[
+            "run",
+            "--provider",
+            "cursor",
+            "--skill",
+            "x",
+            "failed task",
+            "--json",
+        ])
+        .output()
+        .unwrap();
+    assert_error(out, 1, "Refusing to replace");
+    assert_eq!(fs::read(memory.join("handoff.jsonl")).unwrap(), before);
+    assert!(!memory.join("intent.md").exists());
+    assert_eq!(f.calls(), 0);
 }

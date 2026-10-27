@@ -95,7 +95,7 @@ rabi remove task/auth
 | `rabi shell-init` | `rabi cd` 用のシェル関数を生成 |
 | `rabi --version` | アプリのバージョンを表示（`-v` も利用可） |
 
-グローバルオプションは `-R/--repo REF`、`--json`、`--output text|json`、`--no-input`、`-h/--help`、`-v/--version` です。`run` と `skill` は現在のチェックアウトを使い、`-R` を受け付けません。`exec` では rabi のオプションをセレクターの前に、子コマンドを `--` の後に置きます。[全オプションと使用例](docs/commands.md)を参照してください。
+グローバルオプション（`skill` は現在のチェックアウトを使用し、`run -R` には `SEL --` が必要です）: `-R/--repo REF`、`--json`、`--output text|json`、`--no-input`、`-h/--help`、`-v/--version`。`exec` ではセレクターの前に rabi のオプション、`--` の後に子コマンドを置きます。[全オプションと使用例](docs/commands.md)を参照。
 
 ## エージェント向け
 
@@ -135,6 +135,8 @@ npx skills update rabi
 初回または `--fresh` とともに `--provider cursor` で Cursor、`--provider claude` で Claude Code を選べます。再開時は記録された provider に従い、異なる `--provider` には `--fresh` が必要です。既定は Codex のままです。Cursor は sandbox と自動承認レビューを使い、レビューサービスが sandbox 外での実行を許可した場合は起動の監査情報に表示します。既存の `.cursor/sandbox.json` は保持し、存在しない場合は GitHub 向けネットワーク許可リストを作成します。Claude Code は PATH 上の `claude` とログインを必要とし、モデル `opus`、effort `high` を使い、報告された権限モードが `auto` でなければ起動を停止します。[provider の詳細](docs/commands.md#parent-sessions-and-skill-discovery)を参照。
 
 `rabi run SEL -- [TASK]` でディレクトリを移動せずにワークスペースを選べます。リポジトリ外からは `-R REPO` を追加します。`--` がない場合の単一の位置引数は従来どおりタスクの文章です。`rabi list` と `rabi show` は現在の親の実行状態を表示し、JSON にはセッション ID と最新起動のログ・回答のパスも含まれます。
+
+`rabi handoff` は親プロバイダを切り替える際のコンテキストを保持します。`rabi handoff show` で元のタスクとメモを読み、`rabi handoff add` でメモを追記し（`--kind checkpoint -` は標準入力）、`rabi handoff path` で保存先を表示します。run は最初のタスクを一度保存し、その後のタスクを request として追記します。注入は既定で有効で、`--no-handoff` で省略できます。全プロバイダに、このワークスペースのメモリディレクトリだけを `--add-dir` で渡します。remove・gc・forget 後もメモリは保持されます。[詳細](docs/commands.md#workspace-handoff)を参照。
 
 `rabi skill list` はチェックアウトとユーザーのスキルディレクトリから直下のスキルを重複も含めて一覧表示します。`rabi run` はこの探索を使いません。
 

@@ -18,7 +18,12 @@ mod md5;
 use super::stream::FINAL_LINE_BYTES;
 const SANDBOX: &[u8] = b"{\"networkPolicy\":{\"allow\":[\"github.com\",\"*.github.com\",\"*.githubusercontent.com\"]}}\n";
 
-pub(super) fn command(workspace: &Path, dir: &Path, session: Session<'_>) -> Result<Command> {
+pub(super) fn command(
+    workspace: &Path,
+    dir: &Path,
+    session: Session<'_>,
+    memory: Option<&Path>,
+) -> Result<Command> {
     let mut command = Command::new(resolve_binary()?);
     command
         .args(["-p", "--output-format", "stream-json", "--workspace"])
@@ -34,13 +39,16 @@ pub(super) fn command(workspace: &Path, dir: &Path, session: Session<'_>) -> Res
     if let Session::Resume { id } = session {
         command.args(["--resume", id]);
     }
+    if let Some(memory) = memory {
+        command.arg("--add-dir").arg(memory);
+    }
     command.current_dir(workspace).stdin(Stdio::from(
         fs::File::open(dir.join("prompt.md")).map_err(io_error)?,
     ));
     Ok(command)
 }
 
-fn resolve_binary() -> Result<PathBuf> {
+pub(super) fn resolve_binary() -> Result<PathBuf> {
     resolve_binary_in(std::env::var_os("PATH").as_deref()).ok_or_else(|| Error::Spawn {
         command: "cursor-agent".into(),
         details: "Cursor CLI was not found on PATH (tried cursor-agent and agent). Install Cursor CLI from https://cursor.com/cli, then run `cursor-agent login` (or `agent login`) before retrying.".into(),

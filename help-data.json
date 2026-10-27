@@ -83,6 +83,10 @@
     {
       "name": "skill",
       "description": "Discover available skills"
+    },
+    {
+      "name": "handoff",
+      "description": "Read and append durable workspace context across parent providers"
     }
   ],
   "helps": {
@@ -1842,7 +1846,7 @@
     "run": {
       "name": "run",
       "description": "Launch or resume one Codex, Cursor, or Claude Code parent session in a workspace",
-      "usage": "rabi run [--provider codex|cursor|claude] [--skill VALUE] [--fresh] [--timeout DURATION] [SEL --] [TASK | -]",
+      "usage": "rabi run [--provider codex|cursor|claude] [--skill VALUE] [--fresh] [--no-handoff] [--timeout DURATION] [SEL --] [TASK | -]",
       "options": [
         {
           "name": "provider",
@@ -1865,6 +1869,11 @@
           "name": "fresh",
           "type": "boolean",
           "description": "Start a new parent session, retaining older run records"
+        },
+        {
+          "name": "no-handoff",
+          "type": "boolean",
+          "description": "Skip memory capture, injection, reminder, run environment variables and the memory --add-dir grant"
         },
         {
           "name": "timeout",
@@ -1901,7 +1910,8 @@
         "Cursor requires cursor-agent (or agent) on PATH and login. It uses --trust --sandbox enabled --auto-review with grok-4.7-high and stdin prompts. Resume requires local chat metadata with hasConversation:true under HOME/.cursor/chats/md5(workspace)/ID/meta.json; missing sessions fail safely with --fresh guidance.",
         "Cursor creates .cursor/sandbox.json with GitHub network domains only when absent, preserves existing user files, and excludes the path through the repository common directory info/exclude. Completed TYPE_INSECURE_NONE tool calls add an audit message and launch.insecureToolCalls count without failing the run. Cursor CLI commit attribution settings are preserved.",
         "Claude Code requires claude on PATH and login (run claude). It uses opus with high effort, stdin prompts, --permission-mode auto --permission-prompts none, and validates init permissionMode as auto. New sessions use a generated UUID recorded as requestedSessionId; resume uses the observed id. No workspace settings are written. Local transcript absence is unknown and still attempts resume. Timeout/interrupt retain 124/130 even for exit-0 error results with null answers.",
-        "Text prints the final parent answer. JSON data is {run,launch,answer}; raw stdout and stderr are saved per launch."
+        "Text prints the final parent answer. JSON data is {run,launch,answer}; raw stdout and stderr are saved per launch.",
+        "Handoff is enabled by default for recorded workspaces. First/fresh launches carry original intent and bounded notes (24 KiB); resume carries only new foreign notes since the last delivered snapshot (8 KiB), or the full first/fresh snapshot if none exists in the run. Delivery requires an observed launch session id or exit code 0. Later TASKs are request entries unless they match intent or the previous request after trimming trailing whitespace from both texts; storage remains verbatim. All providers receive --add-dir for only the memory directory and RABI_BIN, RABI_RUN_ID, RABI_RUN_LAUNCH, RABI_RUN_PROVIDER, RABI, RABI_REPO_PATH, RABI_WORKSPACE, RABI_WORKSPACE_ID and RABI_WORKSPACE_PATH. Memory failures stop before spawn; --no-handoff bypasses them. Unrecorded workspaces warn and continue without memory."
       ],
       "examples": [
         {
@@ -1984,6 +1994,163 @@
       "notes": [
         "Scan checkout .agents/skills, .codex/skills, .claude/skills, then ~/.agents/skills, $CODEX_HOME/skills (default ~/.codex/skills), ~/.claude/skills. Skip missing directories; sort names within each source; list duplicates. No parsing of skill contents.",
         "Text is name<TAB>source<TAB>path; JSON data is {skills:[{name,source,path}]}. Run does not use this discovery command."
+      ]
+    },
+    "handoff": {
+      "name": "handoff",
+      "description": "Carry context across parent sessions",
+      "usage": "rabi handoff show|path|add",
+      "options": [
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Repository to operate on; uses the shared workspace selector rules",
+          "example": "--repo owner/repo"
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "SEL defaults to the current linked workspace; unrecorded workspaces require rabi adopt. Memory is retained after remove, gc and forget."
+      ]
+    },
+    "handoff show": {
+      "name": "handoff show",
+      "description": "Show original intent and all handoff entries",
+      "usage": "rabi handoff show [SEL] [options]",
+      "options": [
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Repository to operate on; uses the shared workspace selector rules",
+          "example": "--repo owner/repo"
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "SEL defaults to the current linked workspace; unrecorded workspaces require rabi adopt. Memory is retained after remove, gc and forget."
+      ]
+    },
+    "handoff path": {
+      "name": "handoff path",
+      "description": "Print the workspace memory directory without creating it",
+      "usage": "rabi handoff path [SEL] [options]",
+      "options": [
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Repository to operate on; uses the shared workspace selector rules",
+          "example": "--repo owner/repo"
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "SEL defaults to the current linked workspace; unrecorded workspaces require rabi adopt. Memory is retained after remove, gc and forget."
+      ]
+    },
+    "handoff add": {
+      "name": "handoff add",
+      "description": "Append durable context; - reads all stdin",
+      "usage": "rabi handoff add [SEL] [--kind checkpoint|decision|note] (TEXT | -)",
+      "options": [
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Repository to operate on; uses the shared workspace selector rules",
+          "example": "--repo owner/repo"
+        },
+        {
+          "name": "kind",
+          "type": "string",
+          "description": "checkpoint, decision, or note (default); request is reserved for rabi run"
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "SEL defaults to the current linked workspace; unrecorded workspaces require rabi adopt. Memory is retained after remove, gc and forget."
       ]
     }
   },
@@ -2068,7 +2235,11 @@
     "pull_request_unavailable",
     "published_rewritten",
     "run_audit",
-    "run_read"
+    "run_read",
+    "handoff_unrecorded",
+    "handoff_invalid_line",
+    "handoff_identity",
+    "handoff_request_skipped"
   ],
   "schemaVersion": 2
 }
