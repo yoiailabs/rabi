@@ -11,6 +11,12 @@ on:
         description: Tag of the unique draft release to build and publish
         required: true
         type: string
+      make_latest:
+        description: Latest release choice (prereleases always use false)
+        required: true
+        type: choice
+        options: ['true', 'false', legacy]
+        default: 'true'
   pull_request:
     branches: [main]
     paths:
@@ -39,6 +45,7 @@ jobs:
       release_id: ${{ steps.resolve.outputs.release_id }}
       version: ${{ steps.resolve.outputs.version }}
       prerelease: ${{ steps.resolve.outputs.prerelease }}
+      make_latest: ${{ steps.resolve.outputs.make_latest }}
       target_commitish: ${{ steps.resolve.outputs.target_commitish }}
     steps:
       - name: Resolve unique draft and release commit
@@ -47,6 +54,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ inputs.tag }}
+          MAKE_LATEST: ${{ inputs.make_latest }}
           WORKFLOW_REF: ${{ github.ref }}
         run: |
           if [[ "$WORKFLOW_REF" != refs/heads/main ]]; then
@@ -57,6 +65,10 @@ jobs:
             echo "::error::Invalid release tag; expected vX.Y.Z with optional prerelease/build suffix"
             exit 1
           fi
+          case "$MAKE_LATEST" in
+            true|false|legacy) ;;
+            *) echo "::error::make_latest must be true, false, or legacy"; exit 1 ;;
+          esac
           releases=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100")
           release=$(jq -ce --arg tag "$TAG" '
             [ .[][] | select(.tag_name == $tag) ] |
@@ -65,6 +77,10 @@ jobs:
           ' <<< "$releases")
           release_id=$(jq -er '.id | select(type == "number" and . > 0 and floor == .)' <<< "$release")
           prerelease=$(jq -er '.prerelease | if type == "boolean" then tostring else error("Invalid prerelease") end' <<< "$release")
+          if [[ "$prerelease" == true && "$MAKE_LATEST" != false ]]; then
+            echo "::notice::Prereleases cannot be Latest; forcing make_latest=false"
+            MAKE_LATEST=false
+          fi
           target=$(jq -er '.target_commitish | select(type == "string" and length > 0)' <<< "$release")
 
           # Matching refs returns an empty array for a new tag; filter out prefix matches.
@@ -100,17 +116,18 @@ jobs:
               exit 1
             fi
             sha=${target,,}
-            if ! status=$(gh api "repos/$GITHUB_REPOSITORY/compare/$sha...main" --jq '.status'); then
-              echo "::error::Cannot resolve draft target; create the draft with --target <merge commit SHA>"
-              exit 1
-            fi
-            if [[ "$status" != identical && "$status" != ahead ]]; then
-              echo "::error::Draft target must be reachable from main; create the draft with --target <merge commit SHA>"
-              exit 1
-            fi
           fi
           if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
             echo "::error::Release commit must be a full 40-hex SHA"
+            exit 1
+          fi
+          # Both existing tags and new-tag targets must belong to main's history.
+          if ! status=$(gh api "repos/$GITHUB_REPOSITORY/compare/$sha...main" --jq '.status'); then
+            echo "::error::Cannot compare release commit with main"
+            exit 1
+          fi
+          if [[ "$status" != identical && "$status" != ahead ]]; then
+            echo "::error::Release commit must be reachable from main"
             exit 1
           fi
           resolved=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" --jq '.sha')
@@ -126,6 +143,7 @@ jobs:
             echo "release_id=$release_id"
             echo "version=$version"
             echo "prerelease=$prerelease"
+            echo "make_latest=$MAKE_LATEST"
             # Encode API text so it cannot inject additional workflow outputs.
             echo "target_commitish=$(printf '%s' "$target" | base64 -w0)"
           } >> "$GITHUB_OUTPUT"
@@ -294,6 +312,26 @@ jobs:
             sh release-assets/install.sh --version "v${version}" </dev/null
           "$RUNNER_TEMP/bin/rabi" --version
 
+      - name: Summarize release build and asset digests
+        if: github.event_name == 'workflow_dispatch'
+        working-directory: release-assets
+        shell: bash
+        env:
+          TAG: ${{ inputs.tag }}
+          RELEASE_ID: ${{ needs.resolve.outputs.release_id }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          {
+            printf '## Release build\n\n'
+            printf -- '- Tag: %s\n- Release ID: %s\n' "$TAG" "$RELEASE_ID"
+            printf -- '- Resolved build commit: %s\n- Workflow commit: %s\n\n' "$SHA" "$GITHUB_SHA"
+            printf 'Artifact attestations name the main workflow commit. GitHub\047s immutable-release attestation binds the tag, commit and assets.\n\n'
+            printf '```text\n'
+            sha256sum "rabi-v${VERSION}-"*.tar.gz install.sh SHA256SUMS | LC_ALL=C sort -k2
+            printf '```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Attest release assets
         if: github.event_name == 'workflow_dispatch'
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
@@ -397,7 +435,7 @@ jobs:
             ' <<< "$assets" > /dev/null
           done
           # Bind publication to this exact verified asset list, including IDs.
-          jq -S 'sort_by(.name)' <<< "$assets" > "$RUNNER_TEMP/verified-release-assets.json"
+          jq -S 'map({id, name, size, state, digest, content_type}) | sort_by(.name)' <<< "$assets" > "$RUNNER_TEMP/verified-release-assets.json"
 
       - name: Publish verified draft release by ID
         if: github.event_name == 'workflow_dispatch'
@@ -409,6 +447,7 @@ jobs:
           SHA: ${{ needs.resolve.outputs.sha }}
           TARGET_COMMITISH: ${{ needs.resolve.outputs.target_commitish }}
           PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
+          MAKE_LATEST: ${{ needs.resolve.outputs.make_latest }}
         run: |
           release=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID")
           jq -e --arg tag "$TAG" --arg id "$RELEASE_ID" \
@@ -435,9 +474,15 @@ jobs:
             test "${target,,}" = "$SHA"
           fi
           assets=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100")
-          diff -u "$RUNNER_TEMP/verified-release-assets.json" <(jq -S 'add | sort_by(.name)' <<< "$assets")
-          # Preserve the maintainer's prerelease and Latest choices: change only draft.
-          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false > /dev/null
+          diff -u "$RUNNER_TEMP/verified-release-assets.json" <(jq -S 'add | map({id, name, size, state, digest, content_type}) | sort_by(.name)' <<< "$assets")
+          # Keep the checked prerelease flag and explicitly apply the resolved Latest choice.
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false -f "make_latest=$MAKE_LATEST" > /dev/null
           published=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID")
           jq -e '.draft == false' <<< "$published" > /dev/null
+          if jq -e '.immutable == false' <<< "$published" > /dev/null; then
+            echo "::error::Release immutability is not enabled for the repository; the published release is not locked. Enable it in Settings before the next release."
+            exit 1
+          elif ! jq -e 'has("immutable")' <<< "$published" > /dev/null; then
+            echo "::warning::Release API omitted immutable; could not confirm the published release is locked"
+          fi
           jq -r '.html_url' <<< "$published"
