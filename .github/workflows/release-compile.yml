@@ -1,9 +1,16 @@
-name: Upload release assets
+# Ship: squash-merge a reviewed version PR, then create a draft at its merge SHA.
+# Dispatch this workflow on main with the draft's tag; resolve and build that SHA.
+# Assemble, smoke-test and attest all assets, upload to the draft by release ID,
+# verify its complete asset list, then publish. PRs only build and smoke-test.
+name: Build and publish draft release
 
 on:
-  release:
-    types:
-      - published
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag of the unique draft release to build and publish
+        required: true
+        type: string
   pull_request:
     branches: [main]
     paths:
@@ -16,8 +23,116 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: release-compile-${{ github.event_name }}-${{ inputs.tag || github.event.pull_request.number }}
+  cancel-in-progress: false
+
 jobs:
+  resolve:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    # Drafts require write access to read; this job only makes GET requests.
+    permissions:
+      contents: write
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+      release_id: ${{ steps.resolve.outputs.release_id }}
+      version: ${{ steps.resolve.outputs.version }}
+      prerelease: ${{ steps.resolve.outputs.prerelease }}
+      target_commitish: ${{ steps.resolve.outputs.target_commitish }}
+    steps:
+      - name: Resolve unique draft and release commit
+        id: resolve
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          WORKFLOW_REF: ${{ github.ref }}
+        run: |
+          if [[ "$WORKFLOW_REF" != refs/heads/main ]]; then
+            echo "::error::Dispatch the reviewed workflow with --ref main"
+            exit 1
+          fi
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.+-]+)?$ ]]; then
+            echo "::error::Invalid release tag; expected vX.Y.Z with optional prerelease/build suffix"
+            exit 1
+          fi
+          releases=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100")
+          release=$(jq -ce --arg tag "$TAG" '
+            [ .[][] | select(.tag_name == $tag) ] |
+            if length == 1 and .[0].draft == true then .[0]
+            else error("Expected exactly one release with this tag, and it must be a draft") end
+          ' <<< "$releases")
+          release_id=$(jq -er '.id | select(type == "number" and . > 0 and floor == .)' <<< "$release")
+          prerelease=$(jq -er '.prerelease | if type == "boolean" then tostring else error("Invalid prerelease") end' <<< "$release")
+          target=$(jq -er '.target_commitish | select(type == "string" and length > 0)' <<< "$release")
+
+          # Matching refs returns an empty array for a new tag; filter out prefix matches.
+          refs=$(gh api "repos/$GITHUB_REPOSITORY/git/matching-refs/tags/$TAG")
+          object=$(jq -c --arg ref "refs/tags/$TAG" '
+            [ .[] | select(.ref == $ref) ] |
+            if length == 0 then null elif length == 1 then .[0].object
+            else error("Ambiguous tag ref") end
+          ' <<< "$refs")
+          if [[ "$object" != null ]]; then
+            # Dereference annotated tags (including nested tags) to a commit.
+            for ((depth=0; depth<16; depth++)); do
+              kind=$(jq -er '.type' <<< "$object")
+              sha=$(jq -er '.sha' <<< "$object")
+              if [[ "$kind" == commit ]]; then break; fi
+              if [[ "$kind" != tag ]]; then
+                echo "::error::Release tag does not resolve to a commit"
+                exit 1
+              fi
+              object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$sha" --jq '.object')
+            done
+            if [[ "$kind" != commit ]]; then
+              echo "::error::Too many nested annotated tags"
+              exit 1
+            fi
+            if [[ "$target" =~ ^[0-9a-fA-F]{40}$ && "${target,,}" != "$sha" ]]; then
+              echo "::error::Draft target SHA disagrees with the existing tag"
+              exit 1
+            fi
+          else
+            if [[ ! "$target" =~ ^[0-9a-fA-F]{40}$ ]]; then
+              echo "::error::For a new tag, create the draft with --target <merge commit SHA> (full 40-hex SHA)"
+              exit 1
+            fi
+            sha=${target,,}
+            if ! status=$(gh api "repos/$GITHUB_REPOSITORY/compare/$sha...main" --jq '.status'); then
+              echo "::error::Cannot resolve draft target; create the draft with --target <merge commit SHA>"
+              exit 1
+            fi
+            if [[ "$status" != identical && "$status" != ahead ]]; then
+              echo "::error::Draft target must be reachable from main; create the draft with --target <merge commit SHA>"
+              exit 1
+            fi
+          fi
+          if [[ ! "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "::error::Release commit must be a full 40-hex SHA"
+            exit 1
+          fi
+          resolved=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" --jq '.sha')
+          test "$resolved" = "$sha"
+          manifest=$(gh api "repos/$GITHUB_REPOSITORY/contents/Cargo.toml?ref=$sha" --jq '.content' | base64 --decode)
+          version=$(awk -F '"' '/^version = / { print $2; exit }' <<< "$manifest")
+          if [[ "$version" != "${TAG#v}" ]]; then
+            echo "::error::Cargo.toml version does not match the requested tag"
+            exit 1
+          fi
+          {
+            echo "sha=$sha"
+            echo "release_id=$release_id"
+            echo "version=$version"
+            echo "prerelease=$prerelease"
+            # Encode API text so it cannot inject additional workflow outputs.
+            echo "target_commitish=$(printf '%s' "$target" | base64 -w0)"
+          } >> "$GITHUB_OUTPUT"
+
   compile:
+    needs: resolve
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || needs.resolve.result == 'success') }}
     name: Build ${{ matrix.asset_os }}-${{ matrix.asset_arch }}
     runs-on: ${{ matrix.os }}
     permissions:
@@ -54,7 +169,7 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
           fetch-depth: 0
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ needs.resolve.outputs.sha }}
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@683b588c487a69d01f6c6ddf40f036ff682cc2c8
@@ -106,8 +221,8 @@ jobs:
 
   finalize:
     name: Assemble release assets
-    # Default success gating requires every matrix build to succeed.
-    needs: compile
+    needs: [resolve, compile]
+    if: ${{ !cancelled() && (github.event_name == 'pull_request' || needs.resolve.result == 'success') && needs.compile.result == 'success' }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -117,7 +232,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ needs.resolve.outputs.sha }}
 
       - name: Download archives
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
@@ -151,7 +266,7 @@ jobs:
           if [[ -f ../install.sh ]]; then
             cp ../install.sh install.sh
             files+=(install.sh)
-          elif [[ "$GITHUB_EVENT_NAME" == release ]]; then
+          elif [[ "$GITHUB_EVENT_NAME" == workflow_dispatch ]]; then
             echo "::error::install.sh is missing from the release tag; refusing to publish assets"
             exit 1
           else
@@ -180,7 +295,7 @@ jobs:
           "$RUNNER_TEMP/bin/rabi" --version
 
       - name: Attest release assets
-        if: github.event_name == 'release'
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: |
@@ -188,22 +303,141 @@ jobs:
             release-assets/install.sh
             release-assets/SHA256SUMS
 
-      - name: Upload release assets
-        if: github.event_name == 'release'
+      - name: Upload draft release assets by ID
+        if: github.event_name == 'workflow_dispatch'
         working-directory: release-assets
+        shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-        # gh uploads files in parallel and never rolls back, so publish
-        # SHA256SUMS last and on its own. A rerun first drops any stale
-        # SHA256SUMS, so old checksums never pair with rebuilt archives. The
-        # installer refuses a release without SHA256SUMS (fails closed).
+          TAG: ${{ inputs.tag }}
+          RELEASE_ID: ${{ needs.resolve.outputs.release_id }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+          TARGET_COMMITISH: ${{ needs.resolve.outputs.target_commitish }}
+          PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
         run: |
-          # Fetch the asset list on its own so a failed lookup stops the job
-          # instead of silently skipping the stale-checksum cleanup.
-          existing=$(gh release view "$RELEASE_TAG" --json assets --jq '.assets[].name')
-          if printf '%s\n' "$existing" | grep -qx SHA256SUMS; then
-            gh release delete-asset "$RELEASE_TAG" SHA256SUMS --yes
+          expected=(
+            "rabi-v${VERSION}-darwin-arm64.tar.gz"
+            "rabi-v${VERSION}-darwin-x64.tar.gz"
+            "rabi-v${VERSION}-linux-arm64.tar.gz"
+            "rabi-v${VERSION}-linux-x64.tar.gz"
+            install.sh
+            SHA256SUMS
+          )
+          # Recheck the specific ID before each mutation. Replacement is safe
+          # only while it is a draft; never address uploads by an ambiguous tag.
+          require_draft() {
+            release=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID")
+            jq -e --arg tag "$TAG" --arg id "$RELEASE_ID" \
+              --arg target "$TARGET_COMMITISH" --argjson prerelease "$PRERELEASE" '
+              .draft == true and (.id | tostring) == $id and .tag_name == $tag and
+              (.target_commitish | @base64) == $target and .prerelease == $prerelease
+            ' <<< "$release" > /dev/null || {
+              echo "::error::Resolved release must still be the same draft with unchanged target and prerelease"
+              return 1
+            }
+          }
+          require_draft
+          releases=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100")
+          jq -e --arg tag "$TAG" --arg id "$RELEASE_ID" '
+            [.[][] | select(.tag_name == $tag)] |
+            length == 1 and (.[0].id | tostring) == $id
+          ' <<< "$releases" > /dev/null
+          assets=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100" | jq 'add')
+          names=$(printf '%s\n' "${expected[@]}" | jq -R . | jq -s .)
+          if ! jq -e --argjson names "$names" 'all(.[]; .name as $name | $names | index($name) != null)' <<< "$assets" > /dev/null; then
+            echo "::error::Draft contains unexpected assets; remove them before dispatching again"
+            exit 1
           fi
-          gh release upload "$RELEASE_TAG" ./*.tar.gz install.sh --clobber
-          gh release upload "$RELEASE_TAG" SHA256SUMS --clobber
+          # Remove stale SHA256SUMS before replacing archives. Upload it last
+          # and on its own so old checksums never pair with rebuilt archives;
+          # the installer refuses a release without SHA256SUMS (fails closed).
+          for name in SHA256SUMS "${expected[@]:0:5}"; do
+            while IFS= read -r asset_id; do
+              require_draft
+              gh api -X DELETE "repos/$GITHUB_REPOSITORY/releases/assets/$asset_id"
+            done < <(jq -r --arg name "$name" '.[] | select(.name == $name) | .id' <<< "$assets")
+          done
+          # REST uploads use the resolved release ID and replace draft assets
+          # explicitly, the ID-safe equivalent of gh release upload --clobber.
+          for name in "${expected[@]}"; do
+            require_draft
+            upload_url=$(jq -er '.upload_url | split("{")[0]' <<< "$release")
+            encoded_name=$(jq -rn --arg name "$name" '$name | @uri')
+            gh api -X POST "$upload_url?name=$encoded_name" \
+              -H 'Content-Type: application/octet-stream' --input "$name" > /dev/null
+          done
+
+      - name: Verify draft release assets by ID
+        if: github.event_name == 'workflow_dispatch'
+        working-directory: release-assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ needs.resolve.outputs.release_id }}
+          VERSION: ${{ needs.resolve.outputs.version }}
+        run: |
+          assets=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100" | jq 'add')
+          expected=(
+            "rabi-v${VERSION}-darwin-arm64.tar.gz"
+            "rabi-v${VERSION}-darwin-x64.tar.gz"
+            "rabi-v${VERSION}-linux-arm64.tar.gz"
+            "rabi-v${VERSION}-linux-x64.tar.gz"
+            install.sh
+            SHA256SUMS
+          )
+          diff -u <(printf '%s\n' "${expected[@]}" | LC_ALL=C sort) \
+            <(jq -r '.[].name' <<< "$assets" | LC_ALL=C sort)
+          for name in "${expected[@]}"; do
+            size=$(stat -c %s "$name")
+            digest="sha256:$(sha256sum "$name" | cut -d ' ' -f 1)"
+            jq -e --arg name "$name" --argjson size "$size" --arg digest "$digest" '
+              [.[] | select(.name == $name)] |
+              length == 1 and .[0].state == "uploaded" and .[0].size == $size and
+              (.[0].digest == null or .[0].digest == $digest)
+            ' <<< "$assets" > /dev/null
+          done
+          # Bind publication to this exact verified asset list, including IDs.
+          jq -S 'sort_by(.name)' <<< "$assets" > "$RUNNER_TEMP/verified-release-assets.json"
+
+      - name: Publish verified draft release by ID
+        if: github.event_name == 'workflow_dispatch'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          RELEASE_ID: ${{ needs.resolve.outputs.release_id }}
+          SHA: ${{ needs.resolve.outputs.sha }}
+          TARGET_COMMITISH: ${{ needs.resolve.outputs.target_commitish }}
+          PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
+        run: |
+          release=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID")
+          jq -e --arg tag "$TAG" --arg id "$RELEASE_ID" \
+            --arg target "$TARGET_COMMITISH" --argjson prerelease "$PRERELEASE" '
+            .draft == true and (.id | tostring) == $id and .tag_name == $tag and
+            (.target_commitish | @base64) == $target and .prerelease == $prerelease
+          ' <<< "$release" > /dev/null
+          releases=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases?per_page=100")
+          jq -e --arg tag "$TAG" --arg id "$RELEASE_ID" '
+            [.[][] | select(.tag_name == $tag)] |
+            length == 1 and (.[0].id | tostring) == $id
+          ' <<< "$releases" > /dev/null
+          # Refuse a tag moved/created at another commit while the build ran.
+          refs=$(git ls-remote --tags origin "refs/tags/$TAG" "refs/tags/$TAG^{}")
+          if [[ -n "$refs" ]]; then
+            tag_sha=$(awk -v ref="refs/tags/$TAG" '
+              $2 == ref { direct=$1 }
+              $2 == ref "^{}" { peeled=$1 }
+              END { print peeled != "" ? peeled : direct }
+            ' <<< "$refs")
+            test "$tag_sha" = "$SHA"
+          else
+            target=$(jq -r '.target_commitish' <<< "$release")
+            test "${target,,}" = "$SHA"
+          fi
+          assets=$(gh api --paginate --slurp "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID/assets?per_page=100")
+          diff -u "$RUNNER_TEMP/verified-release-assets.json" <(jq -S 'add | sort_by(.name)' <<< "$assets")
+          # Preserve the maintainer's prerelease and Latest choices: change only draft.
+          gh api -X PATCH "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID" -F draft=false > /dev/null
+          published=$(gh api "repos/$GITHUB_REPOSITORY/releases/$RELEASE_ID")
+          jq -e '.draft == false' <<< "$published" > /dev/null
+          jq -r '.html_url' <<< "$published"

@@ -150,43 +150,48 @@ To release a new version of rabi:
    cargo update -p rabi --precise <version>
    ```
 
-   Title the pull request `chore(version): vX.Y.Z`, for example `chore(version): v7.0.0`. `.github/workflows/tag-on-merge.yml` creates that git tag when the pull request merges into `main`. `ci.yml` and `release-compile.yml` do not bump the version.
+   Title the pull request `chore(version): vX.Y.Z`, for example `chore(version): v7.0.0`. `ci.yml` and `release-compile.yml` do not bump the version. Merging the pull request does not create a tag.
 
 2. **Review and merge the version pull request**
    - Confirm `Cargo.toml` and `Cargo.lock` show the same version
    - Obtain maintainer approval for the specific HEAD SHA and merge under [risk-tiers.md](risk-tiers.md); release/tag changes are high risk and must not be merged by automation
-   - The merge tags `vX.Y.Z` on `main`. Publishing a GitHub release is a separate step
+   - Squash-merge the reviewed exact HEAD SHA into `main`; record the full merge commit SHA for the draft target
 
-3. **Create a GitHub release (builds release binaries)**
+3. **Create a draft, then dispatch the release build**
 
-   Publish stable 7.x releases without `--prerelease` and mark them Latest with `--latest`, even during the v7 beta. For prereleases, use `--prerelease --latest=false`.
+   Enable release immutability in Settings → General → Releases → "Enable release immutability". Once published, the assets and tag are locked.
+
+   Stable 7.x releases use `--latest` without `--prerelease`, even during the v7 beta. For prereleases, use `--prerelease --latest=false`. Set these choices on the draft; CI preserves them when publishing.
 
    ```bash
-   # Create a stable release with automatically generated notes
-   gh release create v<version> \
+   # Stable release: use the full 40-hex merge commit SHA, not a branch name.
+   gh release create v<version> --draft \
+     --target <merge-commit-SHA> \
      --title "rabi v<version>" \
-     --generate-notes \
-     --target main \
-     --latest
+     --generate-notes --latest
 
-   # Example for v7.0.0:
-   gh release create v7.0.0 \
-     --title "rabi v7.0.0" \
-     --generate-notes \
-     --target main \
-     --latest
+   # Prerelease:
+   gh release create v7.3.0-beta.1 --draft \
+     --target <merge-commit-SHA> \
+     --title "rabi v7.3.0-beta.1" \
+     --generate-notes --prerelease --latest=false
 
-   # Example prerelease:
-   gh release create v7.1.0-beta.1 \
-     --title "rabi v7.1.0-beta.1" \
-     --generate-notes \
-     --target main \
-     --prerelease --latest=false
+   # Polish the draft notes (step 4) before dispatching when possible.
+   gh workflow run release-compile.yml --ref main -f tag=v<version>
+   # Select the dispatched run and watch it:
+   gh run list --workflow release-compile.yml
+   gh run watch <run-id>
    ```
 
-   `.github/workflows/release-compile.yml` builds linux/darwin x64/arm64 binaries and uploads `rabi-v<version>-<os>-<arch>.tar.gz` to the release. Each archive contains only the `rabi` binary. `install.sh` supports only `rabi-v<version>-<os>-<arch>.tar.gz` archives. v7.0.0-alpha.10, v7.0.0-alpha.9 and v7.0.0-alpha.8 must each be installed with that release's own `install.sh` at `https://github.com/yoiailabs/rabi/releases/download/<TAG>/install.sh` (replace `<TAG>` with the release tag); v7.0.0-alpha.7 and older have no installer and must be installed manually. npm is not published. Monitor the workflow run in GitHub Actions.
+   Create exactly one release for the tag. A new tag is created from the draft's full target SHA when CI publishes; the SHA must be reachable from `main`. An existing tag is also supported, but it must resolve to the intended release commit and match any full target SHA on the draft. The committed `Cargo.toml` version must match the tag without `v`.
 
-4. **Update release notes for clarity**
+   `.github/workflows/release-compile.yml` builds linux/darwin x64/arm64 binaries; Linux binaries use static musl and are checked on Alpine. CI assembles the four `rabi-v<version>-<os>-<arch>.tar.gz` archives, `install.sh` from the resolved commit, and sorted `SHA256SUMS` covering those five files. It verifies checksums and installs the linux-x64 archive using `install.sh` from a local `file://` mirror, attests all six assets, uploads them to the draft by release ID, verifies the exact asset names, upload states and sizes, then publishes the draft. Each archive contains only the `rabi` binary. `install.sh` supports only `rabi-v<version>-<os>-<arch>.tar.gz` archives. v7.0.0-alpha.10, v7.0.0-alpha.9 and v7.0.0-alpha.8 must each be installed with that release's own `install.sh` at `https://github.com/yoiailabs/rabi/releases/download/<TAG>/install.sh` (replace `<TAG>` with the release tag); v7.0.0-alpha.7 and older have no installer and must be installed manually. npm is not published. PRs to `main` touching `.github/workflows/release-compile.yml`, `Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`, or `install.sh` run a dry run that builds all four targets, assembles and verifies checksums, and smoke-tests the installer without attesting, uploading or publishing; only dry runs may skip a missing `install.sh`.
+
+   If CI fails before publishing, fix the cause and re-dispatch; assets may be replaced while the release is still a draft. Remove any unexpected draft assets manually, or delete the draft. Never try to patch a published release's assets or tag. A deleted immutable release's tag cannot be reused, so ship a new patch version instead.
+
+4. **Polish release notes, preferably before dispatching**
+
+   Edit the draft before dispatching when possible. Title and notes remain editable after publication, as do prerelease and Latest choices.
    - Review the auto-generated release notes using `gh release view v<version>`
    - Check PR descriptions for important details using `gh pr view <number>`
    - Update the release notes to be more user-friendly:
