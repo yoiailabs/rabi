@@ -191,8 +191,7 @@ fn observe_session(
 
 // Checkout paths stay stable across branch changes, including detached HEAD.
 fn workspace_key(path: &str) -> String {
-    use sha2::{Digest, Sha256};
-    format!("{:x}", Sha256::digest(path.as_bytes()))
+    crate::hash::sha256_hex(path.as_bytes())
 }
 
 fn prepare_launch(

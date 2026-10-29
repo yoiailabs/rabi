@@ -22,6 +22,7 @@ pub mod gc;
 pub mod git;
 pub mod github;
 mod handoff;
+mod hash;
 pub mod help;
 pub mod metadata;
 pub mod names;
