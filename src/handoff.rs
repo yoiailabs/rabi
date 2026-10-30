@@ -3,7 +3,6 @@ use crate::error::{Error, Result};
 use crate::provider::Provider;
 use crate::worktree::WorktreeInfo;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::os::unix::ffi::OsStrExt;
@@ -134,7 +133,7 @@ impl Memory {
             return Err(Error::msg("Handoff memory: invalid workspace record id"));
         }
         let common = crate::git::canonical_common_dir(root)?;
-        let digest = format!("{:x}", Sha256::digest(common.as_os_str().as_bytes()));
+        let digest = crate::hash::sha256_hex(common.as_os_str().as_bytes());
         let state_root = io(Directory::canonical_root(&crate::paths::state_dir()?))?;
         let repository = Path::new("repositories").join(digest);
         let path = state_root.join(&repository).join("memory").join(id);
