@@ -391,6 +391,8 @@ fn reserved_key(key: &str) -> bool {
             | "GIT_NAMESPACE"
             | "GIT_CEILING_DIRECTORIES"
             | "GIT_DISCOVERY_ACROSS_FILESYSTEM"
+            | "GIT_CONFIG"
+            | "GIT_EXEC_PATH"
     ) || key.starts_with("RABI")
         || key.starts_with("LD_")
         || key.starts_with("DYLD_")
@@ -581,8 +583,10 @@ mod tests {
     }
 
     #[test]
-    fn reserves_git_config_prefix_at_load() {
+    fn reserves_git_config_and_execution_variables_at_load() {
         rejects_reserved_keys_at_load(&[
+            "GIT_CONFIG",
+            "GIT_EXEC_PATH",
             "GIT_CONFIG_",
             "GIT_CONFIG_GLOBAL",
             "GIT_CONFIG_SYSTEM",
@@ -600,7 +604,6 @@ mod tests {
             "XDG_CONFIG_DIRS",
             "XDG_DATA_DIRS",
             "XDG_STATE_HOMES",
-            "GIT_CONFIG",
             "GIT_CONFIGURED",
             "GIT_DIRECTORY",
             "GIT_WORK_TREE_SUFFIX",
