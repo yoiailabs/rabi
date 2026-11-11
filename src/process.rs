@@ -153,6 +153,20 @@ pub fn inherit(
     env: &[(&str, &str)],
     redirect_stdout_to_stderr: bool,
 ) -> Result<i32> {
+    let owned = env
+        .iter()
+        .map(|(key, value)| (*key, std::ffi::OsStr::new(value)))
+        .collect::<Vec<_>>();
+    inherit_os(command, args, cwd, &owned, redirect_stdout_to_stderr)
+}
+
+pub(crate) fn inherit_os(
+    command: &str,
+    args: &[&str],
+    cwd: Option<&Path>,
+    env: &[(&str, &std::ffi::OsStr)],
+    redirect_stdout_to_stderr: bool,
+) -> Result<i32> {
     let mut cmd = self::command(command);
     cmd.args(args)
         .stdin(

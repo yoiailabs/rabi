@@ -100,32 +100,7 @@ impl Provider {
         memory: Option<&Path>,
     ) -> Result<Command> {
         match self {
-            Self::Codex => {
-                let mut command = Command::new(self.binary());
-                command
-                    .args(["exec", "--json", "-C"])
-                    .arg(workspace)
-                    .args(["--approve-for-me", "-m", MODEL, "-c", EFFORT])
-                    .arg("-o")
-                    .arg(dir.join("answer.md"));
-                if let Some(memory) = memory {
-                    command.arg("--add-dir").arg(memory);
-                }
-                match session {
-                    Session::New { requested } => {
-                        // Codex allocates its own session id after launch.
-                        let _ = requested;
-                    }
-                    Session::Resume { id } => {
-                        command.args(["resume", id]);
-                    }
-                }
-                command.arg("-").current_dir(workspace);
-                command.stdin(Stdio::from(
-                    fs::File::open(dir.join("prompt.md")).map_err(io_error)?,
-                ));
-                Ok(command)
-            }
+            Self::Codex => codex_command(resolve_codex_binary()?, workspace, dir, session, memory),
             Self::Cursor => cursor::command(workspace, dir, session, memory),
             Self::Claude => claude::command(workspace, dir, session, memory),
         }
@@ -179,11 +154,7 @@ impl Provider {
 
     pub fn check_binary(self) -> Result<()> {
         match self {
-            Self::Codex => resolve_binary_in(std::env::var_os("PATH").as_deref(), &["codex"])
-                .ok_or_else(|| Error::Spawn {
-                    command: "codex".into(),
-                    details: "Codex CLI was not found on PATH".into(),
-                }),
+            Self::Codex => resolve_codex_binary(),
             Self::Cursor => cursor::resolve_binary(),
             Self::Claude => claude::resolve_binary(),
         }
@@ -219,6 +190,46 @@ impl Provider {
             },
         }
     }
+}
+
+fn resolve_codex_binary() -> Result<PathBuf> {
+    resolve_binary_in(std::env::var_os("PATH").as_deref(), &["codex"]).ok_or_else(|| Error::Spawn {
+        command: "codex".into(),
+        details: "Codex CLI was not found on PATH".into(),
+    })
+}
+
+fn codex_command(
+    binary: impl AsRef<std::ffi::OsStr>,
+    workspace: &Path,
+    dir: &Path,
+    session: Session<'_>,
+    memory: Option<&Path>,
+) -> Result<Command> {
+    let mut command = Command::new(binary);
+    command
+        .args(["exec", "--json", "-C"])
+        .arg(workspace)
+        .args(["--approve-for-me", "-m", MODEL, "-c", EFFORT])
+        .arg("-o")
+        .arg(dir.join("answer.md"));
+    if let Some(memory) = memory {
+        command.arg("--add-dir").arg(memory);
+    }
+    match session {
+        Session::New { requested } => {
+            // Codex allocates its own session id after launch.
+            let _ = requested;
+        }
+        Session::Resume { id } => {
+            command.args(["resume", id]);
+        }
+    }
+    command.arg("-").current_dir(workspace);
+    command.stdin(Stdio::from(
+        fs::File::open(dir.join("prompt.md")).map_err(io_error)?,
+    ));
+    Ok(command)
 }
 
 fn resolve_binary_in(path: Option<&std::ffi::OsStr>, binaries: &[&str]) -> Option<PathBuf> {
@@ -436,9 +447,8 @@ mod tests {
             Session::New { requested: None },
             Session::Resume { id: "session" },
         ] {
-            let command = Provider::Codex
-                .command(&root, &root, session, Some(Path::new("/memory")))
-                .unwrap();
+            let command =
+                codex_command("codex", &root, &root, session, Some(Path::new("/memory"))).unwrap();
             let args: Vec<_> = command.get_args().collect();
             let grant = args.iter().position(|a| a == &"--add-dir").unwrap();
             assert_eq!(args[grant + 1], "/memory");
@@ -521,10 +531,9 @@ mod tests {
                 expected.extend(["resume", "thread-id"].into_iter().map(OsString::from));
             }
             expected.push(OsString::from("-"));
-            let mut command = Provider::Codex
-                .command(&workspace, &dir, session, None)
-                .unwrap();
-            assert_eq!(command.get_program(), "codex");
+            let mut command =
+                codex_command(root.join("codex"), &workspace, &dir, session, None).unwrap();
+            assert_eq!(command.get_program(), root.join("codex"));
             assert_eq!(command.get_args().collect::<Vec<_>>(), expected);
             assert_eq!(command.get_current_dir(), Some(workspace.as_path()));
             assert_eq!(command.get_envs().count(), 0);

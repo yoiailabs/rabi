@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Repository `.rabi.toml` supports trusted `[env]` declarations for `run` and `exec`: ordered `path-prepend`, validated `set` variables, and limited HOME/workspace/repository expansion. Declarations always come from the primary checkout, including resume. Loading validates syntax; expansion happens only during application, with clear errors for referenced non-UTF-8 paths. `--no-env` bypasses environment-value validation while retaining TOML/schema parsing; untrusted exec warns and continues without env. Run resolves provider binaries before applying PATH, skips workspace PATH entries and workspace-token set values with `env_workspace_path_skipped`, and reports only retained entries. Exec retains workspace declarations. Reserved variables protect rabi state/configuration and Git repository selection. `trust add` shows escaped `KEY=value` assignments and PATH entries for review; never commit secrets in `[env]`. Hooks keep their existing environment. (#930)
+
+### Changed (Breaking)
+
+- Older rabi binaries reject `.rabi.toml` containing `[env]` as an unknown key. Upgrade binaries before adding the declaration.
+
 ## v7.2.0 (2026-10-27)
 
 ### Added

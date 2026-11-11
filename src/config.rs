@@ -11,6 +11,7 @@ const FILE_NAME: &str = ".rabi.toml";
 #[serde(default, deny_unknown_fields)]
 pub struct RabiConfig {
     pub hooks: Hooks,
+    pub env: crate::execution_env::Environment,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -20,8 +21,15 @@ pub struct Hooks {
     pub pre_remove: Vec<String>,
 }
 
-pub fn load_config(git_root: &Path) -> Result<Option<RabiConfig>> {
-    let path = git_root.join(FILE_NAME);
+/// Load declarations and validate syntax independently of the execution environment.
+pub fn load_config(source: &Path) -> Result<Option<RabiConfig>> {
+    load_config_for_execution(source, false)
+}
+
+/// An explicit execution bypass still parses TOML and its schema, but does not
+/// validate environment values that will never be applied.
+pub(crate) fn load_config_for_execution(source: &Path, no_env: bool) -> Result<Option<RabiConfig>> {
+    let path = source.join(FILE_NAME);
     let content = match fs::read_to_string(&path) {
         Ok(content) => content,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
@@ -32,9 +40,12 @@ pub fn load_config(git_root: &Path) -> Result<Option<RabiConfig>> {
             )));
         }
     };
-    parse_config(&content)
-        .map(Some)
-        .map_err(|error| Error::msg(format!("{}: {error}", path.display())))
+    let config = parse_config(&content)
+        .map_err(|error| Error::msg(format!("{}: {error}", path.display())))?;
+    if !no_env {
+        config.env.validate(source)?;
+    }
+    Ok(Some(config))
 }
 
 pub fn setup_commands(config: Option<&RabiConfig>) -> &[String] {
@@ -119,6 +130,81 @@ pre-remove = ["./scripts/teardown.sh"]
     }
 
     #[test]
+    fn parses_optional_environment_and_rejects_unknown_fields_and_wrong_types() {
+        assert!(parse_config("").unwrap().env.is_empty());
+        assert!(parse_config("[env]\n").unwrap().env.is_empty());
+        let config = parse_config(
+            r#"
+[env]
+path-prepend = ["/opt/tools", "${RABI_WORKSPACE_PATH}/bin"]
+[env.set]
+VALUE = ""
+"#,
+        )
+        .unwrap();
+        assert_eq!(config.env.path_prepend.len(), 2);
+        assert_eq!(config.env.set["VALUE"], "");
+        for text in [
+            "[env]\nunknown = []",
+            "[env]\npath_prepend = []",
+            "[env]\npath-prepend = '/bin'",
+            "[env]\nset = 'value'",
+            "[env.set]\nVALUE = 1",
+        ] {
+            assert!(parse_config(text).is_err(), "{text}");
+        }
+    }
+
+    #[test]
+    fn environment_validation_errors_are_reported_at_config_load() {
+        let root = std::env::temp_dir().join(format!("rabi-env-config-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        for (text, key) in [
+            ("[env.set]\nPATH = '/bin'", "set.PATH"),
+            ("[env.set]\nVALUE = '$UNKNOWN'", "set.VALUE"),
+            ("[env]\npath-prepend = ['/bin:/other']", "path-prepend[0]"),
+            ("[env.set]\nVALUE = \"\\u0000\"", "set.VALUE"),
+        ] {
+            fs::write(root.join(FILE_NAME), text).unwrap();
+            let error = load_config(&root).unwrap_err();
+            assert_eq!(error.exit_code(), 1);
+            let message = error.to_string();
+            assert!(
+                message.contains(&root.join(FILE_NAME).display().to_string()),
+                "{message}"
+            );
+            assert!(message.contains(key), "{message}");
+        }
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn config_loading_does_not_expand_paths_and_diagnostics_name_the_source() {
+        let root = std::env::temp_dir().join(format!("rabi-env-source-{}", uuid::Uuid::new_v4()));
+        let source = root.join("source:checkout");
+        fs::create_dir_all(&source).unwrap();
+        fs::write(
+            source.join(FILE_NAME),
+            "[env]\npath-prepend = ['${RABI_REPO_PATH}/bin']\n",
+        )
+        .unwrap();
+        assert!(load_config(&source).is_ok());
+
+        fs::write(source.join(FILE_NAME), "[env.set]\nVALUE = '$UNKNOWN'\n").unwrap();
+        let message = load_config(&source).unwrap_err().to_string();
+        assert!(
+            message.starts_with(&source.join(FILE_NAME).display().to_string()),
+            "{message}"
+        );
+        assert!(message.contains("env.set.VALUE"), "{message}");
+        assert!(
+            !message.contains(&root.join("primary/.rabi.toml").display().to_string()),
+            "{message}"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn load_config_reports_the_file_and_the_problem() {
         let root = std::env::temp_dir().join(format!(
             "phantom-config-{}-{}",
@@ -153,5 +239,26 @@ pre-remove = ["./scripts/teardown.sh"]
         assert!(message.contains("postCreate"), "{message}");
 
         let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn no_env_skips_value_validation_but_still_parses_toml_and_schema() {
+        let root =
+            std::env::temp_dir().join(format!("rabi-no-env-config-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        for text in [
+            "[env.set]\nPATH = '/bin'",
+            "[env.set]\nVALUE = '$UNKNOWN'",
+            "[env]\npath-prepend = ['/bin:/other']",
+            "[env.set]\nVALUE = \"\\u0000\"",
+        ] {
+            fs::write(root.join(FILE_NAME), text).unwrap();
+            assert!(load_config_for_execution(&root, true).is_ok(), "{text}");
+            assert!(load_config(&root).is_err(), "{text}");
+        }
+        for text in ["[", "[env]\nunknown = true", "[env.set]\nVALUE = 1"] {
+            fs::write(root.join(FILE_NAME), text).unwrap();
+            assert!(load_config_for_execution(&root, true).is_err(), "{text}");
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 }

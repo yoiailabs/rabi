@@ -179,15 +179,18 @@ pub struct ProjectView {
     pub git_root: PathBuf,
     pub setup: Vec<String>,
     pub pre_remove: Vec<String>,
+    pub env: crate::execution_env::Environment,
 }
 
 pub fn load_hooks(start: &Path) -> Result<ProjectView> {
     let git_root = git::git_root(start)?;
     let source = git::top_level(start).unwrap_or_else(|_| git_root.clone());
     let loaded = config::load_config(&source)?;
+    let env = crate::execution_env::load(&git_root)?;
     Ok(ProjectView {
         project: project_label(&git_root),
         git_root,
+        env,
         setup: config::setup_commands(loaded.as_ref()).to_vec(),
         pre_remove: config::pre_remove_commands(loaded.as_ref()).to_vec(),
     })

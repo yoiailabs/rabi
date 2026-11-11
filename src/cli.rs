@@ -761,7 +761,7 @@ fn run_parent(args: &[String]) -> Result<i32> {
         || (selector.is_none() && task.is_some_and(|s| matches!(s, "start" | "show")))
     {
         return Err(Error::validation(
-            "Usage: rabi run [--provider codex|cursor|claude] [--skill VALUE] [--fresh] [--no-handoff] [--timeout DURATION] [SEL --] [TASK | -]",
+            "Usage: rabi run [--provider codex|cursor|claude] [--skill VALUE] [--fresh] [--no-handoff] [--no-env] [--timeout DURATION] [SEL --] [TASK | -]",
         ));
     }
     if selector.is_none() && parsed.value("repo").is_some() {
@@ -785,7 +785,7 @@ fn run_parent(args: &[String]) -> Result<i32> {
     // without executing their fsmonitor/hooks, then verify the target belongs
     // to the repository whose common directory passed the trust check.
     let _hooks = crate::process::suppress_git_hooks();
-    let context = crate::context::open(repository.as_deref())?;
+    let context = crate::context::open_for_execution(repository.as_deref(), parsed.flag("no-env"))?;
     let tree = match selector {
         Some(selector) => crate::selectors::resolve(&context, selector, false, None)?,
         None => worktree::worktree_at_path(&context, &crate::git::top_level(&cwd)?)?,
@@ -817,6 +817,7 @@ fn run_parent(args: &[String]) -> Result<i32> {
         crate::run::Options {
             timeout,
             handoff: !parsed.flag("no-handoff"),
+            no_env: parsed.flag("no-env"),
         },
     )?;
     if crate::output::json() {
@@ -1300,7 +1301,8 @@ fn exec(args: &[String]) -> Result<i32> {
             "Usage: rabi exec [SEL] -- COMMAND [ARG...]",
         ));
     }
-    let context = command_context(&parsed)?;
+    let repository = selected_repository(&parsed)?;
+    let context = crate::context::open_for_execution(repository.as_deref(), parsed.flag("no-env"))?;
     let name = parsed
         .positionals
         .first()
@@ -1310,7 +1312,13 @@ fn exec(args: &[String]) -> Result<i32> {
         .iter()
         .map(String::as_str)
         .collect::<Vec<_>>();
-    match worktree::exec_in_worktree(&context, name, &command_args[0], &rest, &[], false) {
+    match worktree::exec_in_worktree(
+        &context,
+        name,
+        &command_args[0],
+        &rest,
+        parsed.flag("no-env"),
+    ) {
         Ok(0) => Ok(SUCCESS),
         Ok(code) => fail(
             &Error::CommandFailed {
@@ -1916,6 +1924,7 @@ fn command_options(key: &str) -> Vec<Opt> {
             value_flag("skill", None),
             flag("fresh", None),
             flag("no-handoff", None),
+            flag("no-env", None),
             value_flag("timeout", None),
         ],
         "sync" => vec![
@@ -1987,7 +1996,7 @@ fn command_options(key: &str) -> Vec<Opt> {
             flag("no-hooks", None),
             flag("dry-run", None),
         ],
-        "exec" => vec![repo_flag()],
+        "exec" => vec![repo_flag(), flag("no-env", None)],
         "clone" => vec![
             value_flag("branch", None),
             value_flag("depth", None),
@@ -2175,6 +2184,9 @@ fn trust_cmd(args: &[String]) -> Result<i32> {
         visible_text(&project.project),
         trust::format_hooks(&project.setup, &project.pre_remove)
     );
+    if !project.env.is_empty() {
+        errln!("{}", project.env.declaration());
+    }
     match trust::trust_root(Path::new(&project.git_root)) {
         Ok(record) => {
             if json {

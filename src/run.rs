@@ -284,6 +284,7 @@ fn read_previous(
 pub(crate) struct Options {
     pub timeout: Duration,
     pub handoff: bool,
+    pub no_env: bool,
 }
 
 pub(crate) fn validate_handoff_source(
@@ -319,6 +320,11 @@ pub(crate) fn execute(
     task: Option<&str>,
     options: Options,
 ) -> Result<Report> {
+    let environment = if options.no_env {
+        Default::default()
+    } else {
+        crate::execution_env::load(root)?.for_provider(root, Path::new(&tree.path))?
+    };
     let _signals = lifecycle::Signals::install()?;
     let common_dir = crate::git::git_common_dir(root)?;
     let runs = common_dir.join("rabi/runs");
@@ -497,6 +503,14 @@ pub(crate) fn execute(
             session,
             memory.as_ref().map(|m| m.path.as_path()),
         )?;
+        command.envs(&environment.values);
+        environment.warn_skipped();
+        if !environment.values.is_empty() && !crate::output::json() {
+            crate::output::stderr(format_args!(
+                "rabi: env applied: {}\n",
+                environment.summary()
+            ));
+        }
         if memory.is_some() {
             let n = record.launches.last().map_or(0, |l| l.n);
             command

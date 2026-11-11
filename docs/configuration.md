@@ -7,13 +7,52 @@
 Config, state, metadata, and default workspace storage use only `rabi` paths. Project markers use `.rabi-common-dir`; discovery and stale clone staging cleanup recognize `.rabi-clone-`.
 
 
-Run state is shared under `<git-common-dir>/rabi/runs/`, independent of workspace-root. Each workspace has one current resumable parent session and retained launch records. There are no run configuration keys. See [commands](commands.md) and [records](json.md).
+Run state is shared under `<git-common-dir>/rabi/runs/`, independent of workspace-root. Each workspace has one current resumable parent session and retained launch records. There are no user-config keys for runs; repository execution environment is declared separately below. See [commands](commands.md) and [records](json.md).
 
 When `workspace-root` is unset, `rabi create` places the new workspace at `$XDG_DATA_HOME/rabi/workspaces/<checkout>-<hash>/<name>`. The fallback is `~/.local/share/rabi/workspaces/...` when `XDG_DATA_HOME` is unset, empty, or not absolute. `<checkout>` is the canonical primary checkout directory name, with characters outside letters, numbers, `.`, `_`, and `-` replaced by `-`. A symlink to that checkout uses the same directory. `<hash>` is the first 8 hexadecimal digits of the SHA-256 of the canonical Git common directory. Two clones of the same remote get different directories. Workspace names retain their `/` hierarchy. Deleting the last workspace keeps the repo directory and its `.rabi-common-dir` marker so concurrent and subsequent creates can reuse it safely. `remove` and `gc` also remove a linked workspace recorded in `rabi/workspaces/<id>.json`, including one adopted or created under a different workspace root. An unrecorded workspace outside the configured directory stays. Empty parent directories below the repo directory are cleaned up only for a workspace inside the resolved directory. A set `workspace-root` may be absolute, start with `~/`, or be relative to the repository root, and that directory is left in place when it becomes empty.
 
 `clone-root` is where `rabi clone` places repositories. It is an absolute path or a path starting with `~/`. When `clone-root` is unset, `rabi clone` uses the first `git config ghq.root` value, then `$GHQ_ROOT`, then `~/ghq`. A configured `clone-root` is used without reading git config. If reading `ghq.root` fails, `rabi` warns and continues with `$GHQ_ROOT` or `~/ghq`. `repo list` scans that same directory.
 
 `config get KEY` and `config list` return effective values, including defaults. Add `--sources` to see `value`, `source` (`config`, `env`, or `default`), and `detail`. JSON stores those values under `data.config[KEY]`; without `--sources`, each entry is the value itself. `workspace-root` defaults to null (the XDG layout), `discover-ghq` to true. The clone-root default chain stays `ghq.root` → `$GHQ_ROOT` → `~/ghq`, below user config. `sync.strategy` accepts `auto` (default), `rebase`, or `merge`; `sync.rewrite-published` is a boolean (default false). Sync flags override these user settings. Invalid policy values exit 2. Store them under `[sync]` in user config.toml; `.rabi.toml` rejects personal sync policy.
+
+## Repository execution environment
+
+Declare stable toolchain wiring in the **primary checkout's** `.rabi.toml`:
+
+```toml
+[env]
+path-prepend = ["~/.cargo/bin"]
+
+[env.set]
+RUSTUP_TOOLCHAIN = "1.99.1"
+```
+
+For Rust projects, keep `rust-toolchain.toml` as the toolchain declaration and prepend `~/.cargo/bin` so Cargo is available. Set `RUSTUP_TOOLCHAIN` only when you want to override the toolchain file. Do not store secrets in committed configuration.
+
+`rabi run` (Codex, Cursor, and Claude Code) and `rabi exec` read this environment from the primary checkout on **every launch**, including resume, with or without `-R`. A linked workspace's `.rabi.toml` cannot change its next parent's environment. Branch edits take effect only once they are present in the primary checkout. Both `path-prepend` and `set` are optional; an empty `[env]` does nothing. Unknown fields are rejected.
+
+Execution environment needs the repository's common-directory trust (`rabi trust add` or `RABI_TRUST_ALL=1`). `trust add` lists declared `KEY=value` assignments and path-prepend entries alongside hooks, escaping control characters with the same visible-text rules as hook commands; its JSON data remains `{path,trustedAt}`. Run already refuses untrusted repositories. Exec never prompts: for nonempty untrusted declarations it warns with `env_untrusted`, then runs with the inherited environment and rabi's workspace variables. Use `--no-env` on run or exec to skip repository environment, its value validation, and this warning. TOML syntax and configuration structure are still checked.
+
+Expansion accepts only a leading `~/` (using HOME), `${HOME}`, `${RABI_WORKSPACE_PATH}` (the selected checkout), and `${RABI_REPO_PATH}` (the primary checkout). Every other use of `$` is an error; there is no shell evaluation, command substitution, recursive expansion, or general environment-variable interpolation. Other text is literal. HOME must be set and nonempty when an applied declaration needs it. Referenced workspace and repository paths must be UTF-8; expansion fails clearly rather than replacing invalid bytes. rabi computes these paths itself, including with `run --no-handoff`.
+
+Each `path-prepend` entry must be nonempty, contain neither NUL nor `:`, and be absolute after expansion. Variable keys must match `[A-Za-z_][A-Za-z0-9_]*`. Set values may be empty but cannot contain NUL. Validation errors exit 1 and identify the file and key. Normal config loading checks key grammar, reserved keys, expansion grammar and allowed variable names, literal NUL, and literal `:` in PATH entries without reading HOME or expanding checkout paths. HOME availability, nonempty/absolute expanded PATH entries, and `:` or NUL introduced by expansion are checked only when the environment is actually applied to a trusted run or exec. Inspection, setup, removal, and gc do not require HOME merely because `[env]` uses it. These variable keys are forbidden:
+
+- `PATH` (use `path-prepend` instead), any key starting with `RABI`, `HOME`, `SHELL`, `CODEX_HOME`, and `CLAUDE_CONFIG_DIR`.
+- Any key starting with `LD_` or `DYLD_`, plus `NODE_OPTIONS`, `BASH_ENV`, and `ENV`.
+- XDG base-directory variables: `XDG_STATE_HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and `XDG_RUNTIME_DIR`.
+- Git repository-selection, configuration, and execution variables: `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_NAMESPACE`, `GIT_CEILING_DIRECTORIES`, `GIT_DISCOVERY_ACROSS_FILESYSTEM`, `GIT_CONFIG`, and `GIT_EXEC_PATH`; any key starting with `GIT_CONFIG_`, including `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n`, `GIT_CONFIG_VALUE_n`, and `GIT_CONFIG_PARAMETERS`.
+
+These reservations keep nested rabi commands, handoff storage, and the Git executor attached to the launcher's state, configuration, and repository.
+
+Precedence is inherited environment, then `[env.set]`, then rabi's own `RABI_*` variables. PATH consists of prepend entries in declaration order followed by inherited PATH; an empty or unset inherited PATH adds no separator. Exec looks up its child command using this PATH. Run resolves the provider executable to an absolute path using the launcher's original PATH first, then applies eligible declarations only to that provider process. Text run output reports applied variable keys and the applied PATH-entry count, never set values.
+
+For **run only**, a `path-prepend` entry is skipped if it references `${RABI_WORKSPACE_PATH}` or its expanded path is equal to or inside the target workspace after lexical normalization or canonicalization. Canonical checks also detect existing symlink aliases. A `[env.set]` value referencing `${RABI_WORKSPACE_PATH}` is also skipped. Each skip emits `env_workspace_path_skipped` on stderr, identifying the entry without printing its value: the provider process must not take executables from the workspace. The applied summary counts only retained entries. Exec continues to apply these declarations, including workspace-relative PATH entries, because its caller selects the command.
+
+Declare only directories that agents cannot write. Avoid world-writable temporary directories. Declared PATH entries select interpreters used by provider launch scripts such as `#!/usr/bin/env node`, as well as tools. Resolving the provider script itself to an absolute path does not fix its interpreter lookup. The run skip rule protects the selected workspace; it does not establish that other declared directories are safe.
+
+Eligible environment reaches the provider process. Provider settings and login shells can change the environment of subsequent tool shells; for example, Codex `shell_environment_policy` can filter inherited variables. Workspace-relative PATH entries still let workspace binaries shadow tools in exec. Review both declarations and directory write access before granting trust. Never commit secrets in `[env]`; trust output intentionally shows set values.
+
+Setup and pre-remove hooks do not receive `[env]`. A hook can opt into it by running `rabi exec . -- <cmd>` in its target workspace. See [hooks and trust](hooks.md).
 
 ## Cloning repositories
 
