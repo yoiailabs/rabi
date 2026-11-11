@@ -38,7 +38,7 @@ Entries append to `handoff.jsonl` under an exclusive dedicated `.lock`, followed
 
 The explicit `--` separates SEL from TASK: at most one positional before it selects the workspace, and at most one after it supplies the task. Without a positional before `--`, the current workspace is used. Without `--`, a single positional remains TASK: `rabi run "task"`, `rabi run -- "task"`, and `rabi run -` keep their existing meanings. Option values such as `--skill --` are consumed as values, not separators. `rabi run SEL --` resumes that workspace with `Continue.`; running inside it later resumes the same session. The parent runs with that workspace as cwd.
 
-`--no-env` skips repository `[env]`. Otherwise each launch, including resume and `--no-handoff`, reads the primary checkout's declaration and applies it to the provider process. Run resolves the provider on its original PATH before prepending entries. Text mode reports only keys and the PATH-entry count. See [execution environment](configuration.md#repository-execution-environment).
+`--no-env` skips repository `[env]`. Otherwise each launch, including resume and `--no-handoff`, reads the primary checkout's declaration and applies it to the provider process. Run resolves the provider on its original PATH before prepending entries. Run skips PATH entries inside the target workspace and PATH/set declarations referencing `${RABI_WORKSPACE_PATH}`, with `env_workspace_path_skipped`. Text mode reports only applied keys and the retained PATH-entry count. See [execution environment](configuration.md#repository-execution-environment).
 
 The first launch requires `--skill`; its value is injected verbatim as ``Follow skill `VALUE`.`` without lookup or file validation. TASK is optional text, or `-` reads stdin. The parent manages progress, delegates to its own subagents, gathers git/gh/test evidence, gives follow-ups and decides completion. rabi does not interpret progress or verify publication.
 
@@ -230,7 +230,7 @@ Execute a command in a workspace directory
 
 Usage: `rabi exec [--repo <ref>] [--no-env] [SEL] -- COMMAND [ARG...]`
 
-`--no-env` skips the primary checkout's declared execution environment and silences `env_untrusted`. Trusted exec applies `[env]` before child command lookup; untrusted exec warns and continues without it, never prompting. See [execution environment](configuration.md#repository-execution-environment).
+`--no-env` skips the primary checkout's declared execution environment and its value validation, and silences `env_untrusted`; TOML syntax and structure are still checked. Trusted exec applies `[env]` before child command lookup; untrusted exec warns and continues without it, never prompting. See [execution environment](configuration.md#repository-execution-environment).
 
 ### rabi config
 

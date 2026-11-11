@@ -21,13 +21,14 @@ pub struct Hooks {
     pub pre_remove: Vec<String>,
 }
 
-/// Load a primary checkout's configuration. Callers selecting a different
-/// configuration source must supply the actual primary to `load_config_from`.
-pub fn load_config(primary: &Path) -> Result<Option<RabiConfig>> {
-    load_config_from(primary, primary)
+/// Load declarations and validate syntax independently of the execution environment.
+pub fn load_config(source: &Path) -> Result<Option<RabiConfig>> {
+    load_config_for_execution(source, false)
 }
 
-pub(crate) fn load_config_from(source: &Path, primary: &Path) -> Result<Option<RabiConfig>> {
+/// An explicit execution bypass still parses TOML and its schema, but does not
+/// validate environment values that will never be applied.
+pub(crate) fn load_config_for_execution(source: &Path, no_env: bool) -> Result<Option<RabiConfig>> {
     let path = source.join(FILE_NAME);
     let content = match fs::read_to_string(&path) {
         Ok(content) => content,
@@ -41,7 +42,9 @@ pub(crate) fn load_config_from(source: &Path, primary: &Path) -> Result<Option<R
     };
     let config = parse_config(&content)
         .map_err(|error| Error::msg(format!("{}: {error}", path.display())))?;
-    config.env.validate(source, primary)?;
+    if !no_env {
+        config.env.validate(source)?;
+    }
     Ok(Some(config))
 }
 
@@ -159,7 +162,7 @@ VALUE = ""
         for (text, key) in [
             ("[env.set]\nPATH = '/bin'", "set.PATH"),
             ("[env.set]\nVALUE = '$UNKNOWN'", "set.VALUE"),
-            ("[env]\npath-prepend = ['relative']", "path-prepend[0]"),
+            ("[env]\npath-prepend = ['/bin:/other']", "path-prepend[0]"),
             ("[env.set]\nVALUE = \"\\u0000\"", "set.VALUE"),
         ] {
             fs::write(root.join(FILE_NAME), text).unwrap();
@@ -176,41 +179,26 @@ VALUE = ""
     }
 
     #[test]
-    fn config_source_is_distinct_from_primary_expansion_and_diagnostics() {
+    fn config_loading_does_not_expand_paths_and_diagnostics_name_the_source() {
         let root = std::env::temp_dir().join(format!("rabi-env-source-{}", uuid::Uuid::new_v4()));
         let source = root.join("source:checkout");
-        let primary = root.join("primary");
         fs::create_dir_all(&source).unwrap();
         fs::write(
             source.join(FILE_NAME),
             "[env]\npath-prepend = ['${RABI_REPO_PATH}/bin']\n",
         )
         .unwrap();
-        assert!(load_config_from(&source, &primary).is_ok());
-
-        let invalid_primary = root.join("primary:checkout");
-        let message = load_config_from(&source, &invalid_primary)
-            .unwrap_err()
-            .to_string();
-        assert!(
-            message.starts_with(&source.join(FILE_NAME).display().to_string()),
-            "{message}"
-        );
-        assert!(message.contains("env.path-prepend[0]"), "{message}");
-        assert!(
-            !message.contains(&invalid_primary.display().to_string()),
-            "{message}"
-        );
+        assert!(load_config(&source).is_ok());
 
         fs::write(source.join(FILE_NAME), "[env.set]\nVALUE = '$UNKNOWN'\n").unwrap();
-        let message = load_config_from(&source, &primary).unwrap_err().to_string();
+        let message = load_config(&source).unwrap_err().to_string();
         assert!(
             message.starts_with(&source.join(FILE_NAME).display().to_string()),
             "{message}"
         );
         assert!(message.contains("env.set.VALUE"), "{message}");
         assert!(
-            !message.contains(&primary.join(FILE_NAME).display().to_string()),
+            !message.contains(&root.join("primary/.rabi.toml").display().to_string()),
             "{message}"
         );
         fs::remove_dir_all(root).unwrap();
@@ -251,5 +239,26 @@ VALUE = ""
         assert!(message.contains("postCreate"), "{message}");
 
         let _ = fs::remove_dir_all(root);
+    }
+    #[test]
+    fn no_env_skips_value_validation_but_still_parses_toml_and_schema() {
+        let root =
+            std::env::temp_dir().join(format!("rabi-no-env-config-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        for text in [
+            "[env.set]\nPATH = '/bin'",
+            "[env.set]\nVALUE = '$UNKNOWN'",
+            "[env]\npath-prepend = ['/bin:/other']",
+            "[env.set]\nVALUE = \"\\u0000\"",
+        ] {
+            fs::write(root.join(FILE_NAME), text).unwrap();
+            assert!(load_config_for_execution(&root, true).is_ok(), "{text}");
+            assert!(load_config(&root).is_err(), "{text}");
+        }
+        for text in ["[", "[env]\nunknown = true", "[env.set]\nVALUE = 1"] {
+            fs::write(root.join(FILE_NAME), text).unwrap();
+            assert!(load_config_for_execution(&root, true).is_err(), "{text}");
+        }
+        fs::remove_dir_all(root).unwrap();
     }
 }

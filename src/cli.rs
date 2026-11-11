@@ -785,7 +785,7 @@ fn run_parent(args: &[String]) -> Result<i32> {
     // without executing their fsmonitor/hooks, then verify the target belongs
     // to the repository whose common directory passed the trust check.
     let _hooks = crate::process::suppress_git_hooks();
-    let context = crate::context::open_for_execution(repository.as_deref())?;
+    let context = crate::context::open_for_execution(repository.as_deref(), parsed.flag("no-env"))?;
     let tree = match selector {
         Some(selector) => crate::selectors::resolve(&context, selector, false, None)?,
         None => worktree::worktree_at_path(&context, &crate::git::top_level(&cwd)?)?,
@@ -1302,7 +1302,7 @@ fn exec(args: &[String]) -> Result<i32> {
         ));
     }
     let repository = selected_repository(&parsed)?;
-    let context = crate::context::open_for_execution(repository.as_deref())?;
+    let context = crate::context::open_for_execution(repository.as_deref(), parsed.flag("no-env"))?;
     let name = parsed
         .positionals
         .first()

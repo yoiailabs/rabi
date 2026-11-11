@@ -185,7 +185,7 @@ pub struct ProjectView {
 pub fn load_hooks(start: &Path) -> Result<ProjectView> {
     let git_root = git::git_root(start)?;
     let source = git::top_level(start).unwrap_or_else(|_| git_root.clone());
-    let loaded = config::load_config_from(&source, &git_root)?;
+    let loaded = config::load_config(&source)?;
     let env = crate::execution_env::load(&git_root)?;
     Ok(ProjectView {
         project: project_label(&git_root),

@@ -78,7 +78,7 @@ with (root/'argv.jsonl').open('a') as f: f.write(json.dumps(args)+'\n')
 (root/'input').write_text(sys.stdin.read())
 (root/'cwd').write_text(os.getcwd())
 if os.environ.get('FAKE_CAPTURE_ENV'):
-    (root/'env.json').write_text(json.dumps(dict(os.environ)))
+    (root/'env.json').write_text(json.dumps({k:os.environ[k] for k in ['DECLARED_VALUE','EMPTY_VALUE','PRIMARY_PATH','WORKSPACE_PATH','HOME_PATH','PATH','RABI_REPO_PATH','RABI_WORKSPACE_PATH'] if k in os.environ}))
 sid = args[args.index('resume')+1] if 'resume' in args else str(uuid.uuid4())
 sid = os.environ.get('FAKE_OTHER_ID', sid)
 if os.environ.get('FAKE_BLOCK'):
@@ -2048,7 +2048,7 @@ with (root/'argv.jsonl').open('a') as f: f.write(json.dumps(args)+'\n')
 (root/'input').write_bytes(sys.stdin.buffer.read())
 (root/'cwd').write_text(os.getcwd())
 if os.environ.get('FAKE_CAPTURE_ENV'):
-    (root/'env.json').write_text(json.dumps(dict(os.environ)))
+    (root/'env.json').write_text(json.dumps({k:os.environ[k] for k in ['DECLARED_VALUE','EMPTY_VALUE','PRIMARY_PATH','WORKSPACE_PATH','HOME_PATH','PATH','RABI_REPO_PATH','RABI_WORKSPACE_PATH'] if k in os.environ}))
 (root/'binary').write_text(pathlib.Path(sys.argv[0]).name)
 workspace = args[args.index('--workspace')+1]
 sid = args[args.index('--resume')+1] if '--resume' in args else str(uuid.uuid4())
@@ -2662,7 +2662,7 @@ with (root/'argv.jsonl').open('a') as f: f.write(json.dumps(args)+'\n')
 (root/'input').write_bytes(sys.stdin.buffer.read())
 (root/'cwd').write_text(os.getcwd())
 if os.environ.get('FAKE_CAPTURE_ENV'):
-    (root/'env.json').write_text(json.dumps(dict(os.environ)))
+    (root/'env.json').write_text(json.dumps({k:os.environ[k] for k in ['DECLARED_VALUE','EMPTY_VALUE','PRIMARY_PATH','WORKSPACE_PATH','HOME_PATH','PATH','RABI_REPO_PATH','RABI_WORKSPACE_PATH'] if k in os.environ}))
 sid = args[args.index('--resume')+1] if '--resume' in args else args[args.index('--session-id')+1]
 sid = os.environ.get('CLAUDE_OTHER_ID', sid)
 if os.environ.get('CLAUDE_UNKNOWN_ID'):
@@ -4688,7 +4688,7 @@ fn repository_env_exec_applies_primary_config_and_uses_prepended_command_lookup(
     let script = bin.join("declared-command");
     fs::write(
         &script,
-        "#!/usr/bin/env python3\nimport json, os, sys\nprint(json.dumps(dict(os.environ)))\nprint(sys.stdin.read(), end='')\n",
+        "#!/usr/bin/env python3\nimport json, os, sys\nprint(json.dumps({k:os.environ[k] for k in ['DECLARED_VALUE','EMPTY_VALUE','PRIMARY_PATH','WORKSPACE_PATH','HOME_PATH','PATH','RABI_REPO_PATH','RABI_WORKSPACE_PATH'] if k in os.environ}))\nprint(sys.stdin.read(), end='')\n",
     )
     .unwrap();
     fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
@@ -4833,7 +4833,7 @@ fn repository_env_exec_honors_persisted_trust_and_no_env() {
     );
     let stderr = String::from_utf8(out.stderr).unwrap();
     assert!(stderr.contains("DECLARED_VALUE"), "{stderr}");
-    assert!(!stderr.contains("configured"), "{stderr}");
+    assert!(stderr.contains("DECLARED_VALUE=configured"), "{stderr}");
     assert!(
         stderr.contains("${RABI_WORKSPACE_PATH}/node_modules/.bin"),
         "{stderr}"
@@ -4945,6 +4945,7 @@ fn repository_env_run_all_providers_primary_source_expansion_resume_and_no_env()
             .into_owned();
         let out = command
             .env("FAKE_CAPTURE_ENV", "1")
+            .env_remove("WORKSPACE_PATH")
             .env("DECLARED_VALUE", "inherited")
             .env("RABI_REPO_PATH", "/stale")
             .env("RABI_WORKSPACE_PATH", "/stale")
@@ -4956,22 +4957,20 @@ fn repository_env_run_all_providers_primary_source_expansion_resume_and_no_env()
             String::from_utf8_lossy(&out.stderr)
         );
         let stderr = String::from_utf8(out.stderr).unwrap();
-        assert!(stderr.contains("env applied: PATH(+2)"), "{stderr}");
+        assert!(stderr.contains("env applied: PATH(+1)"), "{stderr}");
         assert!(stderr.contains("DECLARED_VALUE"), "{stderr}");
         assert!(!stderr.contains("first private value"), "{stderr}");
+        assert!(stderr.contains("path-prepend[1]"), "{stderr}");
+        assert!(stderr.contains("env.set[4]"), "{stderr}");
         let captured = f.captured_env();
         assert_eq!(captured["DECLARED_VALUE"], "first private value");
         assert_eq!(captured["EMPTY_VALUE"], "");
         assert_eq!(captured["HOME_PATH"], f.home.to_str().unwrap());
         assert_eq!(captured["PRIMARY_PATH"], f.repo.to_str().unwrap());
-        assert_eq!(captured["WORKSPACE_PATH"], f.workspace.to_str().unwrap());
+        assert!(captured["WORKSPACE_PATH"].is_null());
         assert_eq!(
             captured["PATH"],
-            format!(
-                "{}:{}:{inherited_path}",
-                f.home.join(".cargo/bin").display(),
-                f.workspace.join("node_modules/.bin").display()
-            )
+            format!("{}:{inherited_path}", f.home.join(".cargo/bin").display())
         );
 
         // Resume must re-read primary rather than retain the first launch's env.
@@ -4979,6 +4978,7 @@ fn repository_env_run_all_providers_primary_source_expansion_resume_and_no_env()
         let out = f
             .command(&["run", "--no-handoff", "--json"])
             .env("FAKE_CAPTURE_ENV", "1")
+            .env_remove("WORKSPACE_PATH")
             .output()
             .unwrap();
         assert!(
@@ -5005,6 +5005,7 @@ fn repository_env_run_all_providers_primary_source_expansion_resume_and_no_env()
                 env!("CARGO_BIN_EXE_rabi"),
             )
             .env("FAKE_CAPTURE_ENV", "1")
+            .env_remove("WORKSPACE_PATH")
             .env("RABI_REPO_PATH", "/stale")
             .env("RABI_WORKSPACE_PATH", "/stale")
             .output()
@@ -5017,7 +5018,7 @@ fn repository_env_run_all_providers_primary_source_expansion_resume_and_no_env()
         let captured = f.captured_env();
         assert_eq!(captured["DECLARED_VALUE"], "resumed private value");
         assert_eq!(captured["PRIMARY_PATH"], f.repo.to_str().unwrap());
-        assert_eq!(captured["WORKSPACE_PATH"], f.workspace.to_str().unwrap());
+        assert!(captured["WORKSPACE_PATH"].is_null());
         assert_eq!(captured["RABI_REPO_PATH"], f.repo.to_str().unwrap());
         assert_eq!(
             captured["RABI_WORKSPACE_PATH"],
@@ -5027,6 +5028,7 @@ fn repository_env_run_all_providers_primary_source_expansion_resume_and_no_env()
         let out = f
             .command(&["run", "--no-env"])
             .env("FAKE_CAPTURE_ENV", "1")
+            .env_remove("WORKSPACE_PATH")
             .env("DECLARED_VALUE", "inherited")
             .env("RABI_REPO_PATH", "/stale")
             .env("RABI_WORKSPACE_PATH", "/stale")
@@ -5074,7 +5076,7 @@ fn repository_env_codex_binary_is_resolved_before_prepended_path() {
     );
     assert_eq!(f.calls(), 1);
     assert!(!f.root.join("hijacked").exists());
-    assert!(f.captured_env()["PATH"]
+    assert!(!f.captured_env()["PATH"]
         .as_str()
         .unwrap()
         .contains(bin.to_str().unwrap()));
@@ -5160,7 +5162,7 @@ fn repository_env_workspace_expansion_does_not_validate_against_primary_path() {
         "{}",
         String::from_utf8_lossy(&out.stderr)
     );
-    assert!(f.captured_env()["PATH"]
+    assert!(!f.captured_env()["PATH"]
         .as_str()
         .unwrap()
         .starts_with(&format!("{}:", f.workspace.join("bin").display())));
@@ -5193,19 +5195,20 @@ fn repository_env_workspace_expansion_rejects_colon_in_actual_workspace() {
         vec!["run", "--skill", "x", "--no-handoff"],
     ] {
         let out = f.run(&args);
-        assert_eq!(
-            out.status.code(),
-            Some(1),
-            "{args:?}: {}",
-            String::from_utf8_lossy(&out.stderr)
-        );
         let stderr = String::from_utf8(out.stderr).unwrap();
-        assert!(
-            stderr.contains(".rabi.toml") && stderr.contains("path-prepend"),
-            "{stderr}"
-        );
+        if args[0] == "run" {
+            assert!(out.status.success(), "{args:?}: {stderr}");
+            assert!(stderr.contains("path-prepend[0]"), "{stderr}");
+            assert_eq!(f.calls(), 1);
+        } else {
+            assert_eq!(out.status.code(), Some(1), "{args:?}: {stderr}");
+            assert!(
+                stderr.contains(".rabi.toml") && stderr.contains("path-prepend"),
+                "{stderr}"
+            );
+            assert_eq!(f.calls(), 0);
+        }
         assert!(!f.root.join("child-ran").exists());
-        assert_eq!(f.calls(), 0);
     }
 }
 
@@ -5259,7 +5262,7 @@ fn repository_env_repo_expansion_uses_primary_for_linked_config_callers() {
 }
 
 #[test]
-fn repository_env_repo_expansion_rejects_actual_primary_for_linked_config_callers() {
+fn repository_env_repo_expansion_defers_primary_contents_for_linked_config_callers() {
     let f = Fixture::with_checkout_names("primary:checkout", "workspace");
     let target = f.root.join("target");
     f.git(&[
@@ -5279,15 +5282,22 @@ fn repository_env_repo_expansion_rejects_actual_primary_for_linked_config_caller
         vec!["trust", "add"],
     ] {
         let out = f.run(&args);
-        assert_eq!(
-            out.status.code(),
-            Some(1),
+        assert!(
+            out.status.success(),
             "{args:?}: {}",
             String::from_utf8_lossy(&out.stderr)
         );
-        let stderr = String::from_utf8(out.stderr).unwrap();
-        assert!(stderr.contains("env.path-prepend[0]"), "{stderr}");
     }
+
+    let applied = f.run(&["exec", "--", "true"]);
+    assert_eq!(applied.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&applied.stderr).contains("env.path-prepend[0]"));
+    let bypassed = f.run(&["exec", "--no-env", "--", "true"]);
+    assert!(
+        bypassed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&bypassed.stderr)
+    );
 }
 
 #[test]
@@ -5356,4 +5366,343 @@ fn repository_env_invalid_linked_config_diagnostics_name_the_source_file() {
     );
     assert!(String::from_utf8_lossy(&out.stderr)
         .contains(f.workspace.join(".rabi.toml").to_str().unwrap()));
+}
+
+#[test]
+fn repository_env_run_skips_workspace_interpreters_but_exec_applies_them() {
+    for provider in ["codex", "cursor", "claude"] {
+        for spelling in [
+            "variable",
+            "literal",
+            "normalized",
+            "symlink",
+            "workspace",
+            "escaped-variable",
+        ] {
+            let f = Fixture::new();
+            let binary = match provider {
+                "cursor" => {
+                    f.fake_cursor();
+                    "cursor-agent"
+                }
+                "claude" => {
+                    f.fake_claude();
+                    "claude"
+                }
+                _ => "codex",
+            };
+            let provider_path = f.root.join("bin").join(binary);
+            let source = fs::read_to_string(&provider_path).unwrap();
+            fs::write(
+                &provider_path,
+                source.replacen("#!/usr/bin/env python3", "#!/usr/bin/env fakeinterp", 1),
+            )
+            .unwrap();
+            let original = f.root.join("bin/fakeinterp");
+            fs::write(
+                &original,
+                "#!/bin/sh\nprintf original > \"$FAKE_ROOT/interpreter\"\nexec python3 \"$@\"\n",
+            )
+            .unwrap();
+            fs::set_permissions(&original, fs::Permissions::from_mode(0o755)).unwrap();
+            let workspace_bin = f.workspace.join("node_modules/.bin");
+            fs::create_dir_all(&workspace_bin).unwrap();
+            let outside = f.root.join("outside-tools");
+            fs::create_dir(&outside).unwrap();
+            let directory = match spelling {
+                "workspace" => f.workspace.clone(),
+                "escaped-variable" => outside,
+                _ => workspace_bin.clone(),
+            };
+            let malicious = directory.join("fakeinterp");
+            fs::write(
+                &malicious,
+                "#!/bin/sh\nprintf workspace > \"$FAKE_ROOT/interpreter\"\nprintf workspace\n",
+            )
+            .unwrap();
+            fs::set_permissions(&malicious, fs::Permissions::from_mode(0o755)).unwrap();
+            let declaration = match spelling {
+                "variable" => "${RABI_WORKSPACE_PATH}/node_modules/.bin".to_owned(),
+                "literal" => workspace_bin.display().to_string(),
+                "normalized" => {
+                    fs::create_dir(f.root.join("workspace-tools")).unwrap();
+                    f.root
+                        .join("workspace-tools/../workspace/node_modules/.bin")
+                        .display()
+                        .to_string()
+                }
+                "symlink" => {
+                    let alias = f.root.join("workspace-alias");
+                    std::os::unix::fs::symlink(&workspace_bin, &alias).unwrap();
+                    alias.display().to_string()
+                }
+                "workspace" => f.workspace.display().to_string(),
+                "escaped-variable" => "${RABI_WORKSPACE_PATH}/../outside-tools".to_owned(),
+                _ => unreachable!(),
+            };
+            fs::write(f.repo.join(".rabi.toml"), format!("[env]\npath-prepend = [{declaration:?}]\n[env.set]\nWORKSPACE_SETTING = 'not-for-provider ${{RABI_WORKSPACE_PATH}}'\n")).unwrap();
+            let out = f.run(&[
+                "run",
+                "--provider",
+                provider,
+                "--skill",
+                "x",
+                "--no-handoff",
+                "--json",
+            ]);
+            assert!(
+                out.status.success(),
+                "{provider}/{spelling}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert_eq!(
+                fs::read_to_string(f.root.join("interpreter")).unwrap(),
+                "original",
+                "{provider}/{spelling}"
+            );
+            let envelope: Value = serde_json::from_slice(&out.stdout).unwrap();
+            let skipped: Vec<_> = envelope["warnings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|warning| warning["code"] == "env_workspace_path_skipped")
+                .collect();
+            assert_eq!(skipped.len(), 2, "{provider}/{spelling}: {envelope}");
+            assert!(
+                skipped.iter().any(|warning| warning["message"]
+                    .as_str()
+                    .unwrap()
+                    .contains("path-prepend[0]")),
+                "{skipped:?}"
+            );
+            assert!(
+                skipped
+                    .iter()
+                    .any(|warning| warning["message"].as_str().unwrap().contains("env.set[0]")),
+                "{skipped:?}"
+            );
+            let stderr = String::from_utf8(out.stderr).unwrap();
+            assert!(!stderr.contains("not-for-provider"), "{stderr}");
+            assert!(!stderr.contains(&declaration), "{stderr}");
+            let out = f.run(&["exec", "--", "fakeinterp"]);
+            assert!(
+                out.status.success(),
+                "{provider}/{spelling}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert_eq!(out.stdout, b"workspace");
+            assert_eq!(
+                fs::read_to_string(f.root.join("interpreter")).unwrap(),
+                "workspace"
+            );
+        }
+    }
+}
+
+#[test]
+fn repository_env_load_and_no_env_work_without_home_but_applying_errors() {
+    let f = Fixture::new();
+    f.record_workspace();
+    fs::write(
+        f.repo.join(".rabi.toml"),
+        "[env]\npath-prepend = ['~/bin']\n",
+    )
+    .unwrap();
+    for args in [
+        vec!["list"],
+        vec!["path", f.workspace.to_str().unwrap()],
+        vec!["setup", f.workspace.to_str().unwrap(), "--no-hooks"],
+        vec!["gc"],
+    ] {
+        let out = f
+            .command_at(&f.repo, &args, env!("CARGO_BIN_EXE_rabi"))
+            .env_remove("HOME")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    for home in [None, Some("")] {
+        for args in [
+            vec!["exec", "--no-env", "--", "true"],
+            vec!["run", "--no-env", "--no-handoff", "--fresh", "--skill", "x"],
+        ] {
+            let mut command = f.command(&args);
+            if let Some(value) = home {
+                command.env("HOME", value);
+            } else {
+                command.env_remove("HOME");
+            }
+            let out = command.output().unwrap();
+            assert!(
+                out.status.success(),
+                "{args:?}, HOME={home:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            assert!(!String::from_utf8_lossy(&out.stderr).contains("env applied"));
+        }
+        for args in [
+            vec!["exec", "--", "true"],
+            vec!["run", "--no-handoff", "--fresh", "--skill", "x"],
+        ] {
+            let mut command = f.command(&args);
+            if let Some(value) = home {
+                command.env("HOME", value);
+            } else {
+                command.env_remove("HOME");
+            }
+            let out = command.output().unwrap();
+            assert_eq!(
+                out.status.code(),
+                Some(1),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let stderr = String::from_utf8(out.stderr).unwrap();
+            assert!(
+                stderr.contains("HOME") && stderr.contains("env.path-prepend[0]"),
+                "{stderr}"
+            );
+        }
+    }
+    let out = f
+        .command(&["exec", "--", "true"])
+        .env_remove("HOME")
+        .env("RABI_TRUST_ALL", "0")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stderr).contains("rabi trust add"));
+    let out = f
+        .command_at(
+            &f.repo,
+            &["remove", f.workspace.to_str().unwrap(), "--keep-branch"],
+            env!("CARGO_BIN_EXE_rabi"),
+        )
+        .env_remove("HOME")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!f.workspace.exists());
+}
+
+#[test]
+fn repository_env_no_env_bypasses_value_validation_but_not_malformed_toml() {
+    for config in [
+        "[env.set]\nPATH = '/bin'\n",
+        "[env.set]\nVALUE = '$UNKNOWN'\n",
+        "[env]\npath-prepend = ['relative/bin']\n",
+        "[env]\npath-prepend = ['/first:/second']\n",
+        "[env.set]\nVALUE = \"\\u0000\"\n",
+    ] {
+        let f = Fixture::new();
+        fs::write(f.repo.join(".rabi.toml"), config).unwrap();
+        for args in [
+            vec!["exec", "--no-env", "--", "true"],
+            vec!["run", "--no-env", "--no-handoff", "--skill", "x"],
+        ] {
+            let out = f.run(&args);
+            assert!(
+                out.status.success(),
+                "{config:?} {args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+        }
+    }
+    let f = Fixture::new();
+    fs::write(f.repo.join(".rabi.toml"), "[env\n").unwrap();
+    for args in [
+        vec!["exec", "--no-env", "--", "true"],
+        vec!["run", "--no-env", "--no-handoff", "--skill", "x"],
+    ] {
+        let out = f.run(&args);
+        assert_eq!(out.status.code(), Some(1));
+        assert!(String::from_utf8_lossy(&out.stderr).contains(".rabi.toml"));
+        assert_eq!(f.calls(), 0);
+    }
+}
+
+#[test]
+fn repository_env_trust_shows_set_values_with_terminal_controls_escaped() {
+    let f = Fixture::new();
+    fs::write(
+        f.repo.join(".rabi.toml"),
+        "[env.set]\nEDITOR = \"review-command\"\nESCAPED = \"line\\n\\u001b[2J\\u202e\"\n",
+    )
+    .unwrap();
+    let out = f.run(&["trust", "add"]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stderr.contains("EDITOR=review-command"), "{stderr}");
+    assert!(
+        stderr.contains("ESCAPED=line\\u{a}\\u{1b}[2J\\u{202e}"),
+        "{stderr}"
+    );
+    assert!(
+        !stderr.contains('\u{1b}') && !stderr.contains('\u{202e}'),
+        "{stderr}"
+    );
+}
+
+#[test]
+fn repository_env_diagnostics_escape_control_characters_and_keep_json_values() {
+    for (config, raw_fragment) in [
+        (
+            "[env.set]\nVALUE = \"${\\u001b[2J\\u202e}\"\n",
+            "${\u{1b}[2J\u{202e}}",
+        ),
+        (
+            "[env.set]\n\"bad\\u001b[2J\\u202e\" = 'literal'\n",
+            "set.bad\u{1b}[2J\u{202e}",
+        ),
+    ] {
+        let f = Fixture::with_checkout_names("repo\u{1b}[2J\u{202e}", "workspace");
+        fs::write(f.repo.join(".rabi.toml"), config).unwrap();
+        let text = f
+            .command_at(&f.repo, &["list"], env!("CARGO_BIN_EXE_rabi"))
+            .output()
+            .unwrap();
+        assert_eq!(text.status.code(), Some(1));
+        assert!(text.stdout.is_empty());
+        let stderr = String::from_utf8(text.stderr).unwrap();
+        assert!(
+            !stderr.contains('\u{1b}') && !stderr.contains('\u{202e}'),
+            "{stderr:?}"
+        );
+        assert!(stderr.contains("\\u{1b}[2J\\u{202e}"), "{stderr}");
+        let json = f
+            .command_at(&f.repo, &["list", "--json"], env!("CARGO_BIN_EXE_rabi"))
+            .output()
+            .unwrap();
+        assert_eq!(json.status.code(), Some(1));
+        // Parsing the entire stdout also rejects a second JSON envelope or text.
+        let envelope: Value = serde_json::from_slice(&json.stdout).unwrap();
+        assert_eq!(envelope["ok"], false);
+        let message = envelope["error"]["message"].as_str().unwrap();
+        assert!(message.contains(raw_fragment), "{message:?}");
+        assert!(
+            message.contains(f.repo.join(".rabi.toml").to_str().unwrap()),
+            "{message:?}"
+        );
+        let stderr = String::from_utf8(json.stderr).unwrap();
+        assert!(
+            !stderr.contains('\u{1b}') && !stderr.contains('\u{202e}'),
+            "{stderr:?}"
+        );
+    }
 }

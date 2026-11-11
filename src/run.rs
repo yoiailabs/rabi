@@ -323,7 +323,7 @@ pub(crate) fn execute(
     let environment = if options.no_env {
         Default::default()
     } else {
-        crate::execution_env::load(root)?.for_workspace(root, Path::new(&tree.path))?
+        crate::execution_env::load(root)?.for_provider(root, Path::new(&tree.path))?
     };
     let _signals = lifecycle::Signals::install()?;
     let common_dir = crate::git::git_common_dir(root)?;
@@ -504,6 +504,7 @@ pub(crate) fn execute(
             memory.as_ref().map(|m| m.path.as_path()),
         )?;
         command.envs(&environment.values);
+        environment.warn_skipped();
         if !environment.values.is_empty() && !crate::output::json() {
             crate::output::stderr(format_args!(
                 "rabi: env applied: {}\n",

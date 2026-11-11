@@ -42,12 +42,12 @@ pub fn open(repository: Option<&Path>) -> Result<Context> {
 }
 
 /// Execution declarations always come from the selected primary checkout.
-pub(crate) fn open_for_execution(repository: Option<&Path>) -> Result<Context> {
+pub(crate) fn open_for_execution(repository: Option<&Path>, no_env: bool) -> Result<Context> {
     let root = match repository {
         Some(root) => root.to_path_buf(),
         None => git::git_root(&std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?)?,
     };
-    create_at(&root)
+    assemble_for_execution(&root, root.to_path_buf(), no_env)
 }
 
 /// Select hooks independently of the target checkout used by dot.
@@ -68,7 +68,15 @@ pub(crate) fn open_for_hooks(repository: Option<&Path>, source: &Path) -> Result
 }
 
 fn assemble(git_root: &Path, source_checkout: PathBuf) -> Result<Context> {
-    let config = config::load_config_from(&source_checkout, git_root)?;
+    assemble_for_execution(git_root, source_checkout, false)
+}
+
+fn assemble_for_execution(
+    git_root: &Path,
+    source_checkout: PathBuf,
+    no_env: bool,
+) -> Result<Context> {
+    let config = config::load_config_for_execution(&source_checkout, no_env)?;
     let preferences = preferences::load_preferences()?;
     let common_dir = git::canonical_common_dir(git_root)?;
     let location = match preferences

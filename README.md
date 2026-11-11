@@ -154,7 +154,7 @@ rabi run --fresh --provider claude --skill my-skill "Fix issue #123"
 
 `rabi config` manages user settings: `workspace-root`, `clone-root`, `discover-ghq`, `sync.strategy`, and `sync.rewrite-published`. `-R/--repo REF` targets a repository by path or registered/discovered name. See [configuration, paths, and repository registrations](docs/configuration.md).
 
-Declare `[env]` once in the primary checkout's `.rabi.toml` to prepend PATH entries and set variables for trusted `rabi run` and `rabi exec`. Both accept `--no-env`; hooks keep their existing environment. See [execution environment](docs/configuration.md#repository-execution-environment) for expansion and security rules.
+Declare `[env]` once in the primary checkout's `.rabi.toml` to prepend PATH entries and set variables for trusted `rabi run` and `rabi exec`. Run skips workspace PATH entries and values referencing `${RABI_WORKSPACE_PATH}` with a warning; declare only directories agents cannot write, since PATH also selects provider interpreters. Both accept `--no-env`; hooks keep their existing environment. See [execution environment](docs/configuration.md#repository-execution-environment) for expansion and security rules.
 
 ## Hooks and trust
 

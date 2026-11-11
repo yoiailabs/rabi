@@ -455,7 +455,7 @@
         }
       ],
       "notes": [
-        "trust add lists hooks and primary-checkout environment keys/path entries, then grants common-directory execution trust. Run and repository env use the same trust without prompting. JSON data remains {path,trustedAt}."
+        "trust add lists hooks and primary-checkout environment values/path entries, then grants common-directory execution trust. Run and repository env use the same trust without prompting. JSON data remains {path,trustedAt}."
       ]
     },
     "trust remove": {
@@ -510,7 +510,7 @@
         {
           "name": "no-env",
           "type": "boolean",
-          "description": "Skip the primary checkout's repository execution environment"
+          "description": "Skip the primary checkout's repository execution environment and its value validation; TOML/schema errors still fail"
         },
         {
           "name": "no-input",
@@ -544,7 +544,7 @@
         "The child exit code and stdin are preserved. RABI_OUTPUT is ignored; explicit --json is refused.",
         "Hooks and exec receive RABI=1, RABI_WORKSPACE (the workspace name), RABI_WORKSPACE_ID (the ws_ ID, or empty if unrecorded), RABI_WORKSPACE_PATH (the absolute workspace path), and RABI_REPO_PATH (the primary checkout path)",
         "exec reads records without rewriting them. Orphaned workspaces are refused.",
-        "Repository [env] is read only from the primary checkout's .rabi.toml. Trusted repositories apply it before rabi's own variables; untrusted exec warns with env_untrusted and continues without it, without prompting. --no-env skips application and silences this warning. Child command lookup uses the resulting PATH."
+        "Repository [env] is read only from the primary checkout's .rabi.toml. Trusted repositories apply it before rabi's own variables; untrusted exec warns with env_untrusted and continues without it, without prompting. --no-env skips application and environment-value validation, and silences this warning; TOML/schema errors still fail. Child command lookup uses the resulting PATH."
       ]
     },
     "config": {
@@ -1862,7 +1862,7 @@
         {
           "name": "no-env",
           "type": "boolean",
-          "description": "Skip the primary checkout's repository execution environment"
+          "description": "Skip the primary checkout's repository execution environment and its value validation; TOML/schema errors still fail"
         },
         {
           "name": "repo",
@@ -1923,7 +1923,7 @@
         "Claude Code requires claude on PATH and login (run claude). It uses opus with high effort, stdin prompts, --permission-mode auto --permission-prompts none, and validates init permissionMode as auto. New sessions use a generated UUID recorded as requestedSessionId; resume uses the observed id. No workspace settings are written. Local transcript absence is unknown and still attempts resume. Timeout/interrupt retain 124/130 even for exit-0 error results with null answers.",
         "Text prints the final parent answer. JSON data is {run,launch,answer}; raw stdout and stderr are saved per launch.",
         "Handoff is enabled by default for recorded workspaces. First/fresh launches carry original intent and bounded notes (24 KiB); resume carries only new foreign notes since the last delivered snapshot (8 KiB), or the full first/fresh snapshot if none exists in the run. Delivery requires an observed launch session id or exit code 0. Later TASKs are request entries unless they match intent or the previous request after trimming trailing whitespace from both texts; storage remains verbatim. All providers receive --add-dir for only the memory directory and RABI_BIN, RABI_RUN_ID, RABI_RUN_LAUNCH, RABI_RUN_PROVIDER, RABI, RABI_REPO_PATH, RABI_WORKSPACE, RABI_WORKSPACE_ID and RABI_WORKSPACE_PATH. Memory failures stop before spawn; --no-handoff bypasses them. Unrecorded workspaces warn and continue without memory.",
-        "Repository [env] is read from the primary checkout's .rabi.toml on every launch. Trusted repositories apply set variables and PATH prefixes; --no-env skips application. Hooks do not receive [env]. Provider binaries are resolved before applying env; exec command lookup uses the resulting PATH."
+        "Repository [env] is read from the primary checkout's .rabi.toml on every launch. Trusted repositories apply set variables and PATH prefixes; --no-env skips application and environment-value validation; TOML/schema errors still fail. Run skips workspace-referencing set values and PATH entries inside or referencing its workspace, warning with env_workspace_path_skipped. Declared PATH also selects provider script interpreters; use directories agents cannot write. Hooks do not receive [env]. Provider binaries are resolved before applying env; exec command lookup uses the resulting PATH."
       ],
       "examples": [
         {
@@ -2252,7 +2252,8 @@
     "handoff_invalid_line",
     "handoff_identity",
     "handoff_request_skipped",
-    "env_untrusted"
+    "env_untrusted",
+    "env_workspace_path_skipped"
   ],
   "schemaVersion": 2
 }

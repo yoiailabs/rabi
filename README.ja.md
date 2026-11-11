@@ -154,7 +154,7 @@ rabi run --fresh --provider claude --skill my-skill "Fix issue #123"
 
 `rabi config` で `workspace-root`、`clone-root`、`discover-ghq`、`sync.strategy`、`sync.rewrite-published` を管理します。`-R/--repo REF` はパス、登録済みの名前、検出された名前でリポジトリを選びます。[設定・パス・リポジトリ登録](docs/configuration.md)を参照してください。
 
-プライマリチェックアウトの `.rabi.toml` に `[env]` を宣言すると、信頼済みの `rabi run` と `rabi exec` で PATH の先頭追加と変数の設定を共有できます。どちらも `--no-env` で無効にできます。フックの環境は従来どおりです。展開とセキュリティのルールは[実行環境](docs/configuration.md#repository-execution-environment)を参照してください。
+プライマリチェックアウトの `.rabi.toml` に `[env]` を宣言すると、信頼済みの `rabi run` と `rabi exec` で PATH の先頭追加と変数の設定を共有できます。run はワークスペース内の PATH エントリーと `${RABI_WORKSPACE_PATH}` を参照する値を警告付きでスキップします。PATH はプロバイダーのインタープリターも選ぶため、エージェントが書き込めないディレクトリだけを宣言してください。どちらも `--no-env` で無効にできます。フックの環境は従来どおりです。展開とセキュリティのルールは[実行環境](docs/configuration.md#repository-execution-environment)を参照してください。
 
 ## フックと信頼
 
