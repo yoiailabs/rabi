@@ -4,13 +4,7 @@
 
 ### Added
 
-- Repository `.rabi.toml` supports trusted `[env]` declarations for `run` and `exec`: ordered `path-prepend`, validated `set` variables, and limited HOME/workspace/repository expansion. Declarations always come from the primary checkout, including resumed runs. `--no-env` skips them; untrusted exec warns and continues without them. Hooks keep their existing environment. Run resolves provider binaries before applying the child PATH. (#930)
-
-### Fixed
-
-- `run` skips workspace PATH entries and PATH/set declarations referencing `${RABI_WORKSPACE_PATH}`, warning with `env_workspace_path_skipped`. This prevents workspace binaries from becoming interpreters for provider launch scripts; exec retains workspace entries. Applied summaries reflect only retained entries.
-- Environment config loading no longer expands HOME or checkout paths, so inspection and hook-related commands do not depend on those values. `run/exec --no-env` bypass environment-value validation while retaining TOML/schema parsing. Applied non-UTF-8 path expansions fail clearly.
-- `trust add` displays escaped `KEY=value` assignments so declared values can be reviewed before granting trust. Never commit secrets in `[env]`.
+- Repository `.rabi.toml` supports trusted `[env]` declarations for `run` and `exec`: ordered `path-prepend`, validated `set` variables, and limited HOME/workspace/repository expansion. Declarations always come from the primary checkout, including resume. Loading validates syntax; expansion happens only during application, with clear errors for referenced non-UTF-8 paths. `--no-env` bypasses environment-value validation while retaining TOML/schema parsing; untrusted exec warns and continues without env. Run resolves provider binaries before applying PATH, skips workspace PATH entries and workspace-token set values with `env_workspace_path_skipped`, and reports only retained entries. Exec retains workspace declarations. Reserved variables protect rabi state/configuration and Git repository selection. `trust add` shows escaped `KEY=value` assignments and PATH entries for review; never commit secrets in `[env]`. Hooks keep their existing environment. (#930)
 
 ### Changed (Breaking)
 

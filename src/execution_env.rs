@@ -377,9 +377,24 @@ fn reserved_key(key: &str) -> bool {
             | "NODE_OPTIONS"
             | "BASH_ENV"
             | "ENV"
+            | "XDG_STATE_HOME"
+            | "XDG_CONFIG_HOME"
+            | "XDG_DATA_HOME"
+            | "XDG_CACHE_HOME"
+            | "XDG_RUNTIME_DIR"
+            | "GIT_DIR"
+            | "GIT_WORK_TREE"
+            | "GIT_INDEX_FILE"
+            | "GIT_COMMON_DIR"
+            | "GIT_OBJECT_DIRECTORY"
+            | "GIT_ALTERNATE_OBJECT_DIRECTORIES"
+            | "GIT_NAMESPACE"
+            | "GIT_CEILING_DIRECTORIES"
+            | "GIT_DISCOVERY_ACROSS_FILESYSTEM"
     ) || key.starts_with("RABI")
         || key.starts_with("LD_")
         || key.starts_with("DYLD_")
+        || key.starts_with("GIT_CONFIG_")
 }
 
 /// Load only the primary checkout's declaration; callers decide the trust policy.
@@ -509,6 +524,95 @@ mod tests {
                 ..Default::default()
             };
             assert!(resolve(&env, None, None).is_ok(), "{key}");
+        }
+    }
+
+    fn rejects_reserved_keys_at_load(keys: &[&str]) {
+        let source =
+            std::env::temp_dir().join(format!("rabi-env-reserved-{}", uuid::Uuid::new_v4()));
+        std::fs::create_dir_all(&source).unwrap();
+        for key in keys {
+            std::fs::write(
+                source.join(".rabi.toml"),
+                format!("[env.set]\n{key} = '/example'\n"),
+            )
+            .unwrap();
+            let error = crate::config::load_config(&source).unwrap_err();
+            assert_eq!(error.exit_code(), 1, "{key}");
+            let message = error.to_string();
+            assert!(message.contains(".rabi.toml"), "{message}");
+            assert!(message.contains(&format!("env.set.{key}")), "{message}");
+            assert!(
+                message.contains("reserved environment variable"),
+                "{message}"
+            );
+            assert!(
+                crate::config::load_config_for_execution(&source, true).is_ok(),
+                "{key}"
+            );
+        }
+        std::fs::remove_dir_all(source).unwrap();
+    }
+
+    #[test]
+    fn reserves_xdg_base_directory_variables_at_load() {
+        rejects_reserved_keys_at_load(&[
+            "XDG_STATE_HOME",
+            "XDG_CONFIG_HOME",
+            "XDG_DATA_HOME",
+            "XDG_CACHE_HOME",
+            "XDG_RUNTIME_DIR",
+        ]);
+    }
+
+    #[test]
+    fn reserves_git_repository_selection_variables_at_load() {
+        rejects_reserved_keys_at_load(&[
+            "GIT_DIR",
+            "GIT_WORK_TREE",
+            "GIT_INDEX_FILE",
+            "GIT_COMMON_DIR",
+            "GIT_OBJECT_DIRECTORY",
+            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+            "GIT_NAMESPACE",
+            "GIT_CEILING_DIRECTORIES",
+            "GIT_DISCOVERY_ACROSS_FILESYSTEM",
+        ]);
+    }
+
+    #[test]
+    fn reserves_git_config_prefix_at_load() {
+        rejects_reserved_keys_at_load(&[
+            "GIT_CONFIG_",
+            "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_SYSTEM",
+            "GIT_CONFIG_COUNT",
+            "GIT_CONFIG_KEY_0",
+            "GIT_CONFIG_VALUE_0",
+            "GIT_CONFIG_PARAMETERS",
+            "GIT_CONFIG_CUSTOM",
+        ]);
+    }
+
+    #[test]
+    fn permits_nonreserved_xdg_and_git_neighbors() {
+        for key in [
+            "XDG_CONFIG_DIRS",
+            "XDG_DATA_DIRS",
+            "XDG_STATE_HOMES",
+            "GIT_CONFIG",
+            "GIT_CONFIGURED",
+            "GIT_DIRECTORY",
+            "GIT_WORK_TREE_SUFFIX",
+            "GIT_INDEX_VERSION",
+            "GIT_SSH_COMMAND",
+            "GIT_TERMINAL_PROMPT",
+        ] {
+            let environment = Environment {
+                set: BTreeMap::from([(key.into(), "value".into())]),
+                ..Default::default()
+            };
+            assert!(environment.validate(Path::new("/repo")).is_ok(), "{key}");
         }
     }
 

@@ -39,6 +39,10 @@ Each `path-prepend` entry must be nonempty, contain neither NUL nor `:`, and be 
 
 - `PATH` (use `path-prepend` instead), any key starting with `RABI`, `HOME`, `SHELL`, `CODEX_HOME`, and `CLAUDE_CONFIG_DIR`.
 - Any key starting with `LD_` or `DYLD_`, plus `NODE_OPTIONS`, `BASH_ENV`, and `ENV`.
+- XDG base-directory variables: `XDG_STATE_HOME`, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and `XDG_RUNTIME_DIR`.
+- Git repository-selection variables: `GIT_DIR`, `GIT_WORK_TREE`, `GIT_INDEX_FILE`, `GIT_COMMON_DIR`, `GIT_OBJECT_DIRECTORY`, `GIT_ALTERNATE_OBJECT_DIRECTORIES`, `GIT_NAMESPACE`, `GIT_CEILING_DIRECTORIES`, and `GIT_DISCOVERY_ACROSS_FILESYSTEM`; any key starting with `GIT_CONFIG_`, including `GIT_CONFIG_GLOBAL`, `GIT_CONFIG_SYSTEM`, `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n`, `GIT_CONFIG_VALUE_n`, and `GIT_CONFIG_PARAMETERS`.
+
+These reservations keep nested rabi commands, handoff storage, and the Git executor attached to the launcher's state, configuration, and repository.
 
 Precedence is inherited environment, then `[env.set]`, then rabi's own `RABI_*` variables. PATH consists of prepend entries in declaration order followed by inherited PATH; an empty or unset inherited PATH adds no separator. Exec looks up its child command using this PATH. Run resolves the provider executable to an absolute path using the launcher's original PATH first, then applies eligible declarations only to that provider process. Text run output reports applied variable keys and the applied PATH-entry count, never set values.
 

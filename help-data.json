@@ -455,7 +455,7 @@
         }
       ],
       "notes": [
-        "trust add lists hooks and primary-checkout environment values/path entries, then grants common-directory execution trust. Run and repository env use the same trust without prompting. JSON data remains {path,trustedAt}."
+        "trust add lists hooks and primary-checkout environment assignments/path entries (values shown, escaped), then grants common-directory execution trust. Run and repository env use the same trust without prompting. JSON data remains {path,trustedAt}."
       ]
     },
     "trust remove": {
@@ -1232,7 +1232,7 @@
       ],
       "notes": [
         "Defaults to -R/--repo or the current repository. Trust is recorded against the canonical Git common directory. During create, setup, and remove a human TTY can receive a trust prompt; noninteractive untrusted hooks exit 4.",
-        "Run and repository env use the same common-directory trust and never prompt. Declared environment keys/path entries come from the primary checkout. JSON data remains {path,trustedAt}."
+        "Run and repository env use the same common-directory trust and never prompt. Declared environment assignments/path entries come from the primary checkout; values are shown with control characters escaped. JSON data remains {path,trustedAt}."
       ]
     },
     "trust list": {
