@@ -2826,7 +2826,8 @@ fn exec_passes_command_options_through() {
 
     let help = repo.rabi(&["exec", "--help"]);
     assert!(help.status.success(), "{}", text(&help.stderr));
-    assert!(text(&help.stdout).contains("rabi exec [--repo <ref>] [SEL] -- COMMAND [ARG...]"));
+    assert!(text(&help.stdout)
+        .contains("rabi exec [--repo <ref>] [--no-env] [SEL] -- COMMAND [ARG...]"));
 
     let early = repo.rabi(&["exec", "--show-current", "feature/exec-flags", "true"]);
     assert_eq!(early.status.code(), Some(2));
@@ -2844,7 +2845,8 @@ fn exec_help_skips_output_values_and_preserves_child_help() {
     ] {
         let out = repo.rabi(&args);
         assert!(out.status.success(), "{args:?}: {}", text(&out.stderr));
-        assert!(text(&out.stdout).contains("rabi exec [--repo <ref>] [SEL] -- COMMAND [ARG...]"));
+        assert!(text(&out.stdout)
+            .contains("rabi exec [--repo <ref>] [--no-env] [SEL] -- COMMAND [ARG...]"));
         assert!(out.stderr.is_empty());
     }
     let value = repo.rabi(&["exec", "--output", "--help"]);

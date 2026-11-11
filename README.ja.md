@@ -81,8 +81,8 @@ rabi remove task/auth
 | `rabi run` | ワークスペースの親セッションを起動・再開 |
 | `rabi skill` | スキル探索 |
 | `rabi skill list` | スキル名・探索元・パスを一覧表示 |
-| `rabi trust` | フック・run 実行の信頼設定 |
-| `rabi trust add` | フックを表示し、確認プロンプトなしで信頼を付与 |
+| `rabi trust` | フック・run・リポジトリ環境の信頼設定 |
+| `rabi trust add` | フックと環境を表示し、確認プロンプトなしで信頼を付与 |
 | `rabi trust remove` | 信頼を取り消す |
 | `rabi trust list` | 信頼済みの Git 共通ディレクトリの一覧 |
 | `rabi config` | ユーザー設定の操作 |
@@ -154,9 +154,11 @@ rabi run --fresh --provider claude --skill my-skill "Fix issue #123"
 
 `rabi config` で `workspace-root`、`clone-root`、`discover-ghq`、`sync.strategy`、`sync.rewrite-published` を管理します。`-R/--repo REF` はパス、登録済みの名前、検出された名前でリポジトリを選びます。[設定・パス・リポジトリ登録](docs/configuration.md)を参照してください。
 
+プライマリチェックアウトの `.rabi.toml` に `[env]` を宣言すると、信頼済みの `rabi run` と `rabi exec` で PATH の先頭追加と変数の設定を共有できます。どちらも `--no-env` で無効にできます。フックの環境は従来どおりです。展開とセキュリティのルールは[実行環境](docs/configuration.md#repository-execution-environment)を参照してください。
+
 ## フックと信頼
 
-リポジトリの `.rabi.toml` に setup・pre-remove フックを定義します。`.worktreeinclude` はプライマリからコピーする無視ファイルを選びます。`rabi trust add` で信頼を付与する前にフックと親への指示を確認してください。信頼は Git 共通ディレクトリのパスに付与され、同じパスに clone し直しても取り消すまで有効です。[フック・信頼・セットアップの再試行](docs/hooks.md)を参照してください。
+リポジトリの `.rabi.toml` に setup・pre-remove フックを定義します。`.worktreeinclude` はプライマリからコピーする無視ファイルを選びます。`rabi trust add` で信頼を付与する前にフック・宣言された環境・親への指示を確認してください。信頼は Git 共通ディレクトリのパスに付与され、同じパスに clone し直しても取り消すまで有効です。[フック・信頼・セットアップの再試行](docs/hooks.md)を参照してください。
 
 ## FAQ
 

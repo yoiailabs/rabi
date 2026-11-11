@@ -81,8 +81,8 @@ Read [removal safety and retries](docs/safety.md) and [sync strategies](docs/syn
 | `rabi run` | Launch or resume the workspace parent session |
 | `rabi skill` | Skill discovery |
 | `rabi skill list` | List skill names, sources and paths |
-| `rabi trust` | Hook and run execution trust |
-| `rabi trust add` | Show hooks and grant trust without prompting |
+| `rabi trust` | Hooks, run, and repository environment trust |
+| `rabi trust add` | Show hooks and environment and grant trust without prompting |
 | `rabi trust remove` | Revoke trust |
 | `rabi trust list` | List trusted Git common directories |
 | `rabi config` | User configuration commands |
@@ -154,9 +154,11 @@ rabi run --fresh --provider claude --skill my-skill "Fix issue #123"
 
 `rabi config` manages user settings: `workspace-root`, `clone-root`, `discover-ghq`, `sync.strategy`, and `sync.rewrite-published`. `-R/--repo REF` targets a repository by path or registered/discovered name. See [configuration, paths, and repository registrations](docs/configuration.md).
 
+Declare `[env]` once in the primary checkout's `.rabi.toml` to prepend PATH entries and set variables for trusted `rabi run` and `rabi exec`. Both accept `--no-env`; hooks keep their existing environment. See [execution environment](docs/configuration.md#repository-execution-environment) for expansion and security rules.
+
 ## Hooks and trust
 
-Repository `.rabi.toml` defines setup and pre-remove hooks; `.worktreeinclude` selects ignored files to copy from primary. Review hooks and parent instructions before granting trust with `rabi trust add`. Trust applies to the Git common-directory path and survives a re-clone at that path until revoked. See [hooks, trust, and setup retries](docs/hooks.md).
+Repository `.rabi.toml` defines setup and pre-remove hooks; `.worktreeinclude` selects ignored files to copy from primary. Review hooks, declared environment, and parent instructions before granting trust with `rabi trust add`. Trust applies to the Git common-directory path and survives a re-clone at that path until revoked. See [hooks, trust, and setup retries](docs/hooks.md).
 
 ## FAQ
 

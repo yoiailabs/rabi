@@ -28,14 +28,18 @@ struct Fixture {
 }
 impl Fixture {
     fn new() -> Self {
+        Self::with_checkout_names("repo", "workspace")
+    }
+
+    fn with_checkout_names(repo_name: &str, workspace_name: &str) -> Self {
         let root = std::env::temp_dir()
             .canonicalize()
             .unwrap()
             .join(format!("rabi-parent-{}", uuid::Uuid::new_v4()));
-        let repo = root.join("repo");
+        let repo = root.join(repo_name);
         let home = root.join("home");
         let codex = root.join("codex-home");
-        let workspace = root.join("workspace");
+        let workspace = root.join(workspace_name);
         fs::create_dir_all(&repo).unwrap();
         fs::create_dir_all(&home).unwrap();
         test_git::write_config(&home);
@@ -73,6 +77,8 @@ root = pathlib.Path(os.environ['FAKE_ROOT'])
 with (root/'argv.jsonl').open('a') as f: f.write(json.dumps(args)+'\n')
 (root/'input').write_text(sys.stdin.read())
 (root/'cwd').write_text(os.getcwd())
+if os.environ.get('FAKE_CAPTURE_ENV'):
+    (root/'env.json').write_text(json.dumps(dict(os.environ)))
 sid = args[args.index('resume')+1] if 'resume' in args else str(uuid.uuid4())
 sid = os.environ.get('FAKE_OTHER_ID', sid)
 if os.environ.get('FAKE_BLOCK'):
@@ -2041,6 +2047,8 @@ root = pathlib.Path(os.environ['FAKE_ROOT'])
 with (root/'argv.jsonl').open('a') as f: f.write(json.dumps(args)+'\n')
 (root/'input').write_bytes(sys.stdin.buffer.read())
 (root/'cwd').write_text(os.getcwd())
+if os.environ.get('FAKE_CAPTURE_ENV'):
+    (root/'env.json').write_text(json.dumps(dict(os.environ)))
 (root/'binary').write_text(pathlib.Path(sys.argv[0]).name)
 workspace = args[args.index('--workspace')+1]
 sid = args[args.index('--resume')+1] if '--resume' in args else str(uuid.uuid4())
@@ -2653,6 +2661,8 @@ root = pathlib.Path(os.environ['FAKE_ROOT'])
 with (root/'argv.jsonl').open('a') as f: f.write(json.dumps(args)+'\n')
 (root/'input').write_bytes(sys.stdin.buffer.read())
 (root/'cwd').write_text(os.getcwd())
+if os.environ.get('FAKE_CAPTURE_ENV'):
+    (root/'env.json').write_text(json.dumps(dict(os.environ)))
 sid = args[args.index('--resume')+1] if '--resume' in args else args[args.index('--session-id')+1]
 sid = os.environ.get('CLAUDE_OTHER_ID', sid)
 if os.environ.get('CLAUDE_UNKNOWN_ID'):
@@ -4649,4 +4659,701 @@ fn handoff_workspace_preparation_failure_preserves_memory() {
     assert_eq!(fs::read(memory.join("handoff.jsonl")).unwrap(), before);
     assert!(!memory.join("intent.md").exists());
     assert_eq!(f.calls(), 0);
+}
+
+impl Fixture {
+    fn declared_env(&self, value: &str) {
+        fs::write(
+            self.repo.join(".rabi.toml"),
+            format!(
+                "[env]\npath-prepend = [\"~/.cargo/bin\", \"${{RABI_WORKSPACE_PATH}}/node_modules/.bin\"]\n[env.set]\nDECLARED_VALUE = {value:?}\nEMPTY_VALUE = \"\"\nPRIMARY_PATH = \"${{RABI_REPO_PATH}}\"\nWORKSPACE_PATH = \"${{RABI_WORKSPACE_PATH}}\"\nHOME_PATH = \"${{HOME}}\"\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    fn captured_env(&self) -> Value {
+        serde_json::from_slice(&fs::read(self.root.join("env.json")).unwrap()).unwrap()
+    }
+}
+
+#[test]
+fn repository_env_exec_applies_primary_config_and_uses_prepended_command_lookup() {
+    let f = Fixture::new();
+    f.declared_env("primary value");
+    // Even invalid env declarations in the target checkout must be ignored.
+    fs::write(f.workspace.join(".rabi.toml"), "[env]\nunknown = true\n").unwrap();
+    let bin = f.workspace.join("node_modules/.bin");
+    fs::create_dir_all(&bin).unwrap();
+    let script = bin.join("declared-command");
+    fs::write(
+        &script,
+        "#!/usr/bin/env python3\nimport json, os, sys\nprint(json.dumps(dict(os.environ)))\nprint(sys.stdin.read(), end='')\n",
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    for outside in [false, true] {
+        let mut command = if outside {
+            f.command_at(
+                &f.root,
+                &[
+                    "-R",
+                    f.repo.to_str().unwrap(),
+                    "exec",
+                    f.workspace.to_str().unwrap(),
+                    "--",
+                    "declared-command",
+                ],
+                env!("CARGO_BIN_EXE_rabi"),
+            )
+        } else {
+            f.command(&["exec", ".", "--", "declared-command"])
+        };
+        let inherited_path = command
+            .get_envs()
+            .find(|(key, _)| *key == "PATH")
+            .unwrap()
+            .1
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let mut child = command
+            .env("DECLARED_VALUE", "inherited")
+            .env("EMPTY_VALUE", "inherited")
+            .env("RABI_REPO_PATH", "/stale")
+            .env("RABI_WORKSPACE_PATH", "/stale")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"child stdin\n")
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stdout = String::from_utf8(out.stdout).unwrap();
+        let (environment, stdin) = stdout.split_once('\n').unwrap();
+        let environment: Value = serde_json::from_str(environment).unwrap();
+        assert_eq!(stdin, "child stdin\n");
+        assert_eq!(environment["DECLARED_VALUE"], "primary value");
+        assert_eq!(environment["EMPTY_VALUE"], "");
+        assert_eq!(environment["PRIMARY_PATH"], f.repo.to_str().unwrap());
+        assert_eq!(environment["WORKSPACE_PATH"], f.workspace.to_str().unwrap());
+        assert_eq!(environment["HOME_PATH"], f.home.to_str().unwrap());
+        assert_eq!(environment["RABI_REPO_PATH"], f.repo.to_str().unwrap());
+        assert_eq!(
+            environment["RABI_WORKSPACE_PATH"],
+            f.workspace.to_str().unwrap()
+        );
+        assert_eq!(
+            environment["PATH"],
+            format!(
+                "{}:{}:{inherited_path}",
+                f.home.join(".cargo/bin").display(),
+                bin.display()
+            )
+        );
+    }
+}
+
+#[test]
+fn repository_env_untrusted_exec_warns_without_consuming_stdin_and_no_env_silences_it() {
+    let f = Fixture::new();
+    f.declared_env("private configured value");
+    for no_env in [false, true] {
+        let mut args = vec!["exec"];
+        if no_env {
+            args.push("--no-env");
+        }
+        args.extend([
+            ".",
+            "--",
+            "sh",
+            "-c",
+            "printf '%s\\n' \"$DECLARED_VALUE\"; cat",
+        ]);
+        let mut child = f
+            .command(&args)
+            .env("RABI_TRUST_ALL", "0")
+            .env("DECLARED_VALUE", "inherited")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"child stdin\n")
+            .unwrap();
+        let out = child.wait_with_output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap(),
+            "inherited\nchild stdin\n"
+        );
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        if no_env {
+            assert!(stderr.is_empty(), "{stderr}");
+        } else {
+            assert!(stderr.contains("rabi trust add"), "{stderr}");
+            assert!(stderr.contains("--no-env"), "{stderr}");
+            assert!(!stderr.contains("private configured value"), "{stderr}");
+        }
+    }
+    assert!(!f.root.join("state/rabi/trust.toml").exists());
+}
+
+#[test]
+fn repository_env_exec_honors_persisted_trust_and_no_env() {
+    let f = Fixture::new();
+    f.declared_env("configured");
+    let out = f
+        .command(&["trust", "add"])
+        .env("RABI_TRUST_ALL", "0")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stderr.contains("DECLARED_VALUE"), "{stderr}");
+    assert!(!stderr.contains("configured"), "{stderr}");
+    assert!(
+        stderr.contains("${RABI_WORKSPACE_PATH}/node_modules/.bin"),
+        "{stderr}"
+    );
+    let json = f
+        .command(&["trust", "add", "--json"])
+        .env("RABI_TRUST_ALL", "0")
+        .output()
+        .unwrap();
+    assert!(json.status.success());
+    let json: Value = serde_json::from_slice(&json.stdout).unwrap();
+    let data = json["data"].as_object().unwrap();
+    assert_eq!(
+        data.len(),
+        2,
+        "trust JSON shape must stay unchanged: {data:?}"
+    );
+    assert!(data.contains_key("path") && data.contains_key("trustedAt"));
+    for no_env in [false, true] {
+        let mut args = vec!["exec"];
+        if no_env {
+            args.push("--no-env");
+        }
+        args.extend([".", "--", "sh", "-c", "printf '%s' \"$DECLARED_VALUE\""]);
+        let out = f
+            .command(&args)
+            .env("RABI_TRUST_ALL", "0")
+            .env("DECLARED_VALUE", "inherited")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(
+            String::from_utf8(out.stdout).unwrap(),
+            if no_env { "inherited" } else { "configured" }
+        );
+        assert!(
+            out.stderr.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn repository_env_absent_or_empty_does_not_warn_for_untrusted_exec() {
+    let f = Fixture::new();
+    for config in [None, Some("[env]\n"), Some("[env.set]\n")] {
+        if let Some(config) = config {
+            fs::write(f.repo.join(".rabi.toml"), config).unwrap();
+        }
+        let out = f
+            .command(&[
+                "exec",
+                ".",
+                "--",
+                "sh",
+                "-c",
+                "printf '%s' \"$DECLARED_VALUE\"",
+            ])
+            .env("RABI_TRUST_ALL", "0")
+            .env("DECLARED_VALUE", "inherited")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert_eq!(out.stdout, b"inherited");
+        assert!(
+            out.stderr.is_empty(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+}
+
+#[test]
+fn repository_env_run_all_providers_primary_source_expansion_resume_and_no_env() {
+    for provider in ["codex", "cursor", "claude"] {
+        let f = Fixture::new();
+        match provider {
+            "cursor" => f.fake_cursor(),
+            "claude" => f.fake_claude(),
+            _ => (),
+        }
+        f.record_workspace();
+        f.declared_env("first private value");
+        fs::write(f.workspace.join(".rabi.toml"), "[env]\nunknown = true\n").unwrap();
+        let mut command = f.command(&[
+            "run",
+            "--provider",
+            provider,
+            "--skill",
+            "x",
+            "--no-handoff",
+        ]);
+        let inherited_path = command
+            .get_envs()
+            .find(|(key, _)| *key == "PATH")
+            .unwrap()
+            .1
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let out = command
+            .env("FAKE_CAPTURE_ENV", "1")
+            .env("DECLARED_VALUE", "inherited")
+            .env("RABI_REPO_PATH", "/stale")
+            .env("RABI_WORKSPACE_PATH", "/stale")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{provider}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        assert!(stderr.contains("env applied: PATH(+2)"), "{stderr}");
+        assert!(stderr.contains("DECLARED_VALUE"), "{stderr}");
+        assert!(!stderr.contains("first private value"), "{stderr}");
+        let captured = f.captured_env();
+        assert_eq!(captured["DECLARED_VALUE"], "first private value");
+        assert_eq!(captured["EMPTY_VALUE"], "");
+        assert_eq!(captured["HOME_PATH"], f.home.to_str().unwrap());
+        assert_eq!(captured["PRIMARY_PATH"], f.repo.to_str().unwrap());
+        assert_eq!(captured["WORKSPACE_PATH"], f.workspace.to_str().unwrap());
+        assert_eq!(
+            captured["PATH"],
+            format!(
+                "{}:{}:{inherited_path}",
+                f.home.join(".cargo/bin").display(),
+                f.workspace.join("node_modules/.bin").display()
+            )
+        );
+
+        // Resume must re-read primary rather than retain the first launch's env.
+        f.declared_env("resumed private value");
+        let out = f
+            .command(&["run", "--no-handoff", "--json"])
+            .env("FAKE_CAPTURE_ENV", "1")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{provider}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!String::from_utf8_lossy(&out.stderr).contains("env applied"));
+        assert_eq!(f.captured_env()["DECLARED_VALUE"], "resumed private value");
+
+        // Selection from outside the repository keeps the same primary env source,
+        // and handoff's computed workspace variables override inherited context.
+        let out = f
+            .command_at(
+                &f.root,
+                &[
+                    "-R",
+                    f.repo.to_str().unwrap(),
+                    "run",
+                    f.workspace.to_str().unwrap(),
+                    "--json",
+                    "--",
+                ],
+                env!("CARGO_BIN_EXE_rabi"),
+            )
+            .env("FAKE_CAPTURE_ENV", "1")
+            .env("RABI_REPO_PATH", "/stale")
+            .env("RABI_WORKSPACE_PATH", "/stale")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{provider}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let captured = f.captured_env();
+        assert_eq!(captured["DECLARED_VALUE"], "resumed private value");
+        assert_eq!(captured["PRIMARY_PATH"], f.repo.to_str().unwrap());
+        assert_eq!(captured["WORKSPACE_PATH"], f.workspace.to_str().unwrap());
+        assert_eq!(captured["RABI_REPO_PATH"], f.repo.to_str().unwrap());
+        assert_eq!(
+            captured["RABI_WORKSPACE_PATH"],
+            f.workspace.to_str().unwrap()
+        );
+
+        let out = f
+            .command(&["run", "--no-env"])
+            .env("FAKE_CAPTURE_ENV", "1")
+            .env("DECLARED_VALUE", "inherited")
+            .env("RABI_REPO_PATH", "/stale")
+            .env("RABI_WORKSPACE_PATH", "/stale")
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "{provider}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        assert!(!String::from_utf8_lossy(&out.stderr).contains("env applied"));
+        let captured = f.captured_env();
+        assert_eq!(captured["DECLARED_VALUE"], "inherited");
+        assert_eq!(captured["RABI_REPO_PATH"], f.repo.to_str().unwrap());
+        assert_eq!(
+            captured["RABI_WORKSPACE_PATH"],
+            f.workspace.to_str().unwrap()
+        );
+        assert_eq!(captured["PATH"], inherited_path);
+    }
+}
+
+#[test]
+fn repository_env_codex_binary_is_resolved_before_prepended_path() {
+    let f = Fixture::new();
+    f.declared_env("configured");
+    let bin = f.workspace.join("node_modules/.bin");
+    fs::create_dir_all(&bin).unwrap();
+    let malicious = bin.join("codex");
+    fs::write(
+        &malicious,
+        "#!/bin/sh\nprintf hijacked > \"$FAKE_ROOT/hijacked\"\nexit 99\n",
+    )
+    .unwrap();
+    fs::set_permissions(&malicious, fs::Permissions::from_mode(0o755)).unwrap();
+    let out = f
+        .command(&["run", "--skill", "x", "--no-handoff"])
+        .env("FAKE_CAPTURE_ENV", "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(f.calls(), 1);
+    assert!(!f.root.join("hijacked").exists());
+    assert!(f.captured_env()["PATH"]
+        .as_str()
+        .unwrap()
+        .contains(bin.to_str().unwrap()));
+}
+
+#[test]
+fn repository_env_invalid_primary_config_fails_before_exec_child_or_provider() {
+    for config in [
+        "[env]\npath-prepend = [\"relative/bin\"]\n",
+        "[env.set]\nPATH = \"/bin\"\n",
+        "[env.set]\nDECLARED_VALUE = \"$HOME\"\n",
+    ] {
+        let f = Fixture::new();
+        fs::write(f.repo.join(".rabi.toml"), config).unwrap();
+        for args in [
+            vec![
+                "exec",
+                ".",
+                "--",
+                "sh",
+                "-c",
+                "touch \"$FAKE_ROOT/child-ran\"",
+            ],
+            vec!["run", "--skill", "x", "--no-handoff"],
+        ] {
+            let out = f.run(&args);
+            assert_eq!(
+                out.status.code(),
+                Some(1),
+                "{args:?}: {}",
+                String::from_utf8_lossy(&out.stderr)
+            );
+            let stderr = String::from_utf8(out.stderr).unwrap();
+            assert!(stderr.contains(".rabi.toml"), "{stderr}");
+            assert!(
+                stderr.contains(if config.contains("path-prepend") {
+                    "path-prepend"
+                } else if config.contains("PATH =") {
+                    "PATH"
+                } else {
+                    "DECLARED_VALUE"
+                }),
+                "{stderr}"
+            );
+            assert!(!f.root.join("child-ran").exists());
+            assert_eq!(f.calls(), 0);
+        }
+    }
+}
+
+#[test]
+fn repository_env_workspace_expansion_does_not_validate_against_primary_path() {
+    let f = Fixture::with_checkout_names("primary:checkout", "workspace");
+    fs::write(
+        f.repo.join(".rabi.toml"),
+        "[env]\npath-prepend = ['${RABI_WORKSPACE_PATH}/bin']\n",
+    )
+    .unwrap();
+    let trust = f.run(&["trust", "add"]);
+    assert!(
+        trust.status.success(),
+        "{}",
+        String::from_utf8_lossy(&trust.stderr)
+    );
+    let out = f.run(&["exec", ".", "--", "sh", "-c", "printf '%s' \"$PATH\""]);
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let path = String::from_utf8(out.stdout).unwrap();
+    assert!(
+        path.starts_with(&format!("{}:", f.workspace.join("bin").display())),
+        "{path}"
+    );
+    let out = f
+        .command(&["run", "--skill", "x", "--no-handoff"])
+        .env("FAKE_CAPTURE_ENV", "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(f.captured_env()["PATH"]
+        .as_str()
+        .unwrap()
+        .starts_with(&format!("{}:", f.workspace.join("bin").display())));
+}
+
+#[test]
+fn repository_env_workspace_expansion_rejects_colon_in_actual_workspace() {
+    let f = Fixture::with_checkout_names("repo", "workspace:checkout");
+    fs::write(
+        f.repo.join(".rabi.toml"),
+        "[env]\npath-prepend = ['${RABI_WORKSPACE_PATH}/bin']\n",
+    )
+    .unwrap();
+    // Config syntax is valid; the actual workspace makes this PATH entry invalid.
+    let trust = f.run(&["trust", "add"]);
+    assert!(
+        trust.status.success(),
+        "{}",
+        String::from_utf8_lossy(&trust.stderr)
+    );
+    for args in [
+        vec![
+            "exec",
+            ".",
+            "--",
+            "sh",
+            "-c",
+            "touch \"$FAKE_ROOT/child-ran\"",
+        ],
+        vec!["run", "--skill", "x", "--no-handoff"],
+    ] {
+        let out = f.run(&args);
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        assert!(
+            stderr.contains(".rabi.toml") && stderr.contains("path-prepend"),
+            "{stderr}"
+        );
+        assert!(!f.root.join("child-ran").exists());
+        assert_eq!(f.calls(), 0);
+    }
+}
+
+#[test]
+fn repository_env_repo_expansion_uses_primary_for_linked_config_callers() {
+    let f = Fixture::with_checkout_names("repo", "linked:checkout");
+    let target = f.root.join("target");
+    f.git(&[
+        "worktree",
+        "add",
+        "-b",
+        "feat/target",
+        target.to_str().unwrap(),
+    ]);
+    let config = "[env]\npath-prepend = ['${RABI_REPO_PATH}/bin']\n";
+    for checkout in [&f.repo, &f.workspace] {
+        fs::write(checkout.join(".rabi.toml"), config).unwrap();
+    }
+    // The invoking checkout supplies hooks/config, but is never RABI_REPO_PATH.
+    for args in [
+        vec!["setup", target.to_str().unwrap(), "--no-hooks"],
+        vec!["list"],
+        vec!["trust", "add"],
+    ] {
+        let out = f.run(&args);
+        assert!(
+            out.status.success(),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+    let out = f
+        .command_at(
+            &f.repo,
+            &[
+                "setup",
+                target.to_str().unwrap(),
+                "--no-hooks",
+                "--source-checkout",
+                f.workspace.to_str().unwrap(),
+            ],
+            env!("CARGO_BIN_EXE_rabi"),
+        )
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
+#[test]
+fn repository_env_repo_expansion_rejects_actual_primary_for_linked_config_callers() {
+    let f = Fixture::with_checkout_names("primary:checkout", "workspace");
+    let target = f.root.join("target");
+    f.git(&[
+        "worktree",
+        "add",
+        "-b",
+        "feat/target",
+        target.to_str().unwrap(),
+    ]);
+    let config = "[env]\npath-prepend = ['${RABI_REPO_PATH}/bin']\n";
+    for checkout in [&f.repo, &f.workspace] {
+        fs::write(checkout.join(".rabi.toml"), config).unwrap();
+    }
+    for args in [
+        vec!["setup", target.to_str().unwrap(), "--no-hooks"],
+        vec!["list"],
+        vec!["trust", "add"],
+    ] {
+        let out = f.run(&args);
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        assert!(stderr.contains("env.path-prepend[0]"), "{stderr}");
+    }
+}
+
+#[test]
+fn repository_env_invalid_linked_config_diagnostics_name_the_source_file() {
+    let f = Fixture::new();
+    let target = f.root.join("target");
+    f.git(&[
+        "worktree",
+        "add",
+        "-b",
+        "feat/target",
+        target.to_str().unwrap(),
+    ]);
+    fs::write(
+        f.repo.join(".rabi.toml"),
+        "[env]\npath-prepend = ['${RABI_REPO_PATH}/bin']\n",
+    )
+    .unwrap();
+    fs::write(
+        f.workspace.join(".rabi.toml"),
+        "[env]\npath-prepend = ['$UNKNOWN/bin']\n",
+    )
+    .unwrap();
+    for args in [
+        vec!["setup", target.to_str().unwrap(), "--no-hooks"],
+        vec!["list"],
+        vec!["trust", "add"],
+    ] {
+        let out = f.run(&args);
+        assert_eq!(
+            out.status.code(),
+            Some(1),
+            "{args:?}: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let stderr = String::from_utf8(out.stderr).unwrap();
+        assert!(
+            stderr.contains(f.workspace.join(".rabi.toml").to_str().unwrap()),
+            "{stderr}"
+        );
+        assert!(stderr.contains("env.path-prepend[0]"), "{stderr}");
+        assert!(
+            !stderr.contains(f.repo.join(".rabi.toml").to_str().unwrap()),
+            "{stderr}"
+        );
+    }
+    let out = f
+        .command_at(
+            &f.repo,
+            &[
+                "setup",
+                target.to_str().unwrap(),
+                "--no-hooks",
+                "--source-checkout",
+                f.workspace.to_str().unwrap(),
+            ],
+            env!("CARGO_BIN_EXE_rabi"),
+        )
+        .output()
+        .unwrap();
+    assert_eq!(
+        out.status.code(),
+        Some(1),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(String::from_utf8_lossy(&out.stderr)
+        .contains(f.workspace.join(".rabi.toml").to_str().unwrap()));
 }

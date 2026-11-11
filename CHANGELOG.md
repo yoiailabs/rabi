@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Repository `.rabi.toml` supports trusted `[env]` declarations for `run` and `exec`: ordered `path-prepend`, validated `set` variables, and limited HOME/workspace/repository expansion. Declarations always come from the primary checkout, including resumed runs. `--no-env` skips them; untrusted exec warns and continues without them. Hooks keep their existing environment. Run resolves provider binaries before applying the child PATH. (#930)
+
+### Changed (Breaking)
+
+- Older rabi binaries reject `.rabi.toml` containing `[env]` as an unknown key. Upgrade binaries before adding the declaration.
+
 ## v7.2.0 (2026-10-27)
 
 ### Added
