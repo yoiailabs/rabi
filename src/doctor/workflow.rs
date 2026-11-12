@@ -148,6 +148,21 @@ fn trigger_line(text: &str) -> (&str, bool) {
             return (text[..offset].trim_end(), !malformed && flow.is_empty());
         } else if node_start && matches!(ch, '\'' | '"') {
             quote = Some(ch);
+        } else if node_start && matches!(ch, '&' | '!') {
+            // A node property keeps the node start for what follows it.
+            while characters
+                .peek()
+                .is_some_and(|(_, next)| !next.is_whitespace())
+            {
+                characters.next();
+            }
+        } else if node_start
+            && matches!(ch, '?' | '-')
+            && characters
+                .peek()
+                .is_none_or(|(_, next)| next.is_whitespace())
+        {
+            // Explicit key and sequence entry indicators also start a node.
         } else if matches!(ch, '[' | '{') && (node_start || !flow.is_empty()) {
             flow.push(ch);
             node_start = true;
@@ -668,6 +683,14 @@ mod tests {
             ("c1b block in sequence mapping comment", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        options:\n          - a: |\n            b: \"abc\nx: # \"\n  pull_request_target:\n", true, true, true),
             ("bare sequence block body", "on:\n  push:\njobs:\n  t:\n    steps:\n      - run:\n          - |\n            \"body\n", false, false, false),
             ("sequence mapping block body", "on:\n  push:\njobs:\n  t:\n    steps:\n      - run: |\n          echo \"x\n        name: done\n", false, false, false),
+            ("e1 anchor in flow", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        options: [a, &b \"abc]\nx:\n  def\"]\n  pull_request_target:\npermissions: {}\n", true, true, true),
+            ("e2 tag in flow", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        options: [a, !!str \"abc]\nx:\n  def\"]\n  pull_request_target:\n", true, true, true),
+            ("e5 anchor in flow single", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        options: [a, &b 'abc]\nx:\n  def']\n  pull_request_target:\n", true, true, true),
+            ("g4 leading anchor in flow", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        options: [&b \"abc]\nx:\n  def\"]\n  pull_request_target:\n", true, true, true),
+            ("e4 explicit key in flow", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        options: [? \"abc]\nx:\n  def\"]\n  pull_request_target:\n", true, true, true),
+            ("g1 explicit key in flow map", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        default: {? \"abc}\nx:\n  def\": 1}\n  pull_request_target:\n", true, true, true),
+            ("e9 flow in sequence", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        options:\n          - [a, &b \"abc]\nx:\n  def\"]\n  pull_request_target:\n", true, true, true),
+            ("h1 anchored quote with hash", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        description: &a \"Issue #42\"\n  push:\n", false, false, false),
             ("nested prose block", "on:\n  workflow_dispatch:\n    inputs:\n      text:\n        description: |\n          Are * and & and ! allowed (yes)?\n", false, false, false),
         ];
         for (name, contents, pr, target, uncertain) in cases {
