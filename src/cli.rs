@@ -935,25 +935,54 @@ fn task_store(args: &[String], command: &str) -> Result<i32> {
 }
 
 fn task_status(args: &[String]) -> Result<i32> {
-    task_github(args, false)
+    task_github(args, "task status")
 }
 fn task_merge(args: &[String]) -> Result<i32> {
-    task_github(args, true)
+    task_github(args, "task merge")
 }
-fn task_github(args: &[String], merge: bool) -> Result<i32> {
-    let key = if merge { "task merge" } else { "task status" };
+fn task_approve(args: &[String]) -> Result<i32> {
+    task_github(args, "task approve")
+}
+fn task_github(args: &[String], key: &str) -> Result<i32> {
     let parsed = args::parse(args, &command_options(key), true)?;
-    if merge && !parsed.flag("dry-run") {
-        return Err(Error::validation(
-            "Only --dry-run is available for rabi task merge",
-        ));
-    }
+    let sha;
+    let action = match key {
+        "task approve" => {
+            if std::env::var_os("RABI_AGENT").is_some_and(|value| !value.is_empty()) {
+                return Err(Error::validation(
+                    "Approvals must come from outside rabi-launched agents (RABI_AGENT is set)",
+                ));
+            }
+            if parsed.positionals.len() != 1 {
+                return Err(Error::validation(
+                    "Usage: rabi task approve SEL --sha <40 hex> [--note TEXT]",
+                ));
+            }
+            sha = single_value(&parsed, "sha")?
+                .ok_or_else(|| Error::validation("Approval requires --sha <40 hex>"))?
+                .to_ascii_lowercase();
+            if sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                return Err(Error::validation(
+                    "Approval requires a full 40-hex SHA; abbreviations are not accepted",
+                ));
+            }
+            crate::task::GithubAction::Approve {
+                sha: &sha,
+                note: single_value(&parsed, "note")?,
+            }
+        }
+        "task merge" if parsed.flag("dry-run") => crate::task::GithubAction::DryRun,
+        "task merge" => crate::task::GithubAction::Merge {
+            external_review: parsed.flag("external-review"),
+        },
+        _ => crate::task::GithubAction::Status,
+    };
     if parsed.positionals.len() > 1 {
         return Err(Error::validation(format!(
             "{key} accepts at most one selector"
         )));
     }
-    let base = if merge {
+    let base = if key == "task merge" {
         single_value(&parsed, "base")?
     } else {
         None
@@ -970,7 +999,7 @@ fn task_github(args: &[String], merge: bool) -> Result<i32> {
             .map(String::as_str)
             .unwrap_or("."),
         base,
-        merge,
+        action,
     )?;
     Ok(SUCCESS)
 }
@@ -2088,7 +2117,17 @@ fn command_options(key: &str) -> Vec<Opt> {
         "task abandon" => vec![repo_flag(), value_flag("reason", None)],
         "task risk" => vec![repo_flag(), value_flag("base", None)],
         "task status" => vec![repo_flag()],
-        "task merge" => vec![repo_flag(), value_flag("base", None), flag("dry-run", None)],
+        "task merge" => vec![
+            repo_flag(),
+            value_flag("base", None),
+            flag("dry-run", None),
+            flag("external-review", None),
+        ],
+        "task approve" => vec![
+            repo_flag(),
+            value_flag("sha", None),
+            value_flag("note", None),
+        ],
         "handoff" => vec![],
         "handoff show" | "handoff path" => vec![repo_flag()],
         "handoff add" => vec![repo_flag(), value_flag("kind", None)],
@@ -2696,6 +2735,12 @@ static COMMANDS: &[Command] = &[
                 name: "status",
                 help_key: "task status",
                 run: task_status,
+                children: &[],
+            },
+            Command {
+                name: "approve",
+                help_key: "task approve",
+                run: task_approve,
                 children: &[],
             },
             Command {

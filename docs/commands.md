@@ -4,7 +4,7 @@
 
 The command and option tables below come from [`help-data.json`](../help-data.json). Use `rabi help COMMAND` for current text help or `rabi help --json` for the complete machine-readable contract. Syntax uses `[optional]`, `A|B` for alternatives, and `…`/`...` for repetition; syntax lines are not shell scripts.
 
-rabi manages workspace boundaries and preparation. Use Git for commits, pushes, and history editing; rabi’s integration scope is syncing with the base. It does not assign tasks, review or comment on PRs, merge PRs, schedule agents, manage terminal sessions, or provide sandboxing or access control. Processes, ports, databases, dependencies, and credentials remain your repository’s responsibility.
+rabi manages workspace boundaries and preparation. Use Git for commits, pushes, and history editing; rabi’s integration scope includes syncing with the base and guarded PR merges. It does not assign tasks, review or comment on PRs, schedule agents, manage terminal sessions, or provide sandboxing or access control. Processes, ports, databases, dependencies, and credentials remain your repository’s responsibility.
 
 ## Selecting and inspecting workspaces
 
@@ -86,20 +86,26 @@ Preflight prints one PASS/FAIL/N/A line per item, then its verdict, in this orde
 2. `head_consistent`: head stable throughout collection, and equal to the selected workspace's local HEAD. With `pr:N`, the local comparison is N/A; head movement still fails.
 3. `required_checks`: nonempty policy `[ci] required`; the newest run by ID for each name and expected app must be completed with success. Missing, queued, in-progress, skipped, neutral and every other conclusion fail. Same-name runs from other apps and commit statuses are reported as ignored and never satisfy requirements.
 4. `risk_tier`: classify the GitHub file list with the existing classifier and the policy at the PR base SHA. Local commit objects supplement kinds through a protected merge-base→head diff, matching GitHub's PR file comparison, while policy and attributes remain pinned to the base tip; a different path set or truncated files fails. If the merge-base cannot be computed locally, kinds are unknown. Unavailable kinds force high (`unknown:kinds`). A computed high/floor tier passes this item.
-5. `approval`: N/A, `approvals not implemented`, with computed tier/floor detail.
+5. `approval`: passes with reason `auto tier` for a tier in `[merge] auto` without floor. Otherwise requires the latest `rabi/approval` status on the exact head SHA to be success from an `[approval] approvers` login. Missing approvers, missing status, older-SHA approval, or a newer failure/pending/unlisted-creator status fails. A floor always requires approval.
 6. `review_record` and `classification_record`: N/A; local task bookkeeping does not supply review or classification evidence.
 7. `no_changes_requested`: no effective reviewer state or aggregate decision is `CHANGES_REQUESTED`.
 8. `mergeable`: GitHub must report `mergeable: true` and state `clean`, `unstable` or `has_hooks`. All other states (including blocked, behind, draft, dirty, unknown and unrecognized values) fail and report the observed state. Null/unknown fails with `GitHub has not computed mergeability`. GitHub may compute mergeability lazily and return null on the first read; that evaluation fails, so rerun later.
 
-Any failed item yields `blocked`; otherwise any N/A yields `incomplete`; otherwise the verdict is `ready`. The unimplemented approval/record items make ready unreachable in this version. Every completed evaluation exits 0, including blocked. API/auth/policy/Git errors exit 1 (missing API resources use 3); usage errors use 2 and selectors retain shared error codes. `task merge` without `--dry-run` exits 2: only `--dry-run` is available.
+Any failed item yields `blocked`; otherwise any N/A yields `incomplete`; otherwise the verdict is `ready`. The two record items remain N/A, so ready is currently unreachable. Every completed dry-run evaluation exits 0, including blocked. API/auth/policy/Git errors exit 1 (missing API resources use 3); usage errors use 2 and selectors retain shared error codes. Real merge uses the same evaluation, with the additional refusal rules below.
 
-Both commands are read-only: no merge, status, comment, label, Git fetch/ref change or rabi record write. They skip working-tree status/config and never fetch missing objects. Remote policy reads do not install objects locally. See [policy](configuration.md#repository-risk-policy) and [JSON](json.md#task-status-and-merge-preflight).
+`task status` and `task merge --dry-run` are read-only: no merge, status, comment, label, Git fetch/ref change or rabi record write. They skip working-tree status/config and never fetch missing objects. Remote policy reads do not install objects locally. See [policy](configuration.md#repository-risk-policy) and [JSON](json.md#task-status-and-merge-preflight).
 
 ```bash
 rabi task status pr:7 --json
 rabi task merge --dry-run
 rabi -R owner/repo task merge --dry-run pr:7 --base main
 ```
+
+`rabi task approve SEL --sha <40 hex> [--note TEXT] [-R REPO] [--json]` uses the same PR/workspace resolution as status. It rejects any nonempty `RABI_AGENT` before GitHub access (exit 2), rereads PR facts, and requires an open PR with a stable current head matching the full SHA (hex comparison is lowercase; abbreviations fail). It classifies at the PR base and posts exactly one success commit status to `repos/{owner}/{repo}/statuses/{sha}`, context `rabi/approval`. The description includes the tier and optional note, truncated to 140 characters. Text prints the SHA, context, state and description. An unlisted issuer can post an approval, but that status will fail merge's approver gate. This marker is a tripwire; see [safety](safety.md#task-approval-and-merge).
+
+`rabi task merge [SEL] [--external-review] [--base REF] [-R REPO] [--json]` executes after the same preflight. Any FAIL or N/A refuses with exit 4 (`refused`) and the evaluation report, without writes. `--external-review` attests that review and classification were done externally and permits only `review_record` and `classification_record` to remain N/A; approval must pass. Stable `pr:N` still has an N/A local-head comparison and cannot execute a merge. Select a workspace whose HEAD matches the PR. Agents may merge when these gates pass; the marker check applies only to approve.
+
+The command executes `gh pr merge <N> --repo <owner/repo> --<method> --match-head-commit <head_sha>` using the base policy method (default squash), without admin bypass, auto-merge, or branch deletion. It rereads the PR after the invocation, including on gh failure, and reports whether it merged, the merge commit SHA and merged head SHA. A gh failure or a PR not reported merged exits 1 with the reread facts; no write is retried automatically. Collection failures retain their usual codes. No task records are created.
 
 ## Workspace handoff
 

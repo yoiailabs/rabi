@@ -43,7 +43,7 @@ impl Repo {
         fixture.git(&["config", "user.email", "fixture@example.invalid"]);
         fixture.write(
             ".rabi/policy.toml",
-            "schema=1\ndefault-tier='low'\n[ci]\nrequired=['Rust test']\n",
+            "schema=1\ndefault-tier='low'\n[ci]\nrequired=['Rust test']\n[approval]\napprovers=['maintainer']\n",
         );
         fixture.git(&["add", "."]);
         fixture.git(&["commit", "-m", "base"]);
@@ -81,6 +81,7 @@ impl Repo {
             .env("RABI_FACTS_RESPONSES", self.root.join("responses"))
             .env("RABI_FACTS_TRACE", self.root.join("trace"))
             .env_remove("RABI_OUTPUT")
+            .env_remove("RABI_AGENT")
             .env_remove("GHQ_ROOT")
             .env_remove("GIT_CONFIG_GLOBAL")
             .env_remove("GIT_CONFIG_SYSTEM")
@@ -144,13 +145,36 @@ impl Repo {
                 "repos/example/project/commits/{}/statuses?per_page=100&page=1",
                 self.head
             ),
-            json!([{"context":"legacy","state":"success","creator":{"login":"issuer-1"}}]),
+            json!([{"context":"legacy","state":"success","creator":{"login":"issuer-1"}}, {"context":"rabi/approval","state":"success","creator":{"login":"maintainer"}}]),
         );
         responses.insert("repos/example/project/pulls/7/reviews?per_page=100&page=1".into(), json!([{"id":2,"state":"APPROVED","user":{"login":"reviewer-1"}},{"id":1,"state":"CHANGES_REQUESTED","user":{"login":"reviewer-1"}}]));
         responses
     }
     fn serve(&self, responses: &BTreeMap<String, Value>) {
         let mut script = String::from("#!/bin/sh\nset -eu\nprintf '%s\\n' \"$@\" '' >> \"$RABI_FACTS_TRACE\"\nif [ \"$*\" = 'repo view --json url,owner,name' ]; then\nprintf '%s\\n' '{\"url\":\"https://github.example.invalid/example/project\",\"owner\":{\"login\":\"example\"},\"name\":\"project\"}'\nexit 0\nfi\n[ \"$#\" = 4 ] && [ \"$1\" = api ] && [ \"$3\" = --hostname ] && [ \"$4\" = github.example.invalid ] || exit 91\ncase \"$2\" in\n");
+        let mut merged = self.pull();
+        merged["merged"] = json!(true);
+        merged["state"] = json!("closed");
+        merged["merge_commit_sha"] = json!("eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee");
+        fs::write(
+            self.root.join("responses/merged-pr"),
+            serde_json::to_vec(&merged).unwrap(),
+        )
+        .unwrap();
+        script = script.replace("[ \"$#\" = 4 ]", r#"if [ "$1" = pr ] && [ "$2" = merge ]; then
+if [ "${RABI_FAKE_MERGE_FAILURE:-}" = 1 ]; then echo 'fixture merge failed' >&2; exit 1; fi
+if [ "${RABI_FAKE_MERGE_UNCONFIRMED:-}" != 1 ]; then : > "$RABI_FACTS_RESPONSES/did-merge"; fi
+exit 0
+fi
+if [ "$1" = api ] && [ "${5:-}" = --method ] && [ "${6:-}" = POST ]; then
+printf '%s\n' '{}'
+exit 0
+fi
+if [ "$1" = api ] && [ "$2" = repos/example/project/pulls/7 ] && [ -f "$RABI_FACTS_RESPONSES/did-merge" ]; then
+cat "$RABI_FACTS_RESPONSES/merged-pr"
+exit 0
+fi
+[ "$#" = 4 ]"#);
         for (index, (path, response)) in responses.iter().enumerate() {
             fs::write(
                 self.root.join("responses").join(index.to_string()),
@@ -277,7 +301,7 @@ fn workspace_branch_and_recorded_pr_and_global_repo_selection() {
     assert!(text.status.success());
     let text = String::from_utf8(text.stdout).unwrap();
     assert!(text.contains("PASS required_checks"));
-    assert!(text.contains("N/A approval"));
+    assert!(text.contains("PASS approval"));
     assert!(text.contains("Verdict: incomplete"));
     let text = repo.rabi(&["task", "status"]);
     assert!(text.status.success());
@@ -287,17 +311,14 @@ fn workspace_branch_and_recorded_pr_and_global_repo_selection() {
 }
 
 #[test]
-fn merge_requires_dry_run_before_any_github_call() {
+fn merge_without_external_review_reports_preflight_and_refuses() {
     let repo = Repo::new();
     let output = repo.rabi(&["task", "merge", "--json"]);
-    assert_eq!(output.status.code(), Some(2));
+    assert_eq!(output.status.code(), Some(4));
     let error: Value = serde_json::from_slice(&output.stdout).unwrap();
-    assert_eq!(error["error"]["code"], "usage");
-    assert!(error["error"]["message"]
-        .as_str()
-        .unwrap()
-        .contains("Only --dry-run is available"));
-    assert!(!repo.root.join("trace").exists());
+    assert_eq!(error["error"]["code"], "refused");
+    assert_eq!(error["data"]["verdict"], "incomplete");
+    repo.assert_get_only();
 }
 
 #[test]
@@ -425,7 +446,7 @@ fn advanced_base_uses_merge_base_for_kinds_and_base_tip_for_policy() {
     repo.write("docs/base-only.md", "base advance\n");
     repo.write(
         ".rabi/policy.toml",
-        "schema=1\ndefault-tier='medium'\n[ci]\nrequired=['Rust test']\n",
+        "schema=1\ndefault-tier='medium'\n[ci]\nrequired=['Rust test']\n[approval]\napprovers=['maintainer']\n",
     );
     repo.git(&["add", "."]);
     repo.git(&["commit", "-m", "advance base"]);
@@ -538,4 +559,327 @@ fn check_run_total_count_table() {
         }
     }
     repo.assert_get_only();
+}
+
+#[test]
+fn dry_run_and_real_merge_share_evaluation_table() {
+    // Every row uses the identical fake snapshot for dry-run and execution.
+    for (name, external, selector, failure, allowed) in [
+        ("passing", true, ".", "", true),
+        ("records incomplete", false, ".", "", false),
+        ("local comparison incomplete", true, "pr:7", "", false),
+        ("draft", true, ".", "draft", false),
+        ("closed", true, ".", "closed", false),
+        ("wrong base", true, ".", "base", false),
+        ("check failed", true, ".", "check", false),
+        ("approval missing", true, ".", "approval", false),
+        ("approval pending", true, ".", "pending", false),
+        ("changes requested", true, ".", "review", false),
+        ("unmergeable", true, ".", "mergeable", false),
+        ("truncated", true, ".", "truncated", false),
+        ("head mismatch", true, ".", "head", false),
+    ] {
+        let repo = Repo::new();
+        let mut responses = repo.responses();
+        let pull = responses.get_mut("repos/example/project/pulls/7").unwrap();
+        match failure {
+            "draft" => pull["draft"] = json!(true),
+            "closed" => pull["state"] = json!("closed"),
+            "base" => pull["base"]["ref"] = json!("release"),
+            "mergeable" => pull["mergeable"] = json!(false),
+            "truncated" => pull["changed_files"] = json!(102),
+            _ => (),
+        }
+        let statuses = format!(
+            "repos/example/project/commits/{}/statuses?per_page=100&page=1",
+            repo.head
+        );
+        match failure {
+            "check" => responses
+                .get_mut(&format!(
+                    "repos/example/project/commits/{}/check-runs?filter=all&per_page=100&page=2",
+                    repo.head
+                ))
+                .unwrap()["check_runs"][0]["conclusion"] = json!("failure"),
+            "approval" => {
+                responses.insert(statuses, json!([]));
+            }
+            "pending" => {
+                responses.insert(statuses, json!([
+                {"context":"rabi/approval","state":"pending","creator":{"login":"maintainer"}},
+                {"context":"rabi/approval","state":"success","creator":{"login":"maintainer"}}
+            ]));
+            }
+            "review" => {
+                responses.insert(
+                    "repos/example/project/pulls/7/reviews?per_page=100&page=1".into(),
+                    json!([{"id":3,"state":"CHANGES_REQUESTED","user":{"login":"reviewer-1"}}]),
+                );
+            }
+            "head" => {
+                repo.git(&["commit", "--allow-empty", "-m", "local extra"]);
+            }
+            _ => (),
+        }
+        repo.serve(&responses);
+        let dry = repo.json(&["task", "merge", selector, "--dry-run", "--json"]);
+        let dry_items = dry["data"]["items"].as_array().unwrap();
+        let expected = dry_items.iter().all(|item| {
+            item["result"] == "pass"
+                || (external
+                    && item["result"] == "not_evaluated"
+                    && matches!(
+                        item["id"].as_str(),
+                        Some("review_record" | "classification_record")
+                    ))
+        });
+        assert_eq!(expected, allowed, "{name}: {}", dry["data"]);
+        let mut args = vec!["task", "merge", selector, "--json"];
+        if external {
+            args.push("--external-review");
+        }
+        // An agent marker must not prohibit merge after approval passes.
+        let output = repo
+            .command(env!("CARGO_BIN_EXE_rabi"), &args)
+            .env("RABI_AGENT", "1")
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.success(),
+            allowed,
+            "{name}: {} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let real: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let evaluation = if allowed {
+            &real["data"]["preflight"]
+        } else {
+            &real["data"]
+        };
+        assert_eq!(evaluation, &dry["data"], "{name}");
+        if !allowed {
+            assert_eq!(output.status.code(), Some(4), "{name}");
+            assert_eq!(real["error"]["code"], "refused");
+            repo.assert_get_only();
+        } else {
+            assert_eq!(dry["data"]["verdict"], "incomplete");
+            let writes: Vec<_> = repo
+                .trace()
+                .into_iter()
+                .filter(|argv| argv[0] == "pr")
+                .collect();
+            assert_eq!(
+                writes,
+                vec![vec![
+                    "pr",
+                    "merge",
+                    "7",
+                    "--repo",
+                    "example/project",
+                    "--squash",
+                    "--match-head-commit",
+                    &repo.head
+                ]]
+            );
+            assert_eq!(real["data"]["merged"], true);
+            assert_eq!(
+                real["data"]["mergeCommitSha"],
+                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            );
+            assert_eq!(real["data"]["mergedHeadSha"], repo.head);
+            assert_eq!(real["data"]["facts"]["pr"]["state"], "closed");
+        }
+    }
+}
+
+#[test]
+fn approve_refusal_table_never_writes() {
+    for (name, marker, sha, state) in [
+        ("agent", Some("1"), "current", "open"),
+        ("nonempty marker zero", Some("0"), "current", "open"),
+        (
+            "mismatched SHA",
+            None,
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "open",
+        ),
+        ("abbreviated", None, "abcdef0", "open"),
+        (
+            "invalid hex",
+            None,
+            "zzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzzz",
+            "open",
+        ),
+        ("closed", None, "current", "closed"),
+    ] {
+        let repo = Repo::new();
+        let mut responses = repo.responses();
+        responses.get_mut("repos/example/project/pulls/7").unwrap()["state"] = json!(state);
+        repo.serve(&responses);
+        let sha = if sha == "current" { &repo.head } else { sha };
+        let mut command = repo.command(
+            env!("CARGO_BIN_EXE_rabi"),
+            &["task", "approve", "pr:7", "--sha", sha, "--json"],
+        );
+        if let Some(marker) = marker {
+            command.env("RABI_AGENT", marker);
+        }
+        let output = command.output().unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(2),
+            "{name}: {}",
+            String::from_utf8_lossy(&output.stdout)
+        );
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["error"]["code"], "usage");
+        if marker.is_some() {
+            assert!(!repo.root.join("trace").exists());
+            assert!(value["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("outside rabi-launched agents"));
+        } else if repo.root.join("trace").exists() {
+            repo.assert_get_only();
+        }
+    }
+}
+
+#[test]
+fn approve_posts_one_exact_status_with_tier_note_and_truncation() {
+    for note in [
+        None,
+        Some("Reviewed this commit".to_string()),
+        Some("é".repeat(160)),
+    ] {
+        let repo = Repo::new();
+        let upper = repo.head.to_ascii_uppercase();
+        let mut args = vec!["task", "approve", "pr:7", "--sha", &upper, "--json"];
+        if let Some(note) = &note {
+            args.extend(["--note", note]);
+        }
+        let output = repo
+            .command(env!("CARGO_BIN_EXE_rabi"), &args)
+            .env("RABI_AGENT", "")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{} {}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let description: String = format!(
+            "rabi approval: low{}",
+            note.as_ref()
+                .map_or(String::new(), |note| format!(": {note}"))
+        )
+        .chars()
+        .take(140)
+        .collect();
+        assert_eq!(value["command"], "task approve");
+        assert_eq!(value["data"]["sha"], repo.head);
+        assert_eq!(value["data"]["description"], description);
+        assert_eq!(value["data"]["tier"], "low");
+        let posts: Vec<_> = repo
+            .trace()
+            .into_iter()
+            .filter(|argv| argv.iter().any(|arg| arg == "POST"))
+            .collect();
+        assert_eq!(
+            posts,
+            vec![vec![
+                "api",
+                &format!("repos/example/project/statuses/{}", repo.head),
+                "--hostname",
+                "github.example.invalid",
+                "--method",
+                "POST",
+                "-f",
+                "state=success",
+                "-f",
+                "context=rabi/approval",
+                "-f",
+                &format!("description={description}")
+            ]]
+        );
+        assert!(!repo.trace().iter().any(|argv| argv[0] == "pr"));
+    }
+}
+
+#[test]
+fn merge_failure_and_unconfirmed_merge_report_reread_facts() {
+    for variable in ["RABI_FAKE_MERGE_FAILURE", "RABI_FAKE_MERGE_UNCONFIRMED"] {
+        let repo = Repo::new();
+        let output = repo
+            .command(
+                env!("CARGO_BIN_EXE_rabi"),
+                &["task", "merge", ".", "--external-review", "--json"],
+            )
+            .env(variable, "1")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(value["ok"], false);
+        assert_eq!(value["data"]["merged"], false);
+        assert_eq!(value["data"]["facts"]["pr"]["state"], "open");
+        let trace = repo.trace();
+        let index = trace.iter().position(|argv| argv[0] == "pr").unwrap();
+        assert!(trace[index + 1..]
+            .iter()
+            .any(|argv| argv[1] == "repos/example/project/pulls/7"));
+        assert_eq!(trace.iter().filter(|argv| argv[0] == "pr").count(), 1);
+    }
+}
+
+#[test]
+fn merge_uses_base_policy_method_and_auto_tier_table() {
+    for (method, flag) in [
+        ("squash", "--squash"),
+        ("merge", "--merge"),
+        ("rebase", "--rebase"),
+    ] {
+        let mut repo = Repo::new();
+        repo.git(&["checkout", "main"]);
+        repo.write(".rabi/policy.toml", &format!("schema=1\ndefault-tier='low'\n[ci]\nrequired=['Rust test']\n[merge]\nauto=['low']\nmethod='{method}'\n"));
+        repo.git(&["add", "."]);
+        repo.git(&["commit", "-m", "merge policy"]);
+        repo.base = repo.git(&["rev-parse", "HEAD"]);
+        repo.git(&["checkout", "topic"]);
+        let mut responses = repo.responses();
+        responses.insert(
+            format!(
+                "repos/example/project/commits/{}/statuses?per_page=100&page=1",
+                repo.head
+            ),
+            json!([]),
+        );
+        repo.serve(&responses);
+        let output = repo.json(&["task", "merge", ".", "--external-review", "--json"]);
+        assert_eq!(
+            output["data"]["preflight"]["items"][4]["reason"],
+            "auto tier"
+        );
+        let merges: Vec<_> = repo
+            .trace()
+            .into_iter()
+            .filter(|argv| argv[0] == "pr")
+            .collect();
+        assert_eq!(
+            merges,
+            vec![vec![
+                "pr",
+                "merge",
+                "7",
+                "--repo",
+                "example/project",
+                flag,
+                "--match-head-commit",
+                &repo.head
+            ]]
+        );
+    }
 }

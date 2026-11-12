@@ -90,3 +90,13 @@ Only rulesets are inspected through `rules/branches`; classic branch protection 
 ## Local task bookkeeping
 
 Task records live under `state_dir()/repositories/<common-dir hash>/tasks/`, outside the repository and workspaces, so agents committing workspace files do not include them by accident. Directories use 0700 and files 0600; task writes use an exclusive file lock, atomic record replacement and append-only events. New tasks are published from staging directories only after both files are complete. Tasks and handoff memory share repository identity validation through `repository.json`; an unreadable task reservation blocks creation with an error naming its ID. These records are local bookkeeping claims, not GitHub evidence or an authorization to merge. The four store commands do not launch agents, create workspaces or branches, push, or call GitHub. See [task store details](commands.md#local-task-store).
+
+## Task approval and merge
+
+`rabi/approval` means a process holding a GitHub token with status write for this repository ran `rabi task approve`, or called the API, for this exact commit. It does not prove a human looked. Any process running as your user, including agents rabi launches, can produce it. It prevents skipped steps. It does not stop a compromised agent.
+
+The `RABI_AGENT` refusal is a tripwire, not a security boundary. Every provider launched by `rabi run` inherits `RABI_AGENT=1`, including resume and `--no-handoff`. Approve refuses any nonempty value, but a process can unset it or call GitHub directly. Protect credentials and repository permissions independently.
+
+Merge uses the policy from the PR base SHA and the same preflight as dry-run. An auto tier requires no floor; high is never allowed in `merge.auto`. Otherwise the latest `rabi/approval` status on the exact head must succeed and come from an allowed policy approver. Earlier-head approvals and superseded successes do not count. `--external-review` covers only absent review/classification records and cannot waive approval, failed checks, or other unevaluated items. Agents may execute merge when gates pass.
+
+The write uses `--match-head-commit` to guard against head movement after collection. It does not use `--admin`, `--auto` or `--delete-branch`. Facts are reread even when gh fails; a nonzero result does not prove the remote write had no effect. No automatic write retry occurs. Task status and merge dry-run remain read-only.

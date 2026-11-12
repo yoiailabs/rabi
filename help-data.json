@@ -90,7 +90,7 @@
     },
     {
       "name": "task",
-      "description": "Manage local tasks and inspect risk, GitHub facts and merge preflight"
+      "description": "Manage local tasks, inspect PR facts, approve commits and gate merges"
     },
     {
       "name": "doctor",
@@ -2175,8 +2175,8 @@
     },
     "task": {
       "name": "task",
-      "description": "Manage local tasks and inspect risk, GitHub facts and merge preflight",
-      "usage": "rabi task new|list|show|abandon|risk|status|merge [arguments] [options]",
+      "description": "Manage local tasks, inspect PR facts, approve commits and gate merges",
+      "usage": "rabi task new|list|show|abandon|risk|status|approve|merge [arguments] [options]",
       "options": [
         {
           "name": "repo",
@@ -2302,15 +2302,70 @@
         "GitHub facts use gh api GET only. No merges, comments, statuses, labels, fetches, refs or records are written."
       ]
     },
+    "task approve": {
+      "name": "task approve",
+      "description": "Post an approval status for the exact current PR head",
+      "usage": "rabi task approve SEL --sha <40 hex> [--note TEXT] [options]",
+      "options": [
+        {
+          "name": "sha",
+          "type": "string",
+          "description": "Required full 40-hex current PR head SHA; abbreviations are rejected"
+        },
+        {
+          "name": "note",
+          "type": "string",
+          "description": "Optional approval note; tier and note are truncated to 140 characters"
+        },
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Repository to operate on; uses the shared workspace selector rules",
+          "example": "--repo owner/repo"
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "SEL uses task status resolution. The PR must be open and its current head must match --sha (case-insensitive hex comparison).",
+        "Refuses nonempty RABI_AGENT with exit 2; approvals must come from outside rabi-launched agents. This marker is a tripwire, not a security boundary.",
+        "Posts one success commit status with context rabi/approval and a description containing the tier classified using the PR base policy."
+      ]
+    },
     "task merge": {
       "name": "task merge",
-      "description": "Evaluate read-only merge preflight",
-      "usage": "rabi task merge --dry-run [SEL] [--base REF] [options]",
+      "description": "Evaluate preflight and merge an approved PR",
+      "usage": "rabi task merge [SEL] [--dry-run] [--external-review] [--base REF] [options]",
       "options": [
         {
           "name": "dry-run",
           "type": "boolean",
-          "description": "Required: evaluate only; never merge or write"
+          "description": "Evaluate only; never merge or write"
+        },
+        {
+          "name": "external-review",
+          "type": "boolean",
+          "description": "Attest external review and classification; bypass only the two missing task record items"
         },
         {
           "name": "base",
@@ -2348,8 +2403,10 @@
       ],
       "notes": [
         "SEL defaults to current workspace; pr:N selects any PR in the selected repository. Workspace selection uses its recorded PR or exactly one open same-repository PR for its branch.",
-        "GitHub facts use gh api GET only. No merges, comments, statuses, labels, fetches, refs or records are written.",
-        "Completed evaluations exit 0 with blocked, incomplete or ready. Approvals and task records are not evaluated; only --dry-run is available. Policy is read from the PR base SHA."
+        "Dry-run uses read-only GET facts and exits 0 for blocked, incomplete or ready. Policy is read from the PR base SHA.",
+        "Real merges refuse failed or unevaluated items with exit 4. --external-review covers only review_record and classification_record; approval must pass. pr:N still leaves the local head comparison unevaluated.",
+        "Approval passes for a non-floor auto tier, or the latest successful rabi/approval status on the exact head from a policy approver. High cannot be auto.",
+        "Merge uses the policy method (squash by default) with --match-head-commit, then re-reads facts even after a gh failure. No admin bypass, auto-merge or branch deletion."
       ]
     },
     "doctor": {

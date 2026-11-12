@@ -521,6 +521,45 @@ pub fn current_repo_name(cwd: &Path) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+/// The only status write used by task approve; callers cannot select an endpoint or state.
+pub(crate) fn post_approval(
+    directory: &Path,
+    repo: &RepoIdentity,
+    sha: &str,
+    description: &str,
+) -> Result<()> {
+    if sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(Error::validation("Approval requires a full 40-hex SHA"));
+    }
+    let path = format!("repos/{}/{}/statuses/{sha}", repo.owner, repo.name);
+    let description = format!("description={description}");
+    let response = process::raw(
+        "gh",
+        &[
+            "api",
+            &path,
+            "--hostname",
+            &repo.host,
+            "--method",
+            "POST",
+            "-f",
+            "state=success",
+            "-f",
+            "context=rabi/approval",
+            "-f",
+            &description,
+        ],
+        Some(directory),
+    )?;
+    if response.code != 0 {
+        return Err(Error::msg(format!(
+            "GitHub approval failed: {}",
+            first_detail(&response)
+        )));
+    }
+    Ok(())
+}
+
 pub(crate) fn gh_api(directory: &Path, host: &str, path: &str) -> Result<process::Captured> {
     gh_api_read(directory, host, path, false)
 }

@@ -1,4 +1,4 @@
-//! Read-only GitHub REST facts. Every request uses the shared GET-only helper.
+//! GitHub REST facts use the shared GET-only helper; task writes are explicit.
 use std::{collections::BTreeMap, path::Path};
 
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -33,6 +33,9 @@ pub(crate) struct Pull {
     pub number: u64,
     pub state: String,
     pub draft: bool,
+    #[serde(default)]
+    pub merged: bool,
+    pub merge_commit_sha: Option<String>,
     pub base_ref: String,
     pub base_sha: String,
     pub head_ref: String,
@@ -71,6 +74,7 @@ pub(crate) struct CheckRun {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CommitStatus {
+    pub sha: String,
     pub context: String,
     pub state: String,
     pub creator: Option<String>,
@@ -88,6 +92,9 @@ struct RawPr {
     number: u64,
     state: String,
     draft: bool,
+    #[serde(default)]
+    merged: bool,
+    merge_commit_sha: Option<String>,
     base: RawRef,
     head: RawRef,
     mergeable: Option<bool>,
@@ -122,6 +129,36 @@ impl<'a> Client<'a> {
         let repo = repo_info(root)?;
         let prefix = format!("repos/{}/{}", repo.owner, repo.name);
         Ok(Self { root, repo, prefix })
+    }
+
+    pub fn approve(&self, sha: &str, description: &str) -> Result<()> {
+        super::post_approval(self.root, &self.repo, sha, description)
+    }
+
+    pub fn merge(&self, number: u64, method: &str, sha: &str) -> Result<()> {
+        let repository = format!("{}/{}", self.repo.owner, self.repo.name);
+        let response = crate::process::raw_with_env(
+            "gh",
+            &[
+                "pr",
+                "merge",
+                &number.to_string(),
+                "--repo",
+                &repository,
+                method,
+                "--match-head-commit",
+                sha,
+            ],
+            Some(self.root),
+            &[("GH_HOST", &self.repo.host)],
+        )?;
+        if response.code != 0 {
+            return Err(Error::msg(format!(
+                "GitHub merge failed: {}",
+                super::first_detail(&response)
+            )));
+        }
+        Ok(())
     }
 
     fn get(&self, suffix: &str) -> Result<Value> {
@@ -320,6 +357,7 @@ impl<'a> Client<'a> {
                 }
                 let status: RawStatus = decode(value)?;
                 Ok(CommitStatus {
+                    sha: raw.head.sha.clone(),
                     context: status.context,
                     state: status.state,
                     creator: status.creator.map(|user| user.login),
@@ -368,7 +406,9 @@ impl<'a> Client<'a> {
             final_head_sha: final_pr.head.sha,
             pr: Pull {
                 number,
-                state: raw.state,
+                state: final_pr.state,
+                merged: final_pr.merged,
+                merge_commit_sha: final_pr.merge_commit_sha,
                 draft: raw.draft,
                 base_ref: raw.base.r#ref,
                 base_sha: raw.base.sha,

@@ -80,14 +80,15 @@ Read [removal safety and retries](docs/safety.md) and [sync strategies](docs/syn
 | `rabi repo forget` | Drop a registration |
 | `rabi run` | Launch or resume the workspace parent session |
 | `rabi doctor` | Read-only GitHub diagnostics; lists workflow files for manual review without parsing workflow YAML |
-| `rabi task` | Manage local tasks and inspect task evidence |
+| `rabi task` | Manage local tasks; inspect, approve and merge PR changes |
 | `rabi task new` | Record intent and reserve an unused branch name locally |
 | `rabi task list` | List non-terminal local tasks (`--all` includes terminal tasks) |
 | `rabi task show` | Show a local task and its append-only event history in text or camelCase JSON |
 | `rabi task abandon` | Abandon a non-terminal local task |
 | `rabi task risk` | Classify committed changes using the base commit risk policy |
 | `rabi task status` | Read GitHub PR facts without writes |
-| `rabi task merge` | Evaluate merge preflight with required `--dry-run` (no writes) |
+| `rabi task approve` | Approve the exact PR head with a commit status |
+| `rabi task merge` | Merge after preflight and approval; `--dry-run` evaluates only |
 | `rabi skill` | Skill discovery |
 | `rabi skill list` | List skill names, sources and paths |
 | `rabi trust` | Hooks, run, and repository environment trust |

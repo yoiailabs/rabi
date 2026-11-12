@@ -166,7 +166,7 @@ app = "github-actions"
 
 Policy globs are case-sensitive and anchored at the repository root, matching the entire path. Leading `/`, trailing `/`, and repeated `//` are rejected with an error naming `rule[i].paths`. `*` matches zero or more characters within one path segment, `?` matches one character within a segment, and `**` matches across segments. `**/` can match zero directories. A trailing `/**` matches everything below that directory (`docs/**` matches `docs/a/b.md`, not `docsx/a` or the file `docs`). Dotfiles match normally. All other characters are literal: no basename search, implicit leading-slash removal, negation, brackets, or backslash escapes. Use `**/*.md` for Markdown at any depth, or `*.md` only at the root.
 
-Built-in floor paths `.rabi/policy.toml`, `.rabi.toml`, and the `.github/` prefix are compared ASCII case-insensitively and always yield high and `floor: true`, regardless of policy rules. This also protects spellings such as `.RABI.TOML`, `.rabi/Policy.toml`, and `.GitHub/workflows/check.yml` on case-insensitive filesystems. The `.github/` prefix check works on raw bytes even if the remaining path is non-UTF-8. A floor indicates that a human is always required; this read-only command does not enforce a merge gate. Policy floor rules add to these built-ins.
+Built-in floor paths `.rabi/policy.toml`, `.rabi.toml`, and the `.github/` prefix are compared ASCII case-insensitively and always yield high and `floor: true`, regardless of policy rules. This also protects spellings such as `.RABI.TOML`, `.rabi/Policy.toml`, and `.GitHub/workflows/check.yml` on case-insensitive filesystems. The `.github/` prefix check works on raw bytes even if the remaining path is non-UTF-8. A floor indicates that a human is always required; `task risk` itself is read-only; `task merge` requires explicit approval for floors. Policy floor rules add to these built-ins.
 
 Binary files (numstat `-` counts) contribute zero changed lines. Attribute lookup for the diff is pinned to the base commit, so `.gitattributes` edits on the head branch, staged, or uncommitted cannot change binary detection or line totals. Symlink mode 120000 or submodule mode 160000 on either side raises the file to that kind's tier. A new executable file (100755), or a mode change to/from 100755 (including deletion), raises it to `exec-bit`; ordinary content edits of an existing executable alone do not. Kinds can raise, never lower, a path's tier. Optional limits must be positive integers: strictly exceeding total added+deleted lines or changed-file count raises the overall tier to high; equality is allowed. Limits do not set floor.
 
@@ -174,6 +174,23 @@ Non-UTF-8 paths, unrecognized statuses, or malformed diff data always classify h
 
 Only committed changes are classified; the working tree and index are not read.
 
-The optional `[ci]` section declares required check runs for `task merge --dry-run`. `required` is an array of nonempty check names or `{ name, app }` tables; tables require both fields and reject unknown keys. String entries use `[ci] app`, which defaults to `github-actions`. Names and app slugs cannot be empty or whitespace-only. Check names and app slugs match exactly. A missing or empty `required` array blocks preflight with `no_required_checks`; no checks are inferred from GitHub branch protection. Other keys and types are rejected. `task risk` accepts this section without changing its classification.
+The optional `[ci]` section declares required check runs for `task merge` and `task merge --dry-run`. `required` is an array of nonempty check names or `{ name, app }` tables; tables require both fields and reject unknown keys. String entries use `[ci] app`, which defaults to `github-actions`. Names and app slugs cannot be empty or whitespace-only. Check names and app slugs match exactly. A missing or empty `required` array blocks preflight with `no_required_checks`; no checks are inferred from GitHub branch protection. Other keys and types are rejected. `task risk` accepts this section without changing its classification.
 
 Merge preflight reads the policy at the PR's **base SHA**, independently of `--base` (which selects the expected base branch). It reads local commit objects when available, otherwise uses read-only GitHub tree/blob endpoints. Neither path fetches or installs Git objects. GitHub file paths, statuses, renames, additions and deletions drive classification. Local merge-base→head tree diffs supplement file kinds only when both commits and their merge-base are available locally, matching GitHub's PR comparison; their path set must match GitHub's. Policy and attributes stay pinned to the base tip. Missing local commits or an unavailable merge-base force high with `unknown:kinds`; truncated GitHub files prevent classification.
+
+The optional merge and approval sections also live in this base-commit policy:
+
+```toml
+[merge]
+auto = ["low", "medium"]
+method = "squash"
+
+[approval]
+approvers = ["maintainer-login"]
+```
+
+`merge.auto` defaults to an empty array: every tier requires an explicit approval. It accepts only a subset of `low` and `medium`; `high` is rejected. A floor always requires explicit approval. `merge.method` accepts `squash` (default), `merge`, or `rebase`. `approval.approvers` defaults to an empty array of logins; empty or whitespace-only entries are invalid. Unknown keys, invalid tiers/methods and wrong types fail policy parsing with exit 1. These sections are accepted by `task risk` without changing classification.
+
+Outside an auto tier, merge requires the latest `rabi/approval` commit status for the exact current head SHA to be `success`, with its creator login in `approval.approvers` (case-insensitive login comparison). An empty approvers list fails clearly; a newer failure, pending status, or unlisted creator supersedes an older success. Approval on an earlier head never counts. Both merge modes read this configuration from the PR base SHA, independently of `--base`. The marker and token limitations are described in [safety](safety.md#task-approval-and-merge).
+
+Every provider launched by `rabi run` receives `RABI_AGENT=1` unconditionally, including fresh sessions, resume, and `--no-handoff`. Repository `[env]` cannot override or remove it because all `RABI*` keys are reserved.
