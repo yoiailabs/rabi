@@ -20,7 +20,9 @@ Exec preserves child output and exit status, ignores `RABI_OUTPUT`, and refuses 
 
 ## Task risk
 
-`rabi task risk [SEL] [--base REF] [--json|--output text|json]` classifies committed changes in the selected workspace, including the primary checkout. SEL defaults to dot and uses the same selectors and global `-R/--repo REF` behavior as show/path. `rabi task` requires its `risk` subcommand; missing or unknown subcommands exit 2.
+`rabi task risk [SEL] [--base REF] [--json|--output text|json]` classifies committed changes in the selected workspace, including the primary checkout. SEL defaults to dot and uses the same selectors and global `-R/--repo REF` behavior as show/path. Bare `rabi task` prints help and exits 0, like other command groups; unknown subcommands exit 2.
+
+`task risk` requires Git 2.44 or later. Task object queries pass the top-level `--no-lazy-fetch` option, and diff queries additionally pass `--attr-source=<base sha>`. Git versions that reject either option fail with exit 1 (`git_failed`) and a minimum-version explanation; the command never silently ignores these protections. Policy presence is checked by reading committed tree objects, without missing-path diagnostics that stat the working tree.
 
 The default base is `origin/<default branch>`, determined through the existing local default-branch lookup. It must resolve locally; there is no fetch or fallback to a different base. `--base REF` selects another commit-ish. The command resolves base and HEAD to commit SHAs, finds their merge-base, and inspects the committed diff from that merge-base to HEAD with rename detection. The policy always comes from the **base tip's committed** `.rabi/policy.toml`, even when the merge-base is older. Head and working-tree policy edits cannot change the selected rules; committed policy edits themselves hit the built-in floor.
 

@@ -60,16 +60,23 @@ fn raise(file: &mut FileRisk, tier: Tier, reason: impl Into<String>) {
 fn classify_path(policy: &Policy, path: &[u8], file: &mut FileRisk) {
     // These ASCII built-ins remain identifiable even when the rest of a path
     // cannot be decoded. Unknown encodings must not remove a built-in floor.
-    let builtin = match path {
-        b".rabi/policy.toml" => Some(".rabi/policy.toml"),
-        b".rabi.toml" => Some(".rabi.toml"),
-        _ if path.starts_with(b".github/") => Some(".github/**"),
-        _ => None,
+    let builtin = if path.eq_ignore_ascii_case(b".rabi/policy.toml") {
+        Some(".rabi/policy.toml")
+    } else if path.eq_ignore_ascii_case(b".rabi.toml") {
+        Some(".rabi.toml")
+    } else if path
+        .get(..8)
+        .is_some_and(|prefix| prefix.eq_ignore_ascii_case(b".github/"))
+    {
+        Some(".github/**")
+    } else {
+        None
     };
     let Ok(path) = std::str::from_utf8(path) else {
+        file.floor = true;
         raise(file, Tier::High, "unknown:path-encoding");
+        raise(file, Tier::High, "floor:unknown:path-encoding");
         if let Some(pattern) = builtin {
-            file.floor = true;
             raise(file, Tier::High, format!("floor:builtin:{pattern}"));
         }
         return;
@@ -273,7 +280,7 @@ mod tests {
         unknown.status = "X".into();
         let mut non_utf8 = entry("docs/a");
         non_utf8.path.push(0xff);
-        let mut non_utf8_floor = entry(".github/a");
+        let mut non_utf8_floor = entry(".GitHub/a");
         non_utf8_floor.path.push(0xff);
         let mut raw_unknown = entry("docs/raw");
         raw_unknown.unknown.push("unknown:raw".into());
@@ -293,7 +300,7 @@ mod tests {
             Case { name: "exec removed", policy: low, entries: vec![noexec], tier: High, floor: false, files: vec![(High, false, vec!["default-tier", "kind:exec-bit"])], reasons: vec!["default-tier", "kind:exec-bit"] },
             Case { name: "empty", policy: "schema = 1", entries: vec![], tier: Low, floor: false, files: vec![], reasons: vec!["no changes"] },
             Case { name: "unknown status", policy: docs, entries: vec![unknown], tier: High, floor: false, files: vec![(High, false, vec!["rule:docs/**", "unknown:status"])], reasons: vec!["rule:docs/**", "unknown:status"] },
-            Case { name: "unknown encoding", policy: low, entries: vec![non_utf8], tier: High, floor: false, files: vec![(High, false, vec!["unknown:path-encoding"])], reasons: vec!["unknown:path-encoding"] },
+            Case { name: "unknown encoding", policy: "schema = 1\ndefault-tier = 'low'\n[[rule]]\npaths = ['private/**']\nfloor = true", entries: vec![non_utf8], tier: High, floor: true, files: vec![(High, true, vec!["unknown:path-encoding", "floor:unknown:path-encoding"])], reasons: vec!["unknown:path-encoding", "floor:unknown:path-encoding"] },
             Case { name: "unknown raw", policy: docs, entries: vec![raw_unknown], tier: High, floor: false, files: vec![(High, false, vec!["rule:docs/**", "unknown:raw"])], reasons: vec!["rule:docs/**", "unknown:raw"] },
         ];
         cases.push(Case {
@@ -305,14 +312,27 @@ mod tests {
             files: vec![(
                 High,
                 true,
-                vec!["unknown:path-encoding", "floor:builtin:.github/**"],
+                vec![
+                    "unknown:path-encoding",
+                    "floor:unknown:path-encoding",
+                    "floor:builtin:.github/**",
+                ],
             )],
-            reasons: vec!["unknown:path-encoding", "floor:builtin:.github/**"],
+            reasons: vec![
+                "unknown:path-encoding",
+                "floor:unknown:path-encoding",
+                "floor:builtin:.github/**",
+            ],
         });
         for (path, reason) in [
             (".rabi/policy.toml", "floor:builtin:.rabi/policy.toml"),
             (".rabi.toml", "floor:builtin:.rabi.toml"),
             (".github/workflows/test.yml", "floor:builtin:.github/**"),
+            (".RABI.TOML", "floor:builtin:.rabi.toml"),
+            (".Rabi.toml", "floor:builtin:.rabi.toml"),
+            (".rabi/Policy.toml", "floor:builtin:.rabi/policy.toml"),
+            (".RABI/POLICY.TOML", "floor:builtin:.rabi/policy.toml"),
+            (".GitHub/workflows/test.yml", "floor:builtin:.github/**"),
         ] {
             cases.push(Case {
                 name: "builtin floor",

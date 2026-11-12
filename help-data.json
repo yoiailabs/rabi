@@ -2204,7 +2204,7 @@
         }
       ],
       "notes": [
-        "A subcommand is required; task risk classifies committed changes locally without modifying the repository."
+        "Bare rabi task prints help and exits 0; unknown subcommands exit 2. task risk classifies committed changes locally without modifying the repository."
       ]
     },
     "task risk": {
@@ -2249,7 +2249,8 @@
       "notes": [
         "SEL defaults to the current checkout, including primary; follows show/path selector and -R rules.",
         "Reads .rabi/policy.toml only from the resolved base commit. Classifies merge-base(base, HEAD)...HEAD; only committed changes are classified; the working tree and index are not read. No network calls or writes.",
-        "Tier low, medium or high never changes the successful exit status (0). Built-in floor paths always require human review."
+        "Tier low, medium or high never changes the successful exit status (0). Built-in floor paths always require human review.",
+        "Git 2.44 or later is required; unsupported --no-lazy-fetch or --attr-source options fail with git_failed."
       ],
       "examples": [
         {

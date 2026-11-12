@@ -386,11 +386,14 @@ fn non_utf8_committed_paths_force_high_without_lossy_matching() {
     repo.commit();
     let json = repo.json(&["task", "risk", "--json"]);
     assert_eq!(json["data"]["tier"], "high");
-    assert_eq!(json["data"]["floor"], false);
+    assert_eq!(json["data"]["floor"], true);
     let reasons = json["data"]["files"][0]["reasons"].as_array().unwrap();
     assert!(reasons
         .iter()
         .any(|reason| reason == "unknown:path-encoding"));
+    assert!(reasons
+        .iter()
+        .any(|reason| reason == "floor:unknown:path-encoding"));
     assert!(!reasons.iter().any(|reason| reason == "rule:**"));
 }
 
@@ -599,4 +602,151 @@ fn missing_base_policy_does_not_read_uncommitted_policy_or_index() {
     let json = repo.json(&["task", "risk", "--json"]);
     assert_eq!(json["data"]["policy"]["present"], false);
     assert_eq!(json["data"]["tier"], "low");
+}
+
+#[cfg(unix)]
+fn instrument_git(repo: &Repo) -> (PathBuf, String) {
+    use std::os::unix::fs::PermissionsExt;
+    let output = test_git::command("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let real = String::from_utf8(output.stdout).unwrap().trim().to_owned();
+    let bin = repo.root.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let script = bin.join("git");
+    fs::write(
+        &script,
+        r#"#!/bin/sh
+printf '%s\n' "$*" >> "$RABI_RISK_TEST_TRACE"
+for arg; do
+    case "$arg" in
+        "$RABI_RISK_TEST_REJECT"*)
+            printf 'unknown option: %s\n' "$arg" >&2
+            exit 129
+            ;;
+    esac
+done
+exec "$RABI_RISK_TEST_GIT" "$@"
+"#,
+    )
+    .unwrap();
+    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+    (bin, real)
+}
+
+#[cfg(unix)]
+#[test]
+fn unsupported_git_options_fail_closed_with_clear_json_errors() {
+    for rejected in ["--no-lazy-fetch", "--attr-source="] {
+        let repo = Repo::new(Some(LOW_DOCS));
+        let (bin, real) = instrument_git(&repo);
+        let paths = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
+            &std::env::var_os("PATH").unwrap_or_default(),
+        )))
+        .unwrap();
+        let trace = repo.root.join("git-trace");
+        let output = repo
+            .command(
+                env!("CARGO_BIN_EXE_rabi"),
+                &["task", "risk", "--json"],
+                &repo.repo,
+            )
+            .env("PATH", paths)
+            .env("RABI_RISK_TEST_GIT", real)
+            .env("RABI_RISK_TEST_TRACE", &trace)
+            .env("RABI_RISK_TEST_REJECT", rejected)
+            .env_remove("GIT_NO_LAZY_FETCH")
+            .env_remove("GIT_ATTR_SOURCE")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(1));
+        let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(json["error"]["code"], "git_failed");
+        assert!(json["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("Git 2.44 or later"));
+        assert!(json["data"].is_null());
+        let calls = fs::read_to_string(trace).unwrap();
+        assert!(calls.lines().any(|line| line.contains(rejected)));
+        if rejected == "--no-lazy-fetch" {
+            assert_eq!(
+                calls.lines().count(),
+                1,
+                "unsupported Git must stop before selector discovery"
+            );
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn object_queries_use_options_and_policy_lookup_never_probes_checkout_paths() {
+    let repo = Repo::new(None);
+    repo.write(".rabi/policy.toml", "invalid uncommitted policy");
+    fs::write(repo.repo.join(".git/index"), b"not a git index").unwrap();
+    let base = repo.git(&["rev-parse", "origin/main"]);
+    let (bin, real) = instrument_git(&repo);
+    let paths = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+    let trace = repo.root.join("git-trace");
+    let output = repo
+        .command(
+            env!("CARGO_BIN_EXE_rabi"),
+            &["task", "risk", "--json"],
+            &repo.repo,
+        )
+        .env("PATH", paths)
+        .env("RABI_RISK_TEST_GIT", real)
+        .env("RABI_RISK_TEST_TRACE", &trace)
+        .env("RABI_RISK_TEST_REJECT", "--never-rejected")
+        .env_remove("GIT_NO_LAZY_FETCH")
+        .env_remove("GIT_ATTR_SOURCE")
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let calls = fs::read_to_string(trace).unwrap();
+    for line in calls.lines().filter(|line| {
+        line.contains("^{commit}")
+            || line.contains("cat-file")
+            || line.contains("merge-base")
+            || line.contains(" diff ")
+    }) {
+        assert!(line.starts_with("--no-lazy-fetch "), "{line}");
+    }
+    for line in calls.lines().filter(|line| line.contains(" diff ")) {
+        assert!(
+            line.starts_with(&format!("--no-lazy-fetch --attr-source={base} diff ")),
+            "{line}"
+        );
+    }
+    assert!(calls.contains("cat-file tree"));
+    assert!(!calls.contains("cat-file -e"));
+    assert!(!calls.contains(":.rabi/policy.toml"));
+}
+
+#[test]
+fn missing_committed_policy_tree_is_an_error_not_defaults() {
+    let repo = Repo::new(Some(LOW_DOCS));
+    let oid = repo.git(&["rev-parse", "HEAD:.rabi"]);
+    fs::remove_file(
+        repo.repo
+            .join(".git/objects")
+            .join(&oid[..2])
+            .join(&oid[2..]),
+    )
+    .unwrap();
+    let output = repo.rabi(&["task", "risk", "--json"]);
+    assert_eq!(output.status.code(), Some(1));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["error"]["code"], "git_failed");
+    assert!(json["data"].is_null());
 }

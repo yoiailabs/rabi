@@ -876,6 +876,8 @@ fn task_risk(args: &[String]) -> Result<i32> {
     }
     let base = single_value(&parsed, "base")?;
     let repository = selected_repository(&parsed)?;
+    let cwd = std::env::current_dir().map_err(|error| Error::msg(error.to_string()))?;
+    crate::task::check_git(repository.as_deref().unwrap_or(&cwd))?;
     let context = crate::context::open_for_inspection(repository.as_deref())?;
     let tree = crate::selectors::resolve_without_status(
         &context,

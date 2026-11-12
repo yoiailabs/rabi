@@ -67,6 +67,11 @@ impl Policy {
                 if path.is_empty() || path.contains('\0') {
                     return Err(Error::msg(format!("Invalid risk policy rule[{index}].paths: patterns must be nonempty and NUL-free")));
                 }
+                if path.starts_with('/') || path.ends_with('/') || path.contains("//") {
+                    return Err(Error::msg(format!(
+                        "Invalid risk policy rule[{index}].paths: patterns must be root-relative without leading, trailing, or repeated slashes"
+                    )));
+                }
             }
             if rule.tier.is_none() && !rule.floor {
                 return Err(Error::msg(format!(
@@ -188,6 +193,7 @@ mod tests {
     fn glob_table() {
         for (pattern, path, expected) in [
             ("docs/*", "docs/a", true),
+            ("Docs/**", "docs/a", false),
             ("docs/*", "docs/a/b", false),
             ("docs/**", "docs/a/b", true),
             ("docs/**", "docsx/a", false),
@@ -234,6 +240,18 @@ mod tests {
                 "tier",
             ),
             ("schema = 1\n[[rule]]\npaths = ['']\ntier = 'low'", "paths"),
+            (
+                "schema = 1\n[[rule]]\npaths = ['/docs/**']\ntier = 'low'",
+                "rule[0].paths",
+            ),
+            (
+                "schema = 1\n[[rule]]\npaths = ['docs/']\ntier = 'low'",
+                "rule[0].paths",
+            ),
+            (
+                "schema = 1\n[[rule]]\npaths = ['docs//a']\ntier = 'low'",
+                "rule[0].paths",
+            ),
             (
                 "schema = 1\n[[rule]]\npaths = 'docs/**'\ntier = 'low'",
                 "paths",
