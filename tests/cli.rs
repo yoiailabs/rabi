@@ -2,7 +2,10 @@
 mod records;
 #[path = "common/git.rs"]
 mod test_git;
+#[path = "common/scripts.rs"]
+mod test_support;
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -715,15 +718,12 @@ fn github_checkout_logs_the_post_create_hook() {
     let bin = repo.root.join("bin");
     fs::create_dir_all(&bin).expect("bin");
     let gh = bin.join("gh");
-    fs::write(
+    test_support::write_executable(
         &gh,
         "#!/bin/sh\nif [ \"$1\" = \"repo\" ]; then\n  printf '%s\\n' '{\"url\":\"https://github.com/acme/demo\",\"owner\":{\"login\":\"acme\"},\"name\":\"demo\"}'\n  exit 0\nfi\nif [ \"$1\" = \"api\" ]; then\n  printf '%s\\n' '{\"number\":7}'\n  exit 0\nfi\nprintf '%s\\n' \"unexpected gh: $*\" >&2\nexit 1\n",
     )
     .expect("gh");
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = fs::metadata(&gh).expect("meta").permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&gh, perms).expect("chmod");
+
     let path = format!(
         "{}:{}",
         bin.display(),
@@ -1236,15 +1236,12 @@ fn project_list_discovers_ghq_and_warns_when_discovery_fails() {
     let bin = repo.root.join("bin");
     fs::create_dir_all(&bin).expect("bin");
     let ghq = bin.join("ghq");
-    fs::write(
+    test_support::write_executable(
         &ghq,
         "#!/bin/sh\nif [ \"$1\" != \"list\" ] || [ \"$2\" != \"--full-path\" ]; then\n  exit 2\nfi\nprintf \"%s\\n\" \"$RABI_TEST_GHQ_PROJECT\"\n",
     )
     .expect("ghq");
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = fs::metadata(&ghq).expect("meta").permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&ghq, perms.clone()).expect("chmod");
+
     let path = format!(
         "{}:{}",
         bin.display(),
@@ -1265,12 +1262,11 @@ fn project_list_discovers_ghq_and_warns_when_discovery_fails() {
         repo.repo.to_string_lossy().as_ref()
     );
 
-    fs::write(
+    test_support::write_executable(
         &ghq,
         "#!/bin/sh\nprintf '%s\\n' 'simulated ghq failure' >&2\nexit 17\n",
     )
     .expect("fail");
-    fs::set_permissions(&ghq, perms).expect("chmod");
     let added = repo
         .command(env!("CARGO_BIN_EXE_rabi"), &["repo", "add", "--json"])
         .env("PATH", &path)
@@ -1523,7 +1519,7 @@ fn parent_cleanup_failure_still_deletes_the_branch() {
     let created = repo.rabi(&["create", "cursor/foo"]);
     assert!(created.status.success(), "{}", text(&created.stderr));
     let root = managed_root(&repo);
-    use std::os::unix::fs::PermissionsExt;
+
     let _reset = ModeReset(&root);
     let mut perms = fs::metadata(&root).expect("meta").permissions();
     perms.set_mode(0o555);
@@ -1560,7 +1556,7 @@ impl Drop for ModeReset<'_> {
             return;
         };
         let mut perms = metadata.permissions();
-        use std::os::unix::fs::PermissionsExt;
+
         perms.set_mode(0o755);
         let _ = fs::set_permissions(self.0, perms);
     }
@@ -1731,7 +1727,7 @@ fn fake_gh_for_topic_pr(repo: &Repo) -> String {
     let bin = repo.root.join("bin");
     fs::create_dir_all(&bin).expect("bin");
     let gh = bin.join("gh");
-    fs::write(
+    test_support::write_executable(
         &gh,
         r#"#!/bin/sh
 if [ "$1" = "repo" ]; then
@@ -1749,10 +1745,7 @@ esac
 "#,
     )
     .expect("gh");
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = fs::metadata(&gh).expect("meta").permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&gh, perms).expect("chmod");
+
     format!(
         "{}:{}",
         bin.display(),
@@ -2593,7 +2586,7 @@ fn create_issue_refreshes_the_workspace_after_a_hook_detaches_head() {
     let bin = repo.root.join("bin");
     fs::create_dir_all(&bin).expect("bin");
     let gh = bin.join("gh");
-    fs::write(
+    test_support::write_executable(
         &gh,
         r#"#!/bin/sh
 set -eu
@@ -2608,8 +2601,7 @@ fi
 "#,
     )
     .expect("gh");
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).expect("chmod");
+
     let path = format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH"));
     let checkout = repo
         .command(
@@ -2656,15 +2648,12 @@ fn github_checkout_json_reports_issue_and_existing_pull_request() {
     let bin = repo.root.join("bin");
     fs::create_dir_all(&bin).expect("bin");
     let gh = bin.join("gh");
-    fs::write(
+    test_support::write_executable(
         &gh,
         "#!/bin/sh\nif [ \"$1\" = \"repo\" ]; then\n  printf '%s\\n' '{\"url\":\"https://github.com/acme/demo\",\"owner\":{\"login\":\"acme\"},\"name\":\"demo\"}'\n  exit 0\nfi\nprintf '%s\\n' '{\"number\":7}'\nexit 0\n",
     )
     .expect("gh");
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = fs::metadata(&gh).expect("meta").permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&gh, perms).expect("chmod");
+
     let path = format!(
         "{}:{}",
         bin.display(),
@@ -3651,11 +3640,8 @@ fn silent_ghq_path(repo: &Repo) -> String {
     let bin = repo.root.join("bin");
     fs::create_dir_all(&bin).expect("bin");
     let ghq = bin.join("ghq");
-    fs::write(&ghq, "#!/bin/sh\nexit 0\n").expect("ghq");
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = fs::metadata(&ghq).expect("meta").permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&ghq, perms).expect("chmod");
+    test_support::write_executable(&ghq, "#!/bin/sh\nexit 0\n").expect("ghq");
+
     format!(
         "{}:{}",
         bin.display(),
@@ -3976,15 +3962,12 @@ fn project_option_resolves_paths_suffixes_and_errors() {
         .contains("only be specified once"));
 
     let checkout_bin = repo.root.join("bin/gh");
-    fs::write(
+    test_support::write_executable(
         &checkout_bin,
         "#!/bin/sh\nif [ \"$1\" = \"repo\" ]; then\n  printf '%s\\n' '{\"url\":\"https://github.com/acme/demo\",\"owner\":{\"login\":\"acme\"},\"name\":\"demo\"}'\n  exit 0\nfi\nprintf '%s\\n' '{\"number\":9}'\nexit 0\n",
     )
     .expect("gh");
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = fs::metadata(&checkout_bin).expect("meta").permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&checkout_bin, perms).expect("chmod");
+
     let checkout = run(
         &[
             "create",
@@ -4285,15 +4268,12 @@ fn github_checkout_project_passes_the_selected_host() {
     fs::create_dir_all(&bin).expect("bin");
     let log = repo.root.join("gh.log");
     let gh = bin.join("gh");
-    fs::write(
+    test_support::write_executable(
         &gh,
         "#!/bin/sh\nprintf '%s\\n' \"pwd=$(pwd)\" >> \"$RABI_GH_LOG\"\nprintf '%s\\n' \"$*\" >> \"$RABI_GH_LOG\"\nif [ \"$1\" = \"repo\" ]; then\n  printf '%s\\n' \"$RABI_GH_REPO_JSON\"\n  exit 0\nfi\nprintf '%s\\n' '{\"number\":3}'\nexit 0\n",
     )
     .expect("gh");
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = fs::metadata(&gh).expect("meta").permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&gh, perms).expect("chmod");
+
     let path_env = format!(
         "{}:{}",
         bin.display(),
@@ -4696,7 +4676,7 @@ fn github_checkout_refuses_before_fetch_when_the_metadata_store_is_unusable() {
     records::write(&metadata_dir, store).expect("store");
     let before = records::read_to_string(&metadata_dir).expect("snapshot");
     let mut perms = fs::metadata(&metadata_dir).expect("meta").permissions();
-    use std::os::unix::fs::PermissionsExt;
+
     perms.set_mode(0o555);
     fs::set_permissions(&metadata_dir, perms).expect("chmod");
     let _restore = ModeReset(&metadata_dir);
@@ -4782,7 +4762,7 @@ fn delete_refuses_when_metadata_is_not_writable() {
     assert!(created.status.success(), "{}", text(&created.stderr));
     let metadata_dir = repo.repo.join(".git/rabi/workspaces");
     let store = records::read_to_string(&metadata_dir).expect("store");
-    use std::os::unix::fs::PermissionsExt;
+
     let mut locked = fs::metadata(&metadata_dir).expect("meta").permissions();
     locked.set_mode(0o555);
     fs::set_permissions(&metadata_dir, locked).expect("chmod");
@@ -6444,7 +6424,6 @@ fn gc_skips_missing_registration_with_changed_branch_or_head() {
 
 #[test]
 fn gc_apply_caches_each_target_pull_request() {
-    use std::os::unix::fs::PermissionsExt;
     for kind in ["live", "missing", "orphan"] {
         let repo = Repo::new();
         let count = 4;
@@ -6468,7 +6447,7 @@ fn gc_apply_caches_each_target_pull_request() {
         fs::create_dir_all(&bin).unwrap();
         let gh = bin.join("gh");
         let calls = repo.root.join("gh-calls");
-        fs::write(
+        test_support::write_executable(
             &gh,
             format!(
                 r#"#!/bin/sh
@@ -6480,7 +6459,6 @@ printf '%s\n' '{{"state":"MERGED"}}'
             ),
         )
         .unwrap();
-        fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
         let path = format!(
             "{}:{}",
             bin.display(),
@@ -6515,7 +6493,6 @@ printf '%s\n' '{{"state":"MERGED"}}'
 
 #[test]
 fn gc_rechecks_pull_request_link_after_pre_remove_hooks() {
-    use std::os::unix::fs::PermissionsExt;
     let repo = Repo::new();
     assert!(repo
         .create_recorded(&[
@@ -6531,8 +6508,7 @@ fn gc_rechecks_pull_request_link_after_pre_remove_hooks() {
     let state = repo.root.join("pr-state");
     fs::write(&state, "{\"state\":\"MERGED\"}\n").unwrap();
     let gh = bin.join("gh");
-    fs::write(&gh, format!("#!/bin/sh\ncat '{}'\n", state.display())).unwrap();
-    fs::set_permissions(&gh, fs::Permissions::from_mode(0o755)).unwrap();
+    test_support::write_executable(&gh, format!("#!/bin/sh\ncat '{}'\n", state.display())).unwrap();
     // Remote responses are command snapshots; metadata and local Git state are
     // still rechecked after hooks, so removing the PR link revokes eligibility.
     let hook = format!(
@@ -6593,11 +6569,9 @@ fn gc_closed_pull_request_with_unpreserved_history_is_skipped() {
     let bin = repo.root.join("bin");
     fs::create_dir_all(&bin).expect("bin");
     let gh = bin.join("gh");
-    fs::write(&gh, "#!/bin/sh\nprintf '%s\\n' '{\"state\":\"MERGED\"}'\n").expect("gh");
-    let mut perms = fs::metadata(&gh).expect("meta").permissions();
-    use std::os::unix::fs::PermissionsExt;
-    perms.set_mode(0o755);
-    fs::set_permissions(&gh, perms).expect("chmod");
+    test_support::write_executable(&gh, "#!/bin/sh\nprintf '%s\\n' '{\"state\":\"MERGED\"}'\n")
+        .expect("gh");
+
     let path = format!(
         "{}:{}",
         bin.display(),
@@ -6641,7 +6615,6 @@ fn gc_closed_pull_request_with_unpreserved_history_is_skipped() {
 
 #[test]
 fn gc_metadata_io_failure_after_removal_exits_partial_for_a_single_candidate() {
-    use std::os::unix::fs::PermissionsExt;
     let real_git = std::env::split_paths(&std::env::var_os("PATH").expect("PATH"))
         .map(|dir| dir.join("git"))
         .find(|file| file.is_file())
@@ -6659,7 +6632,7 @@ fn gc_metadata_io_failure_after_removal_exits_partial_for_a_single_candidate() {
             let wrapper = bin.join("git");
             // Let Git really remove the checkout/registration, then replace
             // the records directory with a file to cause a real I/O failure.
-            fs::write(
+            test_support::write_executable(
                 &wrapper,
                 r#"#!/bin/sh
 case " $* " in
@@ -6673,7 +6646,6 @@ esac
 "#,
             )
             .expect("wrapper");
-            fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).expect("chmod");
             let mut paths = vec![bin];
             paths.extend(std::env::split_paths(
                 &std::env::var_os("PATH").expect("PATH"),
@@ -6788,11 +6760,8 @@ fn gh_path(repo: &Repo, body: &str) -> String {
     let bin = repo.root.join("bin");
     fs::create_dir_all(&bin).expect("bin");
     let gh = bin.join("gh");
-    fs::write(&gh, body).expect("gh");
-    let mut perms = fs::metadata(&gh).expect("meta").permissions();
-    use std::os::unix::fs::PermissionsExt;
-    perms.set_mode(0o755);
-    fs::set_permissions(&gh, perms).expect("chmod");
+    test_support::write_executable(&gh, body).expect("gh");
+
     format!(
         "{}:{}",
         bin.display(),
@@ -7118,7 +7087,6 @@ fn removing_the_last_worktree_keeps_the_project_marker_for_the_next_create() {
 
 #[test]
 fn deleting_the_last_worktree_between_directory_claim_and_git_add_keeps_the_marker() {
-    use std::os::unix::fs::PermissionsExt;
     let repo = Repo::new();
     assert!(repo.rabi(&["create", "last"]).status.success());
     let marker_path = managed_root(&repo).join(rabi::paths::PROJECT_MARKER);
@@ -7132,7 +7100,7 @@ fn deleting_the_last_worktree_between_directory_claim_and_git_add_keeps_the_mark
     let wrapper = bin.join("git");
     // The outer create has claimed the project directory but has not added
     // its checkout yet. Finish deletion in that exact window, without sleeps.
-    fs::write(
+    test_support::write_executable(
         &wrapper,
         r#"#!/bin/sh
 case " $* " in
@@ -7144,7 +7112,6 @@ exec "$REAL_GIT" "$@"
 "#,
     )
     .expect("wrapper");
-    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).expect("chmod");
     let mut paths = vec![bin];
     paths.extend(std::env::split_paths(
         &std::env::var_os("PATH").expect("PATH"),
@@ -7967,17 +7934,14 @@ fn delete_current_recognizes_a_worktree_created_through_a_symlink() {
     let bin = repo.root.join("bin");
     fs::create_dir_all(&bin).expect("bin");
     let wrapper = bin.join("git");
-    fs::write(
+    test_support::write_executable(
         &wrapper,
         format!(
             "#!/bin/sh\nif [ \"$1\" = \"rev-parse\" ] && [ \"$2\" = \"--show-toplevel\" ]; then\n  real=$({git_bin} rev-parse --show-toplevel) || exit $?\n  if [ \"$real\" = \"$REAL_TOP\" ]; then\n    printf '%s\\n' \"$LOGICAL_TOP\"\n    exit 0\n  fi\n  printf '%s\\n' \"$real\"\n  exit 0\nfi\nexec {git_bin} \"$@\"\n"
         ),
     )
     .expect("wrapper");
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = fs::metadata(&wrapper).expect("meta").permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&wrapper, perms).expect("chmod");
+
     let path_env = format!(
         "{}:{}",
         bin.display(),
@@ -8066,15 +8030,12 @@ fn recheckout_through_a_symlink_keeps_intent_and_creation_details() {
     let bin = repo.root.join("bin");
     fs::create_dir_all(&bin).expect("bin");
     let gh = bin.join("gh");
-    fs::write(
+    test_support::write_executable(
         &gh,
         "#!/bin/sh\nif [ \"$1\" = \"repo\" ]; then\n  printf '%s\\n' '{\"url\":\"https://github.com/acme/demo\",\"owner\":{\"login\":\"acme\"},\"name\":\"demo\"}'\n  exit 0\nfi\nprintf '%s\\n' '{\"number\":7}'\nexit 0\n",
     )
     .expect("gh");
-    use std::os::unix::fs::PermissionsExt;
-    let mut perms = fs::metadata(&gh).expect("meta").permissions();
-    perms.set_mode(0o755);
-    fs::set_permissions(&gh, perms).expect("chmod");
+
     let path = format!(
         "{}:{}",
         bin.display(),
@@ -9644,15 +9605,14 @@ fn output_environment_and_explicit_modes_have_deterministic_precedence() {
 #[test]
 fn non_interactive_git_gets_prompt_control_and_hooks_preserve_user_stdin() {
     use std::io::Write;
-    use std::os::unix::fs::PermissionsExt;
+
     use std::process::Stdio;
     let repo = Repo::new();
     let bin = repo.root.join("bin");
     fs::create_dir_all(&bin).expect("bin");
     let wrapper = bin.join("git");
     let marker = repo.root.join("git-network-env");
-    fs::write(&wrapper, "#!/bin/sh\nfor arg do case \"$arg\" in fetch|clone|ls-remote|pull|push) printf '%s' \"$GIT_TERMINAL_PROMPT\" > \"$PROMPT_MARKER\"; test \"$GIT_TERMINAL_PROMPT\" = 0 || exit 93;; esac; done\nexec /usr/bin/git \"$@\"\n").expect("wrapper");
-    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).expect("chmod");
+    test_support::write_executable(&wrapper, "#!/bin/sh\nfor arg do case \"$arg\" in fetch|clone|ls-remote|pull|push) printf '%s' \"$GIT_TERMINAL_PROMPT\" > \"$PROMPT_MARKER\"; test \"$GIT_TERMINAL_PROMPT\" = 0 || exit 93;; esac; done\nexec /usr/bin/git \"$@\"\n").expect("wrapper");
     let remote = repo.repo.to_str().expect("repo");
     repo.git(&["remote", "add", "origin", remote]);
     repo.git(&["fetch", "origin"]);
@@ -10948,7 +10908,7 @@ fn outer_diagnostics_escape_repository_names_and_paths() {
 
     // Discovery diagnostics are printed to stderr even in JSON mode.
     let path = silent_ghq_path(&repo);
-    fs::write(
+    test_support::write_executable(
         repo.root.join("bin/ghq"),
         "#!/bin/sh\nprintf '%s\\n' \"$RABI_TEST_DIAGNOSTIC\" >&2\nexit 17\n",
     )
@@ -12723,7 +12683,7 @@ fn assert_github_recreates_orphaned_checkout(issue: bool) {
     if issue {
         let gh = repo.root.join("bin/gh");
         let script = fs::read_to_string(&gh).expect("gh script");
-        fs::write(
+        test_support::write_executable(
             &gh,
             script.replace("\"pull_request\":{}", "\"title\":\"issue\""),
         )
@@ -12800,7 +12760,7 @@ fn github_reuse_propagates_orphan_ambiguity_and_git_read_errors() {
             if issue {
                 let gh = repo.root.join("bin/gh");
                 let script = fs::read_to_string(&gh).expect("gh script");
-                fs::write(
+                test_support::write_executable(
                     &gh,
                     script.replace("\"pull_request\":{}", "\"title\":\"issue\""),
                 )
@@ -12821,7 +12781,7 @@ fn github_reuse_propagates_orphan_ambiguity_and_git_read_errors() {
             assert!(real_git.status.success());
             if read_error {
                 let shim = repo.root.join("bin/git");
-                fs::write(
+                test_support::write_executable(
                     &shim,
                     r#"#!/bin/sh
 if [ "$1" = "worktree" ] && [ "$2" = "list" ]; then
@@ -12832,8 +12792,6 @@ exec "$REAL_GIT" "$@"
 "#,
                 )
                 .expect("git shim");
-                use std::os::unix::fs::PermissionsExt;
-                fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).expect("chmod");
             }
             fs::write(
                 repo.repo.join(".rabi.toml"),
@@ -12886,7 +12844,8 @@ fn github_reuses_plain_git_checkout_with_a_git_only_branch_name() {
     let path = fake_gh_for_topic_pr(&repo);
     let gh = repo.root.join("bin/gh");
     let script = fs::read_to_string(&gh).expect("gh script");
-    fs::write(&gh, script.replace("\"topic\"", "\"topic+fix\"")).expect("PR head");
+    test_support::write_executable(&gh, script.replace("\"topic\"", "\"topic+fix\""))
+        .expect("PR head");
     let checkout = repo.root.join("plain-checkout");
     repo.git(&[
         "worktree",
@@ -12951,7 +12910,7 @@ fn github_propagates_ambiguous_internal_lookups() {
         if issue {
             let gh = repo.root.join("bin/gh");
             let script = fs::read_to_string(&gh).expect("gh script");
-            fs::write(
+            test_support::write_executable(
                 &gh,
                 script.replace("\"pull_request\":{}", "\"title\":\"issue\""),
             )
@@ -13079,7 +13038,8 @@ fn github_attaches_a_git_only_head_branch_without_user_name_validation() {
     let path = fake_gh_for_topic_pr(&repo);
     let gh = repo.root.join("bin/gh");
     let script = fs::read_to_string(&gh).expect("gh script");
-    fs::write(&gh, script.replace("\"topic\"", "\"topic+fix\"")).expect("PR head");
+    test_support::write_executable(&gh, script.replace("\"topic\"", "\"topic+fix\""))
+        .expect("PR head");
     let result = repo
         .command(
             env!("CARGO_BIN_EXE_rabi"),
@@ -13255,9 +13215,9 @@ fn assert_source_url_case_variants(pr: bool) {
         .replace("\"name\":\"demo\"", "\"name\":\"Demo\"");
     if pr {
         publish_pr_topic(&repo);
-        fs::write(&gh, script).unwrap();
+        test_support::write_executable(&gh, script).unwrap();
     } else {
-        fs::write(
+        test_support::write_executable(
             &gh,
             script.replace("\"pull_request\":{}", "\"title\":\"Fix issue\""),
         )
@@ -13316,7 +13276,7 @@ fn create_rejects_foreign_repository_host_and_source_kind_urls() {
     let path = fake_gh_for_topic_pr(&repo);
     let gh = repo.root.join("bin/gh");
     let script = fs::read_to_string(&gh).unwrap();
-    fs::write(
+    test_support::write_executable(
         &gh,
         script.replace(
             "#!/bin/sh\n",
@@ -13373,7 +13333,7 @@ fn unified_create_issue_defaults_and_pr_issue_links() {
     let path = fake_gh_for_topic_pr(&repo);
     let gh = repo.root.join("bin/gh");
     let script = fs::read_to_string(&gh).unwrap();
-    fs::write(
+    test_support::write_executable(
         &gh,
         script.replace("\"pull_request\":{}", "\"title\":\"Fix issue\""),
     )
@@ -13401,7 +13361,7 @@ fn unified_create_issue_defaults_and_pr_issue_links() {
         assert_eq!(doc["data"]["workspace"]["name"], "issues/7");
         assert_eq!(doc["data"]["workspace"]["purpose"], "Fix issue");
     }
-    fs::write(&gh, script).unwrap();
+    test_support::write_executable(&gh, script).unwrap();
     publish_pr_topic(&repo);
     for _ in 0..2 {
         let out = run(&[
@@ -13821,7 +13781,7 @@ fn create_rejects_names_outside_the_workspace_root_for_every_source() {
             if source == ["--issue", "7"] {
                 let gh = repo.root.join("bin/gh");
                 let script = fs::read_to_string(&gh).unwrap();
-                fs::write(
+                test_support::write_executable(
                     gh,
                     script.replace("\"pull_request\":{}", "\"title\":\"Issue\""),
                 )
@@ -13885,7 +13845,7 @@ fn create_rejects_destination_escaping_through_a_parent_symlink() {
         if source == ["--issue", "7"] {
             let gh = repo.root.join("bin/gh");
             let script = fs::read_to_string(&gh).unwrap();
-            fs::write(
+            test_support::write_executable(
                 gh,
                 script.replace("\"pull_request\":{}", "\"title\":\"Issue\""),
             )
@@ -15056,7 +15016,8 @@ fn setup_retry_hint_preserves_linked_source_hooks() {
                 publish_pr_topic(&repo);
                 let gh = repo.root.join("bin/gh");
                 let script = fs::read_to_string(&gh).unwrap();
-                fs::write(&gh, script.replace("\"topic\"", "\"topic+fix\"")).unwrap();
+                test_support::write_executable(&gh, script.replace("\"topic\"", "\"topic+fix\""))
+                    .unwrap();
                 if mode == 1 {
                     assert!(repo
                         .create_recorded(&["create", "duplicate", "--pr", "7", "--no-setup"])
@@ -15136,7 +15097,8 @@ fn setup_retry_hint_preserves_copy_patterns_after_copy_failure() {
                 publish_pr_topic(&repo);
                 let gh = repo.root.join("bin/gh");
                 let script = fs::read_to_string(&gh).unwrap();
-                fs::write(&gh, script.replace("\"topic\"", "\"topic+fix\"")).unwrap();
+                test_support::write_executable(&gh, script.replace("\"topic\"", "\"topic+fix\""))
+                    .unwrap();
                 assert!(repo
                     .create_recorded(&["create", "duplicate", "--pr", "7", "--no-setup"])
                     .status
@@ -15258,7 +15220,8 @@ fn setup_retry_hint_resolves_pr_names_and_ambiguous_links() {
             publish_pr_topic(&repo);
             let gh = repo.root.join("bin/gh");
             let script = fs::read_to_string(&gh).unwrap();
-            fs::write(&gh, script.replace("\"topic\"", "\"topic+fix\"")).unwrap();
+            test_support::write_executable(&gh, script.replace("\"topic\"", "\"topic+fix\""))
+                .unwrap();
             if ambiguous {
                 assert!(repo
                     .create_recorded(&["create", "duplicate", "--pr", "7", "--no-setup"])
@@ -15432,7 +15395,7 @@ fn setup_retry_hint_works_without_saved_links() {
         publish_pr_topic(&repo);
         let gh = repo.root.join("bin/gh");
         let script = fs::read_to_string(&gh).unwrap();
-        fs::write(&gh, script.replace("\"topic\"", "\"topic+fix\"")).unwrap();
+        test_support::write_executable(&gh, script.replace("\"topic\"", "\"topic+fix\"")).unwrap();
         fs::write(
             repo.repo.join(".rabi.toml"),
             "[hooks]\nsetup = [\"test -f ready && touch hook-ran\"]\n",
@@ -16485,7 +16448,6 @@ fn retirement_ignored_content_does_not_hide_submodule_changes() {
 #[cfg(unix)]
 #[test]
 fn retirement_ignored_content_does_not_force_remove_late_untracked_files() {
-    use std::os::unix::fs::PermissionsExt;
     for gc in [false, true] {
         let repo = Repo::new();
         assert!(repo
@@ -16506,7 +16468,7 @@ fn retirement_ignored_content_does_not_force_remove_late_untracked_files() {
         let bin = repo.root.join("bin");
         fs::create_dir(&bin).unwrap();
         let shim = bin.join("git");
-        fs::write(
+        test_support::write_executable(
             &shim,
             r#"#!/bin/sh
 case " $* " in
@@ -16518,7 +16480,6 @@ exec "$REAL_GIT" "$@"
 "#,
         )
         .unwrap();
-        fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).unwrap();
         let search_path = std::env::join_paths(
             std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap())),
         )
@@ -18145,7 +18106,6 @@ fn retirement_gc_plan_suppresses_git_hooks() {
 }
 
 fn assert_retirement_plan_suppresses_fsmonitor(gc: bool) {
-    use std::os::unix::fs::PermissionsExt;
     let repo = Repo::new();
     assert!(repo
         .rabi(&["create", "landed", "--no-setup"])
@@ -18160,12 +18120,11 @@ fn assert_retirement_plan_suppresses_fsmonitor(gc: bool) {
     fs::write(managed(&repo, "dirty/precious"), "keep\n").unwrap();
     let marker = repo.root.join("fsmonitor-writes");
     let hook = repo.root.join("fsmonitor-hook");
-    fs::write(
+    test_support::write_executable(
         &hook,
         "#!/bin/sh\nprintf invoked >> \"$RABI_TEST_FSMONITOR_MARKER\"\nprintf 'token\\0'\n",
     )
     .unwrap();
-    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
     repo.git(&["config", "core.fsmonitor", hook.to_str().unwrap()]);
     // Prove that this fixture actually runs and writes through the hook.
     let status = repo
@@ -19386,7 +19345,6 @@ fn assert_remove_metadata_failure_retry(
     symlink_root: Option<&str>,
     hook_source: bool,
 ) {
-    use std::os::unix::fs::PermissionsExt;
     let repo = Repo::new();
     let workspace_root = if let Some(kind) = symlink_root {
         let real = repo.root.join("real-workspaces");
@@ -19448,7 +19406,7 @@ fn assert_remove_metadata_failure_retry(
     let wrapper = bin.join("git");
     // Real Git removal succeeds, then a filesystem obstruction makes the
     // metadata write fail. Restore it before executing the supplied hint.
-    fs::write(
+    test_support::write_executable(
         &wrapper,
         r#"#!/bin/sh
 case " $* " in
@@ -19466,7 +19424,6 @@ esac
 "#,
     )
     .unwrap();
-    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
     let metadata_dir = repo.repo.join(".git/rabi/workspaces");
     let mut args = vec!["remove", "metadata-failure", "last", "--no-hooks"];
     if hook_source {
@@ -19973,7 +19930,8 @@ fn bash_completion_quotes_shell_input() {
     }
     let repo = Repo::new();
     let completions = repo.root.join("completions.bash");
-    fs::write(&completions, repo.rabi(&["completions", "bash"]).stdout).unwrap();
+    test_support::write_executable(&completions, repo.rabi(&["completions", "bash"]).stdout)
+        .unwrap();
     let bin = repo.root.join("bin");
     fs::create_dir(&bin).unwrap();
     #[cfg(unix)]
@@ -20059,7 +20017,6 @@ fn shell_smoke(shell: &str) {
     fs::create_dir(&insecure_fpath).unwrap();
     #[cfg(unix)]
     {
-        use std::os::unix::fs::PermissionsExt;
         fs::set_permissions(&insecure_fpath, fs::Permissions::from_mode(0o777)).unwrap();
     }
     for suffix in ["\n", "\n\n"] {
@@ -20086,7 +20043,7 @@ fn shell_smoke(shell: &str) {
         let output = repo.rabi(&[command, shell]);
         assert!(output.status.success(), "{}", text(&output.stderr));
         let file = repo.root.join(format!("{command}.{shell}"));
-        fs::write(&file, output.stdout).unwrap();
+        test_support::write_executable(&file, output.stdout).unwrap();
         let syntax = repo
             .command(
                 shell,

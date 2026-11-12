@@ -1,7 +1,8 @@
 #[path = "common/git.rs"]
 mod test_git;
+#[path = "common/scripts.rs"]
+mod test_support;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 struct TempTree {
@@ -156,7 +157,7 @@ fn deleted_pr_remote(root: &Path) -> (PathBuf, String) {
 fn fake_gh(bin: &Path) {
     fs::create_dir_all(bin).expect("bin");
     let script = bin.join("gh");
-    fs::write(
+    test_support::write_executable(
         &script,
         r#"#!/bin/sh
 set -eu
@@ -181,9 +182,6 @@ exit 1
 "#,
     )
     .expect("gh script");
-    let mut permissions = fs::metadata(&script).expect("meta").permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&script, permissions).expect("chmod");
 }
 
 #[test]
@@ -450,7 +448,7 @@ fn failed_worktree_attachment_only_removes_a_new_branch() {
             .find(|path| path.is_file())
             .expect("real git");
         let shim = bin.join("git");
-        fs::write(
+        test_support::write_executable(
             &shim,
             r#"#!/bin/sh
 set -eu
@@ -470,7 +468,6 @@ exec "$REAL_GIT" "$@"
 "#,
         )
         .expect("git shim");
-        fs::set_permissions(&shim, fs::Permissions::from_mode(0o755)).expect("chmod");
         let state = tree.path.join("checkout-state");
         let path = format!("{}:{}", bin.display(), std::env::var("PATH").expect("PATH"));
         let output = test_git::command(env!("CARGO_BIN_EXE_rabi"))
@@ -706,10 +703,7 @@ fn rabi(clone: &Path, bin: &Path, args: &[&str]) -> std::process::Output {
 fn install_gh(bin: &Path, script: &str) {
     fs::create_dir_all(bin).expect("bin");
     let path = bin.join("gh");
-    fs::write(&path, script).expect("gh script");
-    let mut permissions = fs::metadata(&path).expect("meta").permissions();
-    permissions.set_mode(0o755);
-    fs::set_permissions(&path, permissions).expect("chmod");
+    test_support::write_executable(&path, script).expect("gh script");
 }
 
 fn same_repo_pull(number: &str, head_ref: &str) -> String {

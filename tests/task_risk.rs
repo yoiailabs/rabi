@@ -1,5 +1,7 @@
 #[path = "common/git.rs"]
 mod test_git;
+#[path = "common/scripts.rs"]
+mod test_support;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -606,7 +608,6 @@ fn missing_base_policy_does_not_read_uncommitted_policy_or_index() {
 
 #[cfg(unix)]
 fn instrument_git(repo: &Repo) -> (PathBuf, String) {
-    use std::os::unix::fs::PermissionsExt;
     let output = test_git::command("sh")
         .args(["-c", "command -v git"])
         .output()
@@ -616,7 +617,7 @@ fn instrument_git(repo: &Repo) -> (PathBuf, String) {
     let bin = repo.root.join("bin");
     fs::create_dir_all(&bin).unwrap();
     let script = bin.join("git");
-    fs::write(
+    test_support::write_executable(
         &script,
         r#"#!/bin/sh
 printf '%s\n' "$*" >> "$RABI_RISK_TEST_TRACE"
@@ -632,7 +633,6 @@ exec "$RABI_RISK_TEST_GIT" "$@"
 "#,
     )
     .unwrap();
-    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
     (bin, real)
 }
 

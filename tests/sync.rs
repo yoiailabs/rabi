@@ -2,6 +2,8 @@
 mod records;
 #[path = "common/git.rs"]
 mod test_git;
+#[path = "common/scripts.rs"]
+mod test_support;
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -158,15 +160,13 @@ impl Repo {
         self.git(path, &["commit", "-m", file]);
     }
     fn install_fsmonitor(&self) -> PathBuf {
-        use std::os::unix::fs::PermissionsExt;
         let marker = self.root.join("fsmonitor-ran");
         let hook = self.root.join("fsmonitor-hook");
-        fs::write(
+        test_support::write_executable(
             &hook,
             format!("#!/bin/sh\ntouch '{}'\nprintf '/\\000'\n", marker.display()),
         )
         .unwrap();
-        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
         self.git(
             &self.main,
             &["config", "core.fsmonitor", hook.to_str().unwrap()],
@@ -624,7 +624,6 @@ fn default_without_remote_head_uses_differently_named_upstream() {
 
 #[test]
 fn default_branch_identity_survives_remote_head_creation_during_fetch() {
-    use std::os::unix::fs::PermissionsExt;
     let real_git = std::env::split_paths(&std::env::var_os("PATH").unwrap())
         .map(|path| path.join("git"))
         .find(|path| path.is_file())
@@ -663,12 +662,11 @@ fn default_branch_identity_survives_remote_head_creation_during_fetch() {
             let bin = r.root.join("bin");
             fs::create_dir(&bin).unwrap();
             let wrapper = bin.join("git");
-            fs::write(
+            test_support::write_executable(
                 &wrapper,
                 "#!/bin/sh\n\"$REAL_GIT\" \"$@\" || exit $?\ncase \" $* \" in\n  *' fetch '*) \"$REAL_GIT\" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/main ;;\nesac\n",
             )
             .unwrap();
-            fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
             let mut paths = vec![bin];
             paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
             let cwd = if checkout == "linked" {
@@ -1296,7 +1294,6 @@ fn fetch_only_involved_remotes_once_and_failed_fetch_cannot_update_stale_base() 
 
 #[test]
 fn sync_runs_no_git_hooks_and_does_not_update_other_refs() {
-    use std::os::unix::fs::PermissionsExt;
     let r = Repo::new();
     let tree = r.create("topic");
     r.write_commit(&tree, "own", "own\n");
@@ -1313,8 +1310,8 @@ fn sync_runs_no_git_hooks_and_does_not_update_other_refs() {
         "post-checkout",
     ] {
         let file = hooks.join(name);
-        fs::write(&file, format!("#!/bin/sh\ntouch '{}'\n", marker.display())).unwrap();
-        fs::set_permissions(file, fs::Permissions::from_mode(0o755)).unwrap();
+        test_support::write_executable(&file, format!("#!/bin/sh\ntouch '{}'\n", marker.display()))
+            .unwrap();
     }
     r.git(
         &r.main,
@@ -1753,7 +1750,6 @@ fn finish_child(mut child: std::process::Child) -> Output {
 
 #[test]
 fn git_hooks_can_run_rabi() {
-    use std::os::unix::fs::PermissionsExt;
     for hook_name in ["post-checkout", "reference-transaction"] {
         let r = Repo::new();
         r.git(&r.main, &["branch", "existing"]);
@@ -1761,7 +1757,7 @@ fn git_hooks_can_run_rabi() {
         fs::create_dir_all(hook.parent().unwrap()).unwrap();
         let status = r.root.join("nested-status");
         let output = r.root.join("nested-output");
-        fs::write(
+        test_support::write_executable(
             &hook,
             format!(
                 r#"#!/bin/sh
@@ -1783,7 +1779,6 @@ exit "$result"
             ),
         )
         .unwrap();
-        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
         for args in [
             vec!["create", "topic", "--json"],
             vec!["create", "--branch", "existing", "--json"],
@@ -1815,7 +1810,6 @@ exit "$result"
 
 #[test]
 fn git_hook_can_run_create_with_project_hooks_and_standalone_exec() {
-    use std::os::unix::fs::PermissionsExt;
     let r = Repo::new();
     r.create("victim");
     let bin = env!("CARGO_BIN_EXE_rabi");
@@ -1831,7 +1825,7 @@ fn git_hook_can_run_create_with_project_hooks_and_standalone_exec() {
     .unwrap();
     let hook = r.main.join(".git/hooks/post-checkout");
     fs::create_dir_all(hook.parent().unwrap()).unwrap();
-    fs::write(
+    test_support::write_executable(
         &hook,
         format!(
             r#"#!/bin/sh
@@ -1851,7 +1845,6 @@ echo $? > '{status}'
         ),
     )
     .unwrap();
-    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
     let child = r
         .command(bin, &r.main, &["create", "outer", "--no-setup"])
         .env("RABI_TRUST_ALL", "1")
@@ -2114,7 +2107,6 @@ fn unrelated_default_history_fails_without_changing_the_checkout() {
 
 #[test]
 fn silent_git_failures_are_checked_before_sync_mutations() {
-    use std::os::unix::fs::PermissionsExt;
     let real_git = std::env::split_paths(&std::env::var_os("PATH").unwrap())
         .map(|dir| dir.join("git"))
         .find(|file| file.is_file())
@@ -2145,12 +2137,11 @@ fn silent_git_failures_are_checked_before_sync_mutations() {
         let bin = r.root.join("bin");
         fs::create_dir(&bin).unwrap();
         let wrapper = bin.join("git");
-        fs::write(
+        test_support::write_executable(
             &wrapper,
             "#!/bin/sh\nfor arg do\n    if [ \"$arg\" = \"$FAIL_COMMAND\" ]; then exit 2; fi\ndone\nexec \"$REAL_GIT\" \"$@\"\n",
         )
         .unwrap();
-        fs::set_permissions(wrapper, fs::Permissions::from_mode(0o755)).unwrap();
         let mut paths = vec![bin];
         paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
         let args = vec!["sync", "--json"];
@@ -2375,7 +2366,6 @@ fn rebase_preserves_fixup_commits_and_disables_user_rebase_configuration() {
 
 #[test]
 fn successful_but_incomplete_integration_is_failed_and_restored() {
-    use std::os::unix::fs::PermissionsExt;
     let real_git = std::env::split_paths(&std::env::var_os("PATH").unwrap())
         .map(|dir| dir.join("git"))
         .find(|file| file.is_file())
@@ -2396,7 +2386,7 @@ fn successful_but_incomplete_integration_is_failed_and_restored() {
         let wrapper = bin.join("git");
         // Simulate a Git process returning success after leaving real operation
         // state or a squash index behind, despite our explicit command options.
-        fs::write(
+        test_support::write_executable(
             &wrapper,
             format!(
                 r#"#!/bin/sh
@@ -2419,7 +2409,6 @@ exec "$REAL_GIT" "$@"
             ),
         )
         .unwrap();
-        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
         let mut paths = vec![bin];
         paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
         let out = r
@@ -2592,9 +2581,9 @@ fn unmatched_default_remote_fails_without_creating_a_branch() {
 
 fn pause_root_rebase(r: &Repo, path: &Path, update_refs: bool) {
     let editor = r.root.join("sequence-editor");
-    fs::write(&editor, "#!/bin/sh\nsed -i '1s/^pick /edit /' \"$1\"\n").unwrap();
-    use std::os::unix::fs::PermissionsExt;
-    fs::set_permissions(&editor, fs::Permissions::from_mode(0o755)).unwrap();
+    test_support::write_executable(&editor, "#!/bin/sh\nsed -i '1s/^pick /edit /' \"$1\"\n")
+        .unwrap();
+
     let mut cmd = r.command("git", path, &["rebase", "-i", "--root"]);
     cmd.env("GIT_SEQUENCE_EDITOR", &editor);
     if update_refs {
@@ -2835,7 +2824,6 @@ fn context_errors_use_shared_exit_codes() {
 
 #[test]
 fn metadata_failure_after_fast_forward_restores_worktree() {
-    use std::os::unix::fs::PermissionsExt;
     let real_git = std::env::split_paths(&std::env::var_os("PATH").unwrap())
         .map(|dir| dir.join("git"))
         .find(|file| file.is_file())
@@ -2851,7 +2839,7 @@ fn metadata_failure_after_fast_forward_restores_worktree() {
         let bin = r.root.join("bin");
         fs::create_dir(&bin).unwrap();
         let wrapper = bin.join("git");
-        fs::write(
+        test_support::write_executable(
             &wrapper,
             r#"#!/bin/sh
 for arg do
@@ -2874,7 +2862,6 @@ exec "$REAL_GIT" "$@"
 "#,
         )
         .unwrap();
-        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755)).unwrap();
         let mut paths = vec![bin];
         paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
         let out = r
@@ -3049,14 +3036,14 @@ fn fetch_failures_exit_one_even_with_a_published_rebase_refusal() {
 
 #[test]
 fn git_hook_read_only_intermediary_can_run_nested_rabi() {
-    use std::os::unix::{fs::PermissionsExt, process::CommandExt};
+    use std::os::unix::process::CommandExt;
     let r = Repo::new();
     r.create("existing");
     let bin = env!("CARGO_BIN_EXE_rabi");
     let marker = r.root.join("monitor-entered");
     let nested_status = r.root.join("monitor-status");
     let monitor = r.root.join("monitor");
-    fs::write(
+    test_support::write_executable(
         &monitor,
         format!(
             r#"#!/bin/sh
@@ -3073,10 +3060,9 @@ printf 'token\000/\000'
         ),
     )
     .unwrap();
-    fs::set_permissions(&monitor, fs::Permissions::from_mode(0o755)).unwrap();
     let hook = r.main.join(".git/hooks/post-checkout");
     fs::create_dir_all(hook.parent().unwrap()).unwrap();
-    fs::write(
+    test_support::write_executable(
         &hook,
         format!(
             "#!/bin/sh\ncd '{}'\ngit config core.fsmonitor '{}'\n'{bin}' list --json\n",
@@ -3085,7 +3071,6 @@ printf 'token\000/\000'
         ),
     )
     .unwrap();
-    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
     let mut child = r
         .command(bin, &r.main, &["create", "outer", "--no-setup"])
         .process_group(0)
@@ -5173,7 +5158,6 @@ fn p8_dry_run_deduplicates_fetch_and_never_claims_a_rewrite() {
 
 #[test]
 fn p8_main_rechecks_primary_branch_after_fetch() {
-    use std::os::unix::fs::PermissionsExt;
     let r = Repo::new();
     let before = r.git(&r.main, &["rev-parse", "main"]);
     r.advance();
@@ -5184,8 +5168,7 @@ fn p8_main_rechecks_primary_branch_after_fetch() {
     let bin = r.root.join("bin");
     fs::create_dir(&bin).unwrap();
     let wrapper = bin.join("git");
-    fs::write(&wrapper, "#!/bin/sh\n\"$REAL_GIT\" \"$@\" || exit $?\nfor arg do\n  if [ \"$arg\" = fetch ]; then env -u GIT_DIR -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY \"$REAL_GIT\" checkout -b moved-during-fetch || exit $?; fi\ndone\n").unwrap();
-    fs::set_permissions(wrapper, fs::Permissions::from_mode(0o755)).unwrap();
+    test_support::write_executable(&wrapper, "#!/bin/sh\n\"$REAL_GIT\" \"$@\" || exit $?\nfor arg do\n  if [ \"$arg\" = fetch ]; then env -u GIT_DIR -u GIT_COMMON_DIR -u GIT_OBJECT_DIRECTORY \"$REAL_GIT\" checkout -b moved-during-fetch || exit $?; fi\ndone\n").unwrap();
     let mut paths = vec![bin];
     paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
     let out = r

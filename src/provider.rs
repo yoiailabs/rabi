@@ -436,6 +436,7 @@ fn io_error(error: std::io::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support;
     use std::io::Write;
 
     #[test]
@@ -493,7 +494,6 @@ mod tests {
     #[test]
     fn codex_command_matches_existing_new_and_resume_argv_and_prompt_stdin() {
         use std::ffi::OsString;
-        use std::os::unix::fs::PermissionsExt;
 
         let root = std::env::temp_dir().join(format!("rabi-command-{}", uuid::Uuid::new_v4()));
         let workspace = root.join("workspace 二");
@@ -503,8 +503,7 @@ mod tests {
         fs::write(dir.join("prompt.md"), b"saved prompt\nwith a second line\n").unwrap();
         // Execution only verifies the configured stdin; argv is checked directly
         // against the literal pre-boundary invocation before adding a local PATH.
-        fs::write(root.join("codex"), "#!/bin/sh\n/bin/cat\n").unwrap();
-        fs::set_permissions(root.join("codex"), fs::Permissions::from_mode(0o700)).unwrap();
+        test_support::write_executable(root.join("codex"), "#!/bin/sh\n/bin/cat\n").unwrap();
         for session in [
             Session::New { requested: None },
             Session::Resume { id: "thread-id" },
