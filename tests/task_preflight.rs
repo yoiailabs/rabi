@@ -1,12 +1,13 @@
 #![cfg(unix)]
 #[path = "common/git.rs"]
 mod test_git;
+#[path = "common/scripts.rs"]
+mod test_support;
 
 use serde_json::{json, Value};
 use std::{
     collections::BTreeMap,
     fs,
-    os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::{Command, Output},
 };
@@ -162,8 +163,7 @@ impl Repo {
             ));
         }
         script.push_str("*) echo \"unexpected gh invocation: $*\" >&2; exit 92 ;;\nesac\n");
-        fs::write(self.root.join("bin/gh"), script).unwrap();
-        fs::set_permissions(self.root.join("bin/gh"), fs::Permissions::from_mode(0o755)).unwrap();
+        test_support::write_executable(self.root.join("bin/gh"), script).unwrap();
     }
     fn trace(&self) -> Vec<Vec<String>> {
         fs::read_to_string(self.root.join("trace"))
@@ -363,7 +363,7 @@ fn moved_head_and_file_count_mismatch_are_reported() {
     )
     .unwrap();
     let script = fs::read_to_string(repo.root.join("bin/gh")).unwrap().replace("case \"$2\" in", "if [ \"$2\" = repos/example/project/pulls/7 ]; then\nif [ -f \"$RABI_FACTS_RESPONSES/head-read\" ]; then cat \"$RABI_FACTS_RESPONSES/final-head\"; exit 0; fi\n: > \"$RABI_FACTS_RESPONSES/head-read\"\nfi\ncase \"$2\" in");
-    fs::write(repo.root.join("bin/gh"), script).unwrap();
+    test_support::write_executable(repo.root.join("bin/gh"), script).unwrap();
     let report = repo.json(&["task", "merge", "--dry-run", "pr:7", "--json"]);
     assert_eq!(report["data"]["items"][1]["result"], "fail");
     assert!(report["data"]["items"][1]["reason"]

@@ -65,6 +65,10 @@ fn format_version(version: &str, sha: Option<&str>) -> String {
 mod test_git;
 
 #[cfg(test)]
+#[path = "../tests/common/scripts.rs"]
+pub(crate) mod test_support;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

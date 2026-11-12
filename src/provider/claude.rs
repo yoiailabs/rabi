@@ -230,6 +230,7 @@ fn probe_in(config: &Path, id: &str) -> Probe {
 mod tests {
     use super::super::{Observation, Provider, SessionIdReader, StopPolicy};
     use super::*;
+    use crate::test_support;
     use std::time::Duration;
 
     const ID: &str = "f93528aa-d8d0-4bc7-bd1e-bfe80a099a5c";
@@ -258,10 +259,8 @@ mod tests {
         let workspace = dir.join("workspace 二");
         fs::create_dir(&workspace).unwrap();
         fs::write(dir.join("prompt.md"), b"saved prompt\nsecond line\n").unwrap();
-        use std::os::unix::fs::PermissionsExt;
         let binary = dir.join("claude");
-        fs::write(&binary, "#!/bin/sh\n/bin/cat\n").unwrap();
-        fs::set_permissions(&binary, fs::Permissions::from_mode(0o700)).unwrap();
+        test_support::write_executable(&binary, "#!/bin/sh\n/bin/cat\n").unwrap();
         for (session, flag) in [
             (
                 Session::New {

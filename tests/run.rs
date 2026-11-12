@@ -1,6 +1,8 @@
 //! Fake-provider integration coverage. No real provider or network is used.
 #[path = "common/git.rs"]
 mod test_git;
+#[path = "common/scripts.rs"]
+mod test_support;
 use serde_json::Value;
 use std::fs;
 use std::io::Write;
@@ -70,7 +72,7 @@ impl Fixture {
         ]);
         fs::create_dir(f.root.join("bin")).unwrap();
         let script = f.root.join("bin/codex");
-        fs::write(&script, r#"#!/usr/bin/env python3
+        test_support::write_executable(&script, r#"#!/usr/bin/env python3
 import json, os, pathlib, signal, subprocess, sys, time, uuid
 args = sys.argv[1:]
 root = pathlib.Path(os.environ['FAKE_ROOT'])
@@ -136,7 +138,6 @@ if os.environ.get('FAKE_WAIT_FINISH'):
 (root/'completed').write_text('done')
 sys.exit(int(os.environ.get('FAKE_EXIT','0')))
 "#).unwrap();
-        fs::set_permissions(script, fs::Permissions::from_mode(0o755)).unwrap();
         f
     }
     fn git(&self, args: &[&str]) {
@@ -718,8 +719,7 @@ fn validation_trust_stdin_and_removed_commands() {
 fn untrusted_run_does_not_execute_fsmonitor() {
     let f = Fixture::new();
     let monitor = f.root.join("bin/monitor");
-    fs::write(&monitor, "#!/usr/bin/env python3\nimport os, pathlib\n(pathlib.Path(os.environ['FAKE_ROOT'])/'fsmonitor-ran').touch()\n").unwrap();
-    fs::set_permissions(&monitor, fs::Permissions::from_mode(0o755)).unwrap();
+    test_support::write_executable(&monitor, "#!/usr/bin/env python3\nimport os, pathlib\n(pathlib.Path(os.environ['FAKE_ROOT'])/'fsmonitor-ran').touch()\n").unwrap();
     f.git(&["config", "core.fsmonitor", monitor.to_str().unwrap()]);
     for args in [
         vec!["run", "--skill", "x"],
@@ -971,7 +971,7 @@ fn parent_failure_and_spawn_or_protocol_errors_preserve_results_and_release_lock
                 c.env("FAKE_NO_THREAD", "1");
             }
             _ => {
-                fs::write(
+                test_support::write_executable(
                     f.root.join("bin/codex"),
                     "#!/nonexistent/codex-interpreter\n",
                 )
@@ -1670,8 +1670,7 @@ fn task_forms_and_option_values_keep_their_meaning() {
 fn selected_repository_must_be_trusted_before_status_inspection() {
     let f = Fixture::new();
     let monitor = f.root.join("bin/monitor-selected");
-    fs::write(&monitor, "#!/usr/bin/env python3\nimport os,pathlib\n(pathlib.Path(os.environ['FAKE_ROOT'])/'selected-monitor-ran').touch()\n").unwrap();
-    fs::set_permissions(&monitor, fs::Permissions::from_mode(0o755)).unwrap();
+    test_support::write_executable(&monitor, "#!/usr/bin/env python3\nimport os,pathlib\n(pathlib.Path(os.environ['FAKE_ROOT'])/'selected-monitor-ran').touch()\n").unwrap();
     f.git(&["config", "core.fsmonitor", monitor.to_str().unwrap()]);
     let out = f
         .command_at(
@@ -1888,8 +1887,7 @@ fn run_refuses_foreign_replacement_and_skips_foreign_sibling_monitors() {
         .unwrap();
     assert!(init.status.success());
     let monitor = f.root.join("bin/foreign-monitor");
-    fs::write(&monitor, "#!/usr/bin/env python3\nimport os,pathlib\n(pathlib.Path(os.environ['FAKE_ROOT'])/'foreign-monitor-ran').touch()\n").unwrap();
-    fs::set_permissions(&monitor, fs::Permissions::from_mode(0o755)).unwrap();
+    test_support::write_executable(&monitor, "#!/usr/bin/env python3\nimport os,pathlib\n(pathlib.Path(os.environ['FAKE_ROOT'])/'foreign-monitor-ran').touch()\n").unwrap();
     assert!(f
         .command_at(
             &f.workspace,
@@ -2045,7 +2043,7 @@ impl Fixture {
             std::os::unix::fs::symlink(source, self.root.join("bin").join(name)).unwrap();
         }
         let script = self.root.join("bin/cursor-agent");
-        fs::write(&script, r#"#!/usr/bin/env python3
+        test_support::write_executable(&script, r#"#!/usr/bin/env python3
 import hashlib, json, os, pathlib, signal, subprocess, sys, time, uuid
 args = sys.argv[1:]
 root = pathlib.Path(os.environ['FAKE_ROOT'])
@@ -2093,7 +2091,6 @@ print('fake Cursor stderr', file=sys.stderr, flush=True)
 (root/'completed').write_text('done')
 sys.exit(int(os.environ.get('CURSOR_EXIT','0')))
 "#).unwrap();
-        fs::set_permissions(script, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     fn cursor_command(&self, args: &[&str]) -> Command {
@@ -2123,7 +2120,11 @@ sys.exit(int(os.environ.get('CURSOR_EXIT','0')))
 fn cursor_fresh_and_resume_preserve_argv_prompt_answer_and_provider_summary() {
     let f = Fixture::new();
     f.fake_cursor();
-    fs::copy(f.root.join("bin/cursor-agent"), f.root.join("bin/agent")).unwrap();
+    test_support::write_executable(
+        f.root.join("bin/agent"),
+        fs::read(f.root.join("bin/cursor-agent")).unwrap(),
+    )
+    .unwrap();
     let first = f.cursor_json(&[
         "run",
         "--provider",
@@ -2659,7 +2660,7 @@ impl Fixture {
             std::os::unix::fs::symlink(source, self.root.join("bin").join(name)).unwrap();
         }
         let script = self.root.join("bin/claude");
-        fs::write(&script, r#"#!/usr/bin/env python3
+        test_support::write_executable(&script, r#"#!/usr/bin/env python3
 import json, os, pathlib, signal, subprocess, sys, time
 args = sys.argv[1:]
 root = pathlib.Path(os.environ['FAKE_ROOT'])
@@ -2727,7 +2728,6 @@ print('fake Claude stderr', file=sys.stderr, flush=True)
 (root/'completed').write_text('done')
 sys.exit(int(os.environ.get('CLAUDE_EXIT','0')))
 "#).unwrap();
-        fs::set_permissions(script, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
     fn claude_command(&self, args: &[&str]) -> Command {
@@ -3786,7 +3786,7 @@ fn handoff_all_providers_capture_inject_grant_and_attribute_appends() {
 if os.environ.get('ADD_HANDOFF'):
     subprocess.run([os.environ['RABI_BIN'], 'handoff', 'add', '--kind', 'checkpoint', 'parent checkpoint'], check=True, stdout=subprocess.DEVNULL)
 "#);
-        fs::write(&binary, script).unwrap();
+        test_support::write_executable(&binary, script).unwrap();
         let first = f.provider_run(
             provider,
             &[
@@ -4691,12 +4691,11 @@ fn repository_env_exec_applies_primary_config_and_uses_prepended_command_lookup(
     let bin = f.workspace.join("node_modules/.bin");
     fs::create_dir_all(&bin).unwrap();
     let script = bin.join("declared-command");
-    fs::write(
+    test_support::write_executable(
         &script,
         "#!/usr/bin/env python3\nimport json, os, sys\nprint(json.dumps({k:os.environ[k] for k in ['DECLARED_VALUE','EMPTY_VALUE','PRIMARY_PATH','WORKSPACE_PATH','HOME_PATH','PATH','RABI_REPO_PATH','RABI_WORKSPACE_PATH'] if k in os.environ}))\nprint(sys.stdin.read(), end='')\n",
     )
     .unwrap();
-    fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
     for outside in [false, true] {
         let mut command = if outside {
             f.command_at(
@@ -5063,12 +5062,11 @@ fn repository_env_codex_binary_is_resolved_before_prepended_path() {
     let bin = f.workspace.join("node_modules/.bin");
     fs::create_dir_all(&bin).unwrap();
     let malicious = bin.join("codex");
-    fs::write(
+    test_support::write_executable(
         &malicious,
         "#!/bin/sh\nprintf hijacked > \"$FAKE_ROOT/hijacked\"\nexit 99\n",
     )
     .unwrap();
-    fs::set_permissions(&malicious, fs::Permissions::from_mode(0o755)).unwrap();
     let out = f
         .command(&["run", "--skill", "x", "--no-handoff"])
         .env("FAKE_CAPTURE_ENV", "1")
@@ -5398,18 +5396,17 @@ fn repository_env_run_skips_workspace_interpreters_but_exec_applies_them() {
             };
             let provider_path = f.root.join("bin").join(binary);
             let source = fs::read_to_string(&provider_path).unwrap();
-            fs::write(
+            test_support::write_executable(
                 &provider_path,
                 source.replacen("#!/usr/bin/env python3", "#!/usr/bin/env fakeinterp", 1),
             )
             .unwrap();
             let original = f.root.join("bin/fakeinterp");
-            fs::write(
+            test_support::write_executable(
                 &original,
                 "#!/bin/sh\nprintf original > \"$FAKE_ROOT/interpreter\"\nexec python3 \"$@\"\n",
             )
             .unwrap();
-            fs::set_permissions(&original, fs::Permissions::from_mode(0o755)).unwrap();
             let workspace_bin = f.workspace.join("node_modules/.bin");
             fs::create_dir_all(&workspace_bin).unwrap();
             let outside = f.root.join("outside-tools");
@@ -5420,12 +5417,11 @@ fn repository_env_run_skips_workspace_interpreters_but_exec_applies_them() {
                 _ => workspace_bin.clone(),
             };
             let malicious = directory.join("fakeinterp");
-            fs::write(
+            test_support::write_executable(
                 &malicious,
                 "#!/bin/sh\nprintf workspace > \"$FAKE_ROOT/interpreter\"\nprintf workspace\n",
             )
             .unwrap();
-            fs::set_permissions(&malicious, fs::Permissions::from_mode(0o755)).unwrap();
             let declaration = match spelling {
                 "variable" => "${RABI_WORKSPACE_PATH}/node_modules/.bin".to_owned(),
                 "literal" => workspace_bin.display().to_string(),
