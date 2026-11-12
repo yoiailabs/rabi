@@ -427,6 +427,24 @@ impl Store {
         self.available(&branch)?;
         let directory = self.path.join(format!(".staging-{}", uuid::Uuid::new_v4()));
         io(fs::DirBuilder::new().mode(0o700).create(&directory))?;
+        let published = self.publish(&directory, id, intent, branch, base_ref, push_remote_url);
+        if published.is_err() {
+            // Best effort: a crash can still leave an ignored staging directory.
+            let _ = fs::remove_dir_all(&directory);
+        }
+        published
+    }
+
+    // Caller holds the creation lock and has created the private staging directory.
+    fn publish(
+        &self,
+        directory: &Path,
+        id: String,
+        intent: String,
+        branch: String,
+        base_ref: String,
+        push_remote_url: String,
+    ) -> Result<View> {
         let _lock = lock(&directory.join(".lock"))?;
         let at = now();
         let task = Task {
@@ -449,9 +467,9 @@ impl Store {
             reason: "created".into(),
             detail: None,
         };
-        self.save(&directory, &task, &event)?;
-        io(File::open(&directory).and_then(|file| file.sync_all()))?;
-        io(fs::rename(&directory, self.path.join(&task.id)))?;
+        self.save(directory, &task, &event)?;
+        io(File::open(directory).and_then(|file| file.sync_all()))?;
+        io(fs::rename(directory, self.path.join(&task.id)))?;
         io(File::open(&self.path).and_then(|file| file.sync_all()))?;
         Ok(View {
             recorded_state: task.state,
