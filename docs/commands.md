@@ -18,6 +18,44 @@ rabi manages workspace boundaries and preparation. Use Git for commits, pushes, 
 
 Exec preserves child output and exit status, ignores `RABI_OUTPUT`, and refuses explicit JSON output. Usage diagnostics and any accompanying help go to stderr, leaving text stdout empty.
 
+## Local task store
+
+These commands manage local bookkeeping only. They do not launch agents, create branches or workspaces, push, or call GitHub. Records are claims for rabi's own bookkeeping, not GitHub evidence; `task status` and `task merge --dry-run` do not consume them.
+
+| Command | Behavior |
+|---|---|
+| `rabi task new TEXT\|- [--branch NAME] [--base REF] [-R REPO] [--json]` | Record nonempty intent from one quoted argument or stdin (`-`) in state `new` |
+| `rabi task list [-R REPO] [--all] [--json]` | List non-terminal tasks; `--all` also includes `merged` and `abandoned` |
+| `rabi task show ID [-R REPO] [--json]` | Show the record and events |
+| `rabi task abandon ID [--reason TEXT] [-R REPO] [--json]` | Transition to `abandoned`; reason defaults to `abandoned` |
+
+ID accepts the full `task_<uuid>` ID or a unique prefix of at least six characters, including the `task_` prefix. Ambiguous or short prefixes exit 2; missing IDs exit 3. Global `-R/--repo` uses ordinary repository selection. All four commands support `--output text|json` and the schema 2 JSON envelope.
+
+A new task's branch defaults to an ASCII slug of its intent with an eight-character UUID suffix. Explicit names must be valid branch names. Creation refuses a local branch, a branch used by any worktree (including an unborn branch), or a branch reserved by another non-terminal task, with exit 2 and no task written. The default base is `origin/<default branch>` and must resolve locally; `--base` can select another local commit-ish. The push remote URL is captured once using `branch.<name>.pushRemote`, `remote.pushDefault`, `branch.<name>.remote`, then `origin`, with Git's push URL rewrites applied. A missing push URL fails creation. URL userinfo and URL query/fragment data are stripped before storage; command errors never include the remote URL.
+
+List entries show ID, derived state, branch and the first intent line. Corrupt records display `blocked(record_mismatch)`; unreadable records display `blocked(internal)`, with warnings, while other entries remain visible. Show includes full intent and event history. List/show derive state without writing: a `new` task requires its branch to be absent locally; every later non-terminal state requires it to exist. Disagreement displays `blocked(record_mismatch)` without replacing the saved state. Terminal states are not derived. Abandon uses the saved state and refuses both terminal states with exit 2.
+
+The store is `<state_dir>/repositories/<sha256(canonical git common-dir bytes)>/tasks/task_<uuid>/`, where `state_dir` is `$XDG_STATE_HOME/rabi` or `~/.local/state/rabi`. It is shared across linked checkouts of one clone and separate for different clones. Directories are created with mode 0700, files with 0600. Each task has schema 1 `task.json`, append-only `events.jsonl`, and a `.lock` file. Writers hold a per-task exclusive file lock (Unix `flock`) through event append and atomic record replacement; creation also holds `tasks/.lock` to serialize branch reservations. Readers create no files and acquire no locks. Events are synced before the record is replaced; an interrupted replacement may leave an extra event, and readers may observe a concurrent append before its record replacement. History is never rewritten. See [file formats and states](json.md#local-task-store).
+
+Allowed transitions are defined in one data table in the implementation:
+
+| From | Allowed next states |
+|---|---|
+| `new` | `implementing`, `blocked`, `abandoned` |
+| `implementing` | `prechecking`, `blocked`, `abandoned` |
+| `prechecking` | `publishing`, `implementing`, `blocked`, `abandoned` |
+| `publishing` | `ci`, `blocked`, `abandoned` |
+| `ci` | `reviewing`, `implementing`, `blocked`, `abandoned` |
+| `reviewing` | `ready`, `implementing`, `blocked`, `abandoned` |
+| `ready` | `classifying`, `blocked`, `abandoned` |
+| `classifying` | `merging`, `awaiting_approval`, `blocked`, `abandoned` |
+| `awaiting_approval` | `merging`, `implementing`, `blocked`, `abandoned` |
+| `merging` | `merged`, `blocked`, `abandoned` |
+| `blocked` | Any non-terminal state (including itself), or `abandoned` |
+| `merged`, `abandoned` | None (terminal) |
+
+Only creation and abandonment are exposed as mutations by these commands. The other states and edges describe the local model; they do not execute any workflow.
+
 ## Task risk
 
 `rabi task risk [SEL] [--base REF] [--json|--output text|json]` classifies committed changes in the selected workspace, including the primary checkout. SEL defaults to dot and uses the same selectors and global `-R/--repo REF` behavior as show/path. Bare `rabi task` prints help and exits 0, like other command groups; unknown subcommands exit 2.
@@ -49,7 +87,7 @@ Preflight prints one PASS/FAIL/N/A line per item, then its verdict, in this orde
 3. `required_checks`: nonempty policy `[ci] required`; the newest run by ID for each name and expected app must be completed with success. Missing, queued, in-progress, skipped, neutral and every other conclusion fail. Same-name runs from other apps and commit statuses are reported as ignored and never satisfy requirements.
 4. `risk_tier`: classify the GitHub file list with the existing classifier and the policy at the PR base SHA. Local commit objects supplement kinds through a protected merge-base→head diff, matching GitHub's PR file comparison, while policy and attributes remain pinned to the base tip; a different path set or truncated files fails. If the merge-base cannot be computed locally, kinds are unknown. Unavailable kinds force high (`unknown:kinds`). A computed high/floor tier passes this item.
 5. `approval`: N/A, `approvals not implemented`, with computed tier/floor detail.
-6. `review_record` and `classification_record`: N/A; no task records exist yet.
+6. `review_record` and `classification_record`: N/A; local task bookkeeping does not supply review or classification evidence.
 7. `no_changes_requested`: no effective reviewer state or aggregate decision is `CHANGES_REQUESTED`.
 8. `mergeable`: GitHub must report `mergeable: true` and state `clean`, `unstable` or `has_hooks`. All other states (including blocked, behind, draft, dirty, unknown and unrecognized values) fail and report the observed state. Null/unknown fails with `GitHub has not computed mergeability`. GitHub may compute mergeability lazily and return null on the first read; that evaluation fails, so rerun later.
 

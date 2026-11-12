@@ -1,8 +1,9 @@
-//! Local committed-change inspection. Policy/classification have no Git I/O.
+//! Task bookkeeping and inspection. Policy/classification have no Git I/O.
 mod classify;
 mod diff;
 mod policy;
 mod preflight;
+pub(crate) mod store;
 
 use std::path::Path;
 

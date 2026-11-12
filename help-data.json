@@ -90,7 +90,7 @@
     },
     {
       "name": "task",
-      "description": "Inspect task risk, GitHub facts and merge preflight"
+      "description": "Manage local tasks and inspect risk, GitHub facts and merge preflight"
     },
     {
       "name": "doctor",
@@ -2175,8 +2175,8 @@
     },
     "task": {
       "name": "task",
-      "description": "Inspect task risk, GitHub facts and merge preflight",
-      "usage": "rabi task risk|status|merge [SEL] [options]",
+      "description": "Manage local tasks and inspect risk, GitHub facts and merge preflight",
+      "usage": "rabi task new|list|show|abandon|risk|status|merge [arguments] [options]",
       "options": [
         {
           "name": "repo",
@@ -2208,7 +2208,7 @@
         }
       ],
       "notes": [
-        "Bare rabi task prints help and exits 0; unknown subcommands exit 2. task risk classifies committed changes locally without modifying the repository."
+        "Bare rabi task prints help and exits 0; unknown subcommands exit 2. rabi task risk classifies committed changes locally without modifying the repository."
       ]
     },
     "task risk": {
@@ -2397,6 +2397,182 @@
           "description": "Inspect the selected repository without changing settings"
         }
       ]
+    },
+    "task new": {
+      "name": "task new",
+      "description": "Record a new local task",
+      "usage": "rabi task new TEXT|- [--branch NAME] [--base REF] [options]",
+      "options": [
+        {
+          "name": "branch",
+          "type": "string",
+          "description": "Unused local branch name; defaults to an intent slug with a unique suffix"
+        },
+        {
+          "name": "base",
+          "type": "string",
+          "description": "Base commit-ish; defaults to origin/<default branch> (must resolve locally)"
+        },
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Repository to operate on; uses the shared workspace selector rules",
+          "example": "--repo owner/repo"
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "Intent must be nonempty; - reads stdin. Records only local bookkeeping, without creating a branch or workspace, launching an agent or contacting GitHub.",
+        "Existing local branches, branches checked out in any checkout, and branches reserved by non-terminal tasks are rejected. The push remote URL is captured once, with credentials removed."
+      ]
+    },
+    "task list": {
+      "name": "task list",
+      "description": "List local tasks",
+      "usage": "rabi task list [--all] [options]",
+      "options": [
+        {
+          "name": "all",
+          "type": "boolean",
+          "description": "Include terminal merged and abandoned tasks"
+        },
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Repository to operate on; uses the shared workspace selector rules",
+          "example": "--repo owner/repo"
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "Lists non-terminal tasks by default. Corrupt or unreadable records display blocked with a warning; other tasks remain visible.",
+        "Displayed state is derived read-only: new requires an absent local branch; later non-terminal states require an existing local branch. Disagreement displays blocked(record_mismatch)."
+      ]
+    },
+    "task show": {
+      "name": "task show",
+      "description": "Show a local task and its event history",
+      "usage": "rabi task show ID [options]",
+      "options": [
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Repository to operate on; uses the shared workspace selector rules",
+          "example": "--repo owner/repo"
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "ID is a full task_<uuid> id or a unique prefix of at least 6 characters. Records and events are read without rewriting them.",
+        "The displayed state may be blocked(record_mismatch) when the recorded state disagrees with local branch existence. The recorded state is also returned in JSON."
+      ]
+    },
+    "task abandon": {
+      "name": "task abandon",
+      "description": "Abandon a non-terminal local task",
+      "usage": "rabi task abandon ID [--reason TEXT] [options]",
+      "options": [
+        {
+          "name": "reason",
+          "type": "string",
+          "description": "Event reason; defaults to abandoned"
+        },
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Repository to operate on; uses the shared workspace selector rules",
+          "example": "--repo owner/repo"
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "ID accepts a full task id or a unique prefix of at least 6 characters. Appends an event and atomically replaces the task record under its lock.",
+        "Merged and abandoned tasks are terminal and cannot be abandoned again. No branch, workspace or GitHub changes."
+      ]
     }
   },
   "globalOptions": [
@@ -2486,7 +2662,9 @@
     "handoff_identity",
     "handoff_request_skipped",
     "env_untrusted",
-    "env_workspace_path_skipped"
+    "env_workspace_path_skipped",
+    "record_mismatch",
+    "internal"
   ],
   "schemaVersion": 2
 }

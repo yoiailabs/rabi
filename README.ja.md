@@ -80,7 +80,11 @@ rabi remove task/auth
 | `rabi repo forget` | 登録だけを削除 |
 | `rabi run` | ワークスペースの親セッションを起動・再開 |
 | `rabi doctor` | GitHub を読み取り専用で診断し、手動確認用にワークフローファイルを列挙（ワークフロー YAML は解析しない） |
-| `rabi task` | ローカルのタスク検査 |
+| `rabi task` | ローカルタスクを管理し、タスクの根拠を検査 |
+| `rabi task new` | 意図を記録し、未使用のブランチ名をローカルで予約 |
+| `rabi task list` | 未完了のローカルタスクを一覧表示（`--all` で終了済みも表示） |
+| `rabi task show` | ローカルタスクと追記専用のイベント履歴を表示 |
+| `rabi task abandon` | 未完了のローカルタスクを中止 |
 | `rabi task risk` | ベースコミットのリスクポリシーでコミット済みの変更を分類 |
 | `rabi task status` | 書き込みなしで GitHub の PR 情報を表示 |
 | `rabi task merge` | マージ事前チェックを評価（`--dry-run` 必須、書き込みなし） |
