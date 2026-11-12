@@ -109,6 +109,20 @@ pub fn list_worktrees(
     exclude_default: bool,
     include_prunable: bool,
 ) -> Result<Vec<WorktreeInfo>> {
+    list_worktrees_with_status(context, exclude_default, include_prunable, true)
+}
+
+/// Resolve committed-work inspection targets without reading checkout state.
+pub(crate) fn list_worktrees_without_status(context: &Context) -> Result<Vec<WorktreeInfo>> {
+    list_worktrees_with_status(context, false, true, false)
+}
+
+fn list_worktrees_with_status(
+    context: &Context,
+    exclude_default: bool,
+    include_prunable: bool,
+    inspect_status: bool,
+) -> Result<Vec<WorktreeInfo>> {
     let git_root_string = context.git_root.to_string_lossy().to_string();
     let stored = metadata::load(&context.git_root).unwrap_or_default();
     let mut infos = Vec::new();
@@ -133,6 +147,7 @@ pub fn list_worktrees(
             record,
             recorded_path.as_deref(),
             &canonical_common,
+            inspect_status,
         ));
     }
     for (key, record) in &stored {
@@ -198,6 +213,7 @@ fn info_from_git(
     metadata: metadata::WorktreeMetadata,
     recorded_path: Option<&Path>,
     common_dir: &Path,
+    inspect_status: bool,
 ) -> WorktreeInfo {
     let short_head = worktree
         .head
@@ -229,7 +245,8 @@ fn info_from_git(
         registered_path: original.clone(),
         path_to_display: paths::list_path(&path),
         branch,
-        is_clean: path.is_dir() && git::is_clean(&path),
+        // Status-free callers use only identity/metadata, never this field.
+        is_clean: inspect_status && path.is_dir() && git::is_clean(&path),
         head: recorded_head(worktree.head.as_deref()),
         is_default: paths::same_location(&original, &context.git_root),
         detached,
@@ -417,7 +434,10 @@ fn same_worktree(worktree: &WorktreeInfo, name: &str) -> bool {
     worktree.name == name || (worktree.branch != "(detached HEAD)" && worktree.branch == name)
 }
 
-fn select_worktree(mut worktrees: Vec<WorktreeInfo>, name: &str) -> Result<WorktreeInfo> {
+pub(crate) fn select_worktree(
+    mut worktrees: Vec<WorktreeInfo>,
+    name: &str,
+) -> Result<WorktreeInfo> {
     if worktrees
         .iter()
         .any(|worktree| !worktree.orphaned && same_worktree(worktree, name))

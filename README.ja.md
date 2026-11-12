@@ -79,6 +79,8 @@ rabi remove task/auth
 | `rabi repo show` | リポジトリを確認 |
 | `rabi repo forget` | 登録だけを削除 |
 | `rabi run` | ワークスペースの親セッションを起動・再開 |
+| `rabi task` | ローカルのタスク検査 |
+| `rabi task risk` | ベースコミットのリスクポリシーでコミット済みの変更を分類 |
 | `rabi skill` | スキル探索 |
 | `rabi skill list` | スキル名・探索元・パスを一覧表示 |
 | `rabi trust` | フック・run・リポジトリ環境の信頼設定 |

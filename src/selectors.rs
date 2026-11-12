@@ -113,8 +113,31 @@ impl Selector {
                 expected_path,
             );
         }
-        let input = self.as_str();
         let listed = crate::worktree::list_worktrees(context, false, true)?;
+        self.resolve_listed(context, listed, exclude_default, expected_path)
+    }
+
+    fn resolve_listed(
+        &self,
+        context: &Context,
+        listed: Vec<WorktreeInfo>,
+        exclude_default: bool,
+        expected_path: Option<&Path>,
+    ) -> Result<WorktreeInfo> {
+        if let Self::Name(name) = self {
+            return crate::worktree::select_worktree(
+                listed
+                    .into_iter()
+                    .filter(|tree| !(exclude_default && tree.is_default))
+                    .filter(|tree| {
+                        expected_path
+                            .is_none_or(|path| paths::same_location(Path::new(&tree.path), path))
+                    })
+                    .collect(),
+                name,
+            );
+        }
+        let input = self.as_str();
         let mut found = if let Self::Path(path) = self {
             let path = absolute_path(path)?;
             listed
@@ -173,6 +196,14 @@ pub(crate) fn resolve(
     expected_path: Option<&Path>,
 ) -> Result<WorktreeInfo> {
     let found = resolve_including_orphaned(context, input, exclude_default, expected_path)?;
+    crate::worktree::require_live(found, input)
+}
+
+/// Same selector identities and ambiguity rules, with no checkout status reads.
+pub(crate) fn resolve_without_status(context: &Context, input: &str) -> Result<WorktreeInfo> {
+    let selector = Selector::parse(input)?;
+    let listed = crate::worktree::list_worktrees_without_status(context)?;
+    let found = selector.resolve_listed(context, listed, false, None)?;
     crate::worktree::require_live(found, input)
 }
 

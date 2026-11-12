@@ -18,6 +18,24 @@ rabi manages workspace boundaries and preparation. Use Git for commits, pushes, 
 
 Exec preserves child output and exit status, ignores `RABI_OUTPUT`, and refuses explicit JSON output. Usage diagnostics and any accompanying help go to stderr, leaving text stdout empty.
 
+## Task risk
+
+`rabi task risk [SEL] [--base REF] [--json|--output text|json]` classifies committed changes in the selected workspace, including the primary checkout. SEL defaults to dot and uses the same selectors and global `-R/--repo REF` behavior as show/path. Bare `rabi task` prints help and exits 0, like other command groups; unknown subcommands exit 2.
+
+`task risk` requires Git 2.44 or later. Task object queries pass the top-level `--no-lazy-fetch` option, and diff queries additionally pass `--attr-source=<base sha>`. Git versions that reject either option fail with exit 1 (`git_failed`) and a minimum-version explanation; the command never silently ignores these protections. Policy presence is checked by reading committed tree objects, without missing-path diagnostics that stat the working tree.
+
+The default base is `origin/<default branch>`, determined through the existing local default-branch lookup. It must resolve locally; there is no fetch or fallback to a different base. `--base REF` selects another commit-ish. The command resolves base and HEAD to commit SHAs, finds their merge-base, and inspects the committed diff from that merge-base to HEAD with rename detection. The policy always comes from the **base tip's committed** `.rabi/policy.toml`, even when the merge-base is older. Head and working-tree policy edits cannot change the selected rules; committed policy edits themselves hit the built-in floor.
+
+Text prints base ref/SHA, merge-base, head SHA, policy source, overall tier (and FLOOR when set), reasons, and a line per changed file. A rename prints old → new paths. Only committed changes are classified; the working tree and index are not read. A completed classification always exits 0, including high or FLOOR. An empty diff is low with reason `no changes`. Invalid policy or Git inspection failures exit 1; invocation errors exit 2. See [policy schema](configuration.md#repository-risk-policy) and [JSON fields](json.md#task-risk).
+
+This command only reads local Git data. It resolves selectors without status inspection and skips checkout `.rabi.toml` loading. Its classification queries use commit objects and tree-to-tree diffs with external diff and textconv disabled; no clean/smudge/process filter or fsmonitor programs run. It does not change refs or records or fetch missing objects. It supplies classification facts; it does not collect approvals or perform merges.
+
+```bash
+rabi task risk
+rabi task risk topic --base main --json
+rabi -R owner/repo task risk topic --output text
+```
+
 ## Workspace handoff
 
 `rabi handoff show [SEL] [--json]` reads the original task and all entries, without a size cap. `rabi handoff path [SEL]` prints the memory directory, including its would-be path before first use. Both commands are read-only. `rabi handoff add [SEL] [--kind checkpoint|decision|note] (TEXT | -)` appends one entry and prints its id; `-` reads all stdin. Default kind is `note`. Both TEXT and stdin have trailing whitespace (including line endings) removed before validation and storage; leading whitespace and internal newlines are preserved. Text must then be nonblank UTF-8, at most 8192 bytes; invalid input and the reserved `request` kind exit 2. I/O failures exit 1. SEL defaults to dot and follows the shared selector rules, including `-R/--repo`; use `--` to protect text starting with a hyphen. Primary checkouts are refused. Unrecorded checkouts require `rabi adopt`.
