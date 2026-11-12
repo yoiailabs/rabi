@@ -34,9 +34,11 @@ Entries append to `handoff.jsonl` under an exclusive dedicated `.lock`, followed
 
 ## Parent sessions and skill discovery
 
-`rabi run [--provider codex|cursor|claude] [--skill VALUE] [--fresh] [--no-handoff] [--timeout DURATION] [TASK | -]` launches one parent session in the checkout containing cwd. To target another workspace, use `rabi run [options] SEL -- [TASK | -]`, for example `rabi run --skill my-skill task/auth -- "Fix authentication"`. The selector follows the shared rules above. `rabi -R /path/to/repo run task/auth --` works from outside the repository. `-R/--repo` requires an explicit SEL; primary checkouts and orphaned workspaces are refused. Repository trust is checked against the selected repository before status inspection (`rabi trust add` or `RABI_TRUST_ALL=1`); untrusted runs exit 4 without prompting.
+`rabi run [--provider codex|cursor|claude] [--skill VALUE] [--fresh] [--no-handoff] [--no-env] [--timeout DURATION] [TASK | -]` launches one parent session in the checkout containing cwd. To target another workspace, use `rabi run [options] SEL -- [TASK | -]`, for example `rabi run --skill my-skill task/auth -- "Fix authentication"`. The selector follows the shared rules above. `rabi -R /path/to/repo run task/auth --` works from outside the repository. `-R/--repo` requires an explicit SEL; primary checkouts and orphaned workspaces are refused. Repository trust is checked against the selected repository before status inspection (`rabi trust add` or `RABI_TRUST_ALL=1`); untrusted runs exit 4 without prompting.
 
 The explicit `--` separates SEL from TASK: at most one positional before it selects the workspace, and at most one after it supplies the task. Without a positional before `--`, the current workspace is used. Without `--`, a single positional remains TASK: `rabi run "task"`, `rabi run -- "task"`, and `rabi run -` keep their existing meanings. Option values such as `--skill --` are consumed as values, not separators. `rabi run SEL --` resumes that workspace with `Continue.`; running inside it later resumes the same session. The parent runs with that workspace as cwd.
+
+`--no-env` skips repository `[env]`. Otherwise each launch, including resume and `--no-handoff`, reads the primary checkout's declaration and applies it to the provider process. Run resolves the provider on its original PATH before prepending entries. Run skips PATH entries inside the target workspace and PATH/set declarations referencing `${RABI_WORKSPACE_PATH}`, with `env_workspace_path_skipped`. Text mode reports only applied keys and the retained PATH-entry count. See [execution environment](configuration.md#repository-execution-environment).
 
 The first launch requires `--skill`; its value is injected verbatim as ``Follow skill `VALUE`.`` without lookup or file validation. TASK is optional text, or `-` reads stdin. The parent manages progress, delegates to its own subagents, gathers git/gh/test evidence, gives follow-ups and decides completion. rabi does not interpret progress or verify publication.
 
@@ -212,13 +214,13 @@ Usage: `rabi gc [--merged] [--closed-pr] [--orphaned] [--older-than D] [--apply]
 
 ### rabi trust
 
-Manage repository hook trust
+Manage repository execution trust
 
 Usage: `rabi trust <add|remove|list> [options]`
 
 ### rabi trust remove
 
-Remove hook trust for a repository
+Remove execution trust for a repository
 
 Usage: `rabi trust remove [REPO] [options]`
 
@@ -226,7 +228,9 @@ Usage: `rabi trust remove [REPO] [options]`
 
 Execute a command in a workspace directory
 
-Usage: `rabi exec [--repo <ref>] [SEL] -- COMMAND [ARG...]`
+Usage: `rabi exec [--repo <ref>] [--no-env] [SEL] -- COMMAND [ARG...]`
+
+`--no-env` skips the primary checkout's declared execution environment and its value validation, and silences `env_untrusted`; TOML syntax and structure are still checked. Trusted exec applies `[env]` before child command lookup; untrusted exec warns and continues without it, never prompting. See [execution environment](configuration.md#repository-execution-environment).
 
 ### rabi config
 
@@ -340,7 +344,7 @@ Usage: `rabi config list [--sources] [options]`
 
 ### rabi trust add
 
-Show hooks and trust a repository without prompting
+Show hooks and execution environment and trust a repository without prompting
 
 Usage: `rabi trust add [REPO] [options]`
 

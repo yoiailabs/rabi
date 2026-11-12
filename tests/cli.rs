@@ -2826,7 +2826,8 @@ fn exec_passes_command_options_through() {
 
     let help = repo.rabi(&["exec", "--help"]);
     assert!(help.status.success(), "{}", text(&help.stderr));
-    assert!(text(&help.stdout).contains("rabi exec [--repo <ref>] [SEL] -- COMMAND [ARG...]"));
+    assert!(text(&help.stdout)
+        .contains("rabi exec [--repo <ref>] [--no-env] [SEL] -- COMMAND [ARG...]"));
 
     let early = repo.rabi(&["exec", "--show-current", "feature/exec-flags", "true"]);
     assert_eq!(early.status.code(), Some(2));
@@ -2844,7 +2845,8 @@ fn exec_help_skips_output_values_and_preserves_child_help() {
     ] {
         let out = repo.rabi(&args);
         assert!(out.status.success(), "{args:?}: {}", text(&out.stderr));
-        assert!(text(&out.stdout).contains("rabi exec [--repo <ref>] [SEL] -- COMMAND [ARG...]"));
+        assert!(text(&out.stdout)
+            .contains("rabi exec [--repo <ref>] [--no-env] [SEL] -- COMMAND [ARG...]"));
         assert!(out.stderr.is_empty());
     }
     let value = repo.rabi(&["exec", "--output", "--help"]);
@@ -2860,7 +2862,7 @@ fn exec_help_skips_output_values_and_preserves_child_help() {
             let mut args = prefix.clone();
             args.push("main");
             args.push("--");
-            args.extend(["printf", "%s", "--help"]);
+            args.extend(["sh", "-c", "printf '%s' \"$@\"", "sh", "--help"]);
             let out = repo.rabi(&args);
             assert!(out.status.success(), "{args:?}: {}", text(&out.stderr));
             assert_eq!(text(&out.stdout), "--help", "{args:?}");
@@ -2879,7 +2881,16 @@ fn create_and_attach_exec_pass_command_options_through() {
     ] {
         assert!(repo.rabi(&args).status.success());
         let name = args.last().unwrap();
-        let output = repo.rabi(&["exec", name, "--", "printf", "%s", "--json --repo --help"]);
+        let output = repo.rabi(&[
+            "exec",
+            name,
+            "--",
+            "sh",
+            "-c",
+            "printf '%s' \"$@\"",
+            "sh",
+            "--json --repo --help",
+        ]);
         assert!(output.status.success());
         assert_eq!(text(&output.stdout), "--json --repo --help");
     }
@@ -4038,9 +4049,8 @@ fn exec_project_option_passes_later_options_to_the_command() {
         text(&created.stdout),
         text(&created.stderr)
     );
-    assert!(managed_directory(&project, &repo.root.join("xdg"))
-        .join("foo")
-        .is_dir());
+    let workspace = managed_directory(&project, &repo.root.join("xdg")).join("foo");
+    assert!(workspace.is_dir());
 
     let passed = run(&[
         "exec",
@@ -4048,15 +4058,19 @@ fn exec_project_option_passes_later_options_to_the_command() {
         "acme/ptm805exec",
         "foo",
         "--",
-        "pwd",
+        "sh",
+        "-c",
+        "pwd; printf '%s\\n' \"$@\" >&2; exit 1",
+        "sh",
         "--repo",
         "y",
     ]);
     assert_eq!(passed.status.code(), Some(1), "{}", text(&passed.stderr));
+    assert!(paths_match(&text(&passed.stdout), &workspace));
     let stderr = text(&passed.stderr);
     assert!(
-        stderr.contains("unrecognized option '--repo'"),
-        "pwd should receive --repo y: {stderr}"
+        stderr.starts_with("--repo\ny\n"),
+        "child should receive --repo y: {stderr}"
     );
     assert!(!stderr.contains("Unknown option"), "{stderr}");
     assert!(!stderr.contains("matches multiple"), "{stderr}");
@@ -4067,8 +4081,10 @@ fn exec_project_option_passes_later_options_to_the_command() {
         "acme/ptm805exec",
         "foo",
         "--",
-        "printf",
-        "%s\n",
+        "sh",
+        "-c",
+        "printf '%s\\n' \"$@\"",
+        "sh",
         "--repo",
         "y",
     ]);
@@ -4086,13 +4102,17 @@ fn exec_project_option_passes_later_options_to_the_command() {
         "no-such-ptm805",
         "foo",
         "--",
-        "pwd",
+        "sh",
+        "-c",
+        "pwd; printf '%s\\n' \"$@\" >&2; exit 1",
+        "sh",
         "--repo",
         "y",
     ]);
     assert_eq!(missing.status.code(), Some(3), "{}", text(&missing.stderr));
     assert!(text(&missing.stderr).contains("Repository 'no-such-ptm805' not found"));
-    assert!(!text(&missing.stderr).contains("unrecognized option"));
+    assert!(missing.stdout.is_empty());
+    assert!(!text(&missing.stderr).contains("--repo\ny"));
 }
 
 #[test]
@@ -4905,7 +4925,16 @@ fn readers_warn_on_corrupt_metadata_and_still_run() {
 fn exec_command_json_flag_does_not_switch_rabi_to_json() {
     let repo = Repo::new();
     assert!(repo.rabi(&["create", "child"]).status.success());
-    let out = repo.rabi(&["exec", "child", "--", "printf", "%s", "--json"]);
+    let out = repo.rabi(&[
+        "exec",
+        "child",
+        "--",
+        "sh",
+        "-c",
+        "printf '%s' \"$@\"",
+        "sh",
+        "--json",
+    ]);
     assert!(out.status.success());
     assert_eq!(text(&out.stdout), "--json");
 }
@@ -9595,7 +9624,19 @@ fn output_environment_and_explicit_modes_have_deterministic_precedence() {
         args.extend(["main", "true"]);
         assert_eq!(run(&args, "json").status.code(), Some(2));
     }
-    let out = run(&["exec", "main", "--", "printf", "%s", "--json"], "invalid");
+    let out = run(
+        &[
+            "exec",
+            "main",
+            "--",
+            "sh",
+            "-c",
+            "printf '%s' \"$@\"",
+            "sh",
+            "--json",
+        ],
+        "invalid",
+    );
     assert!(out.status.success());
     assert_eq!(text(&out.stdout), "--json");
 }
@@ -9801,7 +9842,17 @@ fn common_options_can_precede_the_command_path() {
     let repo = Repo::new();
     assert_envelope(&repo.rabi(&["--output", "json", "list"]), "list");
     assert_envelope(&repo.rabi(&["--json", "repo", "list"]), "repo list");
-    let out = repo.rabi(&["--no-input", "exec", "main", "--", "printf", "%s", "--json"]);
+    let out = repo.rabi(&[
+        "--no-input",
+        "exec",
+        "main",
+        "--",
+        "sh",
+        "-c",
+        "printf '%s' \"$@\"",
+        "sh",
+        "--json",
+    ]);
     assert!(out.status.success());
     assert_eq!(text(&out.stdout), "--json");
 }
@@ -10990,8 +11041,10 @@ fn outer_global_repo_selection_works_before_commands_and_preserves_child_argumen
         "exec",
         "main",
         "--",
-        "printf",
-        "%s",
+        "sh",
+        "-c",
+        "printf '%s' \"$@\"",
+        "sh",
         "--project",
     ]);
     assert_eq!(out.status.code(), Some(0));
@@ -11306,7 +11359,16 @@ fn unknown_commands_and_options_are_usage_errors() {
         assert!(out.stderr.is_empty());
     }
     assert!(repo.rabi(&["create", "child"]).status.success());
-    let out = repo.rabi(&["exec", "child", "--", "printf", "%s", "--owner"]);
+    let out = repo.rabi(&[
+        "exec",
+        "child",
+        "--",
+        "sh",
+        "-c",
+        "printf '%s' \"$@\"",
+        "sh",
+        "--owner",
+    ]);
     assert!(out.status.success(), "{out:?}");
     assert_eq!(text(&out.stdout), "--owner");
 }
@@ -20060,7 +20122,7 @@ rabi cd; or exit 19
 test "$PWD" = "$start"; or exit 20
 rabi exec -- sh -c 'exit 23'
 test $status -eq 23; or exit 21
-rabi exec -- printf '%s\n' 'space argument' '' '-leading' > "$RABI_TEST_ARGS"; or exit 17
+rabi exec -- sh -c 'printf "%s\n" "$@"' sh 'space argument' '' '-leading' > "$RABI_TEST_ARGS"; or exit 17
 complete -C 'rabi ' > "$RABI_TEST_COMMANDS"
 complete -C 'rabi path ' > "$RABI_TEST_NAMES"
 complete -C 'rabi repo ' > "$RABI_TEST_CHILDREN"
@@ -20095,7 +20157,7 @@ rabi cd || exit 19
 [ "$PWD" = "$start" ] || exit 20
 rabi exec -- sh -c 'exit 23'
 [ "$?" -eq 23 ] || exit 21
-rabi exec -- printf '%s\n' 'space argument' '' '-leading' > "$RABI_TEST_ARGS" || exit 17
+rabi exec -- sh -c 'printf "%s\n" "$@"' sh 'space argument' '' '-leading' > "$RABI_TEST_ARGS" || exit 17
 if [ -n "$ZSH_VERSION" ]; then
     [ "${_comps[rabi]}" = _rabi ] || exit 18
     # Stub only the ZLE presentation; exercise the registered adapter.
