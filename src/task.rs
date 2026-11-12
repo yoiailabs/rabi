@@ -454,7 +454,18 @@ pub(crate) fn github_report(
         let result = client.merge(number, policy.merge.method.flag(), &facts.pr.head_sha);
         // Re-read even after a failed gh invocation: it may have merged remotely
         // before reporting an error. Never retry the write automatically.
-        let updated = client.snapshot(number)?;
+        let updated = match client.snapshot(number) {
+            Ok(updated) => updated,
+            Err(reread) => {
+                let invocation = match &result {
+                    Ok(()) => "ok".to_string(),
+                    Err(error) => format!("failed: {error}"),
+                };
+                return Err(Error::msg(format!(
+                    "Merge outcome unknown: gh pr merge {invocation}; re-reading the PR failed: {reread}"
+                )));
+            }
+        };
         let merged = updated.pr.merged;
         let merged_head = merged.then_some(updated.pr.head_sha.as_str());
         if crate::output::json() {

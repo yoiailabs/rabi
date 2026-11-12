@@ -595,12 +595,14 @@ fn dry_run_and_real_merge_share_evaluation_table() {
             repo.head
         );
         match failure {
-            "check" => responses
-                .get_mut(&format!(
+            "check" => {
+                responses
+                    .get_mut(&format!(
                     "repos/example/project/commits/{}/check-runs?filter=all&per_page=100&page=2",
                     repo.head
                 ))
-                .unwrap()["check_runs"][0]["conclusion"] = json!("failure"),
+                    .unwrap()["check_runs"][0]["conclusion"] = json!("failure")
+            }
             "approval" => {
                 responses.insert(statuses, json!([]));
             }
