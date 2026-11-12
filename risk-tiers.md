@@ -1,6 +1,6 @@
 # Merge risk tiers
 
-This policy applies to development of the rabi repository. Maintainers apply it; rabi has no risk-classification or merge command.
+This policy applies to development of the rabi repository. Maintainers apply it. Tiers that rabi tooling computes from path rules, when available, do not replace this classification.
 
 Classify each change by its behavioral and security impact, never its author or touched paths alone. Read the full proposed diff against its merge-base and relevant callers. When in doubt, classify it as high.
 
@@ -8,7 +8,7 @@ Classify each change by its behavioral and security impact, never its author or 
 |---|---|---|---|
 | low | no | Documentation/tests-only changes that do not direct unsafe actions, or other demonstrably behavior-neutral changes; no high-risk condition below. | A maintainer may merge after required CI is green, review passes, every finding has a response, and no Important remains unresolved. |
 | medium | no | Bug fixes, internal refactors, or backward-compatible additions that preserve user-facing contracts and security boundaries, including calling an existing stop/process helper on a newly detected error path; no high-risk condition below. | Same gates as low; a maintainer may merge. |
-| high | yes | Incompatible user-facing contract changes (CLI output, exit codes, JSON schema, config, selectors, shell integration); actual changes to trust, hooks, delete/remove (including gc), or sync security boundaries; installer, CI, release, toolchain, or dependency changes that can ship bad binaries, change what is published, or rewrite published history; CI or release changes to what runs with credentials, token permissions, secret exposure, or triggers for untrusted code; real data-loss or lost-commits risk; process spawn/kill changes that expand the blast radius beyond existing helpers, such as new kill paths or killing processes the run did not start; changes to the risk classification policy, merge risk tiers, or rules deciding when human review, security review, or automated merging is required, whether relaxing or tightening those gates (for example, `risk-tiers.md` itself or equivalent gate wording in `CONTRIBUTING.md`, `AGENTS.md`, `REVIEW.md`, or `.github/pull_request_template.md`). | A maintainer must approve the specific HEAD SHA before merge. Automation (including CI and bots) must not merge high-risk changes. Required CI and review must pass, every finding must have a response, and no Important may remain unresolved. |
+| high | yes | Incompatible user-facing contract changes (CLI output, exit codes, JSON schema, config, selectors, shell integration); actual changes to trust, hooks, delete/remove (including gc), or sync security boundaries; installer, CI, release, toolchain, or dependency changes that can ship bad binaries, change what is published, or rewrite published history; CI or release changes to what runs with credentials, token permissions, secret exposure, or triggers for untrusted code; real data-loss or lost-commits risk; process spawn/kill changes that expand the blast radius beyond existing helpers, such as new kill paths or killing processes the run did not start; changes to the risk classification policy, merge risk tiers, or rules deciding when human review, security review, or automated merging is required, whether relaxing or tightening those gates (for example, `risk-tiers.md` itself or equivalent gate wording in `CONTRIBUTING.md`, `AGENTS.md`, `REVIEW.md`, or `.github/pull_request_template.md`). | A maintainer must approve the specific HEAD SHA before merge. Automation (including CI and bots) must not merge high-risk changes, with one exception: `rabi task merge` may merge after a maintainer has approved the exact HEAD SHA and that approval is recorded with `rabi task approve`, as described under "Approved high-risk merges by rabi". Required CI and review must pass, every finding must have a response, and no Important may remain unresolved. |
 
 A policy-text change that changes merge gates, risk assessment requirements, or human-review rules must not be classified low or medium solely because it is documentation. Purely editorial edits, such as a typo or link fix, can still be low only when they demonstrably leave those rules and gates unchanged; the assessment must explain why they are unchanged.
 
@@ -44,4 +44,14 @@ Any change that actually affects trust, hooks, delete/remove (including gc), or 
 
 Before merging, confirm required CI, review, any required security review, and the risk assessment cover the current HEAD. Approval covers one HEAD SHA. New commits require updated checks, fresh review, risk assessment, and renewed maintainer approval for high risk. Risk classification does not replace ordinary or security review. Follow the [review guide](REVIEW.md).
 
-Use `gh pr merge --squash --match-head-commit <sha>` with that verified SHA. For high risk, merge only after a maintainer approves that SHA; automation must not merge it.
+Use `gh pr merge --squash --match-head-commit <sha>` with that verified SHA. For high risk, merge only after a maintainer approves that SHA; automation must not merge it except through `rabi task merge` as described below.
+
+## Approved high-risk merges by rabi
+
+This exception applies once `rabi task approve` and `rabi task merge` are available.
+
+- `rabi task approve` records a maintainer's approval for one exact HEAD SHA. A maintainer runs it, or explicitly directs someone to run it for a full SHA the maintainer names, only after review, any required security review, and the risk assessment cover that SHA.
+- Automation must never run `rabi task approve` on its own initiative, for a different SHA, or for a HEAD that changed after the maintainer approved it, and must not create, change, or copy the approval record by any other means.
+- `rabi task merge` merges only when the recorded approval matches the current HEAD SHA and required CI and review cover that HEAD, and it merges with `gh pr merge --squash --match-head-commit <sha>` on that SHA. Run it from a rabi built from `main` or from a release, never from the change being merged.
+- The exception does not cover release, version, or tag changes; automation must not merge those.
+- Changes to how `rabi task approve` or `rabi task merge` decide whether a merge may proceed are high risk.
