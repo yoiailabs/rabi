@@ -199,7 +199,12 @@ sys.exit(int(os.environ.get('FAKE_EXIT','0')))
         fs::read_dir(self.current())
             .unwrap()
             .map(|e| e.unwrap().path())
-            .find(|p| !p.to_string_lossy().ends_with(".lock"))
+            // Skip the lock and the hidden temporary file that atomic writes
+            // rename over the pointer or its lock; it can vanish before it is read.
+            .find(|p| {
+                let name = p.file_name().unwrap_or_default().to_string_lossy();
+                !name.ends_with(".lock") && !name.starts_with('.')
+            })
             .unwrap()
     }
     fn run_dir(&self) -> PathBuf {
