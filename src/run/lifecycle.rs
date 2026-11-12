@@ -709,12 +709,16 @@ mod tests {
     fn session_callback_can_request_a_controlled_error_stop() {
         for stop in [false, true] {
             let path = std::env::temp_dir().join(format!("rabi-callback-{}", uuid::Uuid::new_v4()));
+            // `sh` runs a TERM trap only after a foreground child exits, and a
+            // TERM that lands between fork and exec leaves `sleep` running, so
+            // the stop escalates to KILL (137). `wait` is interrupted by the
+            // trap at once, keeping the observed TERM status deterministic.
             let pause = if stop { "60" } else { ".05" };
             let child = std::process::Command::new("sh")
                 .args([
                     "-c",
                     &format!(
-                        "trap 'exit 42' TERM; printf ready; sleep {pause}; printf completed; exit 42"
+                        "trap 'kill $p 2>/dev/null; exit 42' TERM; printf ready; sleep {pause} & p=$!; wait $p; printf completed; exit 42"
                     ),
                 ])
                 .stdout(File::create(&path).unwrap())
