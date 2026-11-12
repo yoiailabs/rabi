@@ -257,9 +257,9 @@ fn task_group_and_argument_validation_use_usage_status() {
     // Like other command groups, a bare group prints its help.
     let bare = repo.rabi(&["task"]);
     assert!(bare.status.success());
-    assert!(String::from_utf8(bare.stdout)
-        .unwrap()
-        .contains("rabi task risk"));
+    let help = String::from_utf8(bare.stdout).unwrap();
+    let help = help.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(help.contains("rabi task risk"), "{help}");
 }
 
 #[test]

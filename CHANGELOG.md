@@ -4,6 +4,8 @@
 
 ### Added
 
+- Local `rabi task new|list|show|abandon` bookkeeping stores private task records and append-only transition events outside the repository. Branch reservations, ID prefixes, read-only branch/state mismatch reporting and credential-free push URLs require no GitHub calls, agents or workspace creation. Records use camelCase fields, are published from complete staged directories, and share repository identity validation with handoff memory; unreadable records fail closed with exit 1 and name the task.
+
 - Read-only `rabi task status [SEL]` and `rabi task merge --dry-run [SEL]` collect paginated GitHub facts through GET APIs and evaluate three-valued merge preflight. Repository risk policies accept `[ci] required` check names with app issuers. Missing/failed checks, inconsistent heads, truncated files, forks, changes requested and unknown mergeability block evaluation; approvals and task records remain not evaluated. No merge or other writes are available; `task merge` requires `--dry-run`.
 - Add `rabi doctor [-R REPO] [--json]` for read-only GitHub diagnostics and workflow file listings for manual review. Doctor does not parse workflow YAML and reports unavailable data as informational findings.
 

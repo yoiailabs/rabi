@@ -5,13 +5,9 @@ use crate::worktree::WorktreeInfo;
 use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom, Write};
-use std::os::unix::ffi::OsStrExt;
 use std::path::{Path, PathBuf};
 
-#[cfg(unix)]
-mod storage;
-#[cfg(unix)]
-use storage::Directory;
+use crate::repository_state::{Directory, RepositoryState};
 
 fn reminder(command: &str) -> String {
     format!("Record durable context at the end of design, at implementation checkpoints, and before review. Supply text on stdin, for example:\n```sh\n{command} handoff add --kind checkpoint - <<'EOF'\nDecisions, constraints, verification and remaining work.\nEOF\n```\nUse `--kind decision` for decisions. Never include secrets or transcripts. Use the rabi command; do not edit rabi state files directly.")
@@ -79,12 +75,6 @@ pub(crate) struct Injection {
 }
 #[derive(Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-struct Repository {
-    schema: u32,
-    common_dir: PathBuf,
-}
-#[derive(Serialize, Deserialize, PartialEq)]
-#[serde(rename_all = "camelCase")]
 struct Identity {
     schema: u32,
     workspace_id: String,
@@ -92,10 +82,8 @@ struct Identity {
     path: String,
 }
 pub(crate) struct Memory {
-    state_root: PathBuf,
-    repository: PathBuf,
+    repository: RepositoryState,
     identity: Identity,
-    common: PathBuf,
     pub path: PathBuf,
 }
 pub(crate) struct Capture {
@@ -132,15 +120,11 @@ impl Memory {
         if !valid_id(id, "ws_") {
             return Err(Error::msg("Handoff memory: invalid workspace record id"));
         }
-        let common = crate::git::canonical_common_dir(root)?;
-        let digest = crate::hash::sha256_hex(common.as_os_str().as_bytes());
-        let state_root = io(Directory::canonical_root(&crate::paths::state_dir()?))?;
-        let repository = Path::new("repositories").join(digest);
-        let path = state_root.join(&repository).join("memory").join(id);
+        let repository = RepositoryState::locate(root)
+            .map_err(|e| Error::msg(format!("Handoff memory: {e}")))?;
+        let path = repository.path().join("memory").join(id);
         Ok(Self {
-            state_root,
             repository,
-            common,
             path,
             identity: Identity {
                 schema: 1,
@@ -152,25 +136,13 @@ impl Memory {
     }
 
     fn directory(&self, writing: bool) -> Result<Option<Directory>> {
-        let Some(repo) = io(Directory::open(&self.state_root, &self.repository, writing))? else {
+        let Some(repo) = self
+            .repository
+            .directory(writing)
+            .map_err(|e| Error::msg(format!("Handoff memory: {e}")))?
+        else {
             return Ok(None);
         };
-        let expected = Repository {
-            schema: 1,
-            common_dir: self.common.clone(),
-        };
-        if writing {
-            io(repo.publish("repository.json", &json(&expected)?))?;
-        }
-        let manifest = io(repo.read("repository.json"))?
-            .ok_or_else(|| Error::msg("Handoff memory: missing repository.json"))?;
-        let stored: Repository = serde_json::from_slice(&manifest)
-            .map_err(|e| Error::msg(format!("Handoff repository.json: {e}")))?;
-        if stored != expected {
-            return Err(Error::msg(
-                "Handoff repository.json commonDir mismatch; refusing to reuse repository state",
-            ));
-        }
         let Some(parent) = io(repo.child("memory", writing))? else {
             return Ok(None);
         };
@@ -236,8 +208,8 @@ impl Memory {
                 .ok_or_else(|| Error::msg("Handoff directory missing"))?;
             let lock = io(dir.lock())?;
             let parent = io(Directory::open(
-                &self.state_root,
-                &self.repository.join("memory"),
+                &self.repository.state_root,
+                &self.repository.relative.join("memory"),
                 false,
             ))?
             .ok_or_else(|| Error::msg("Handoff parent directory missing"))?;
@@ -371,7 +343,7 @@ impl Memory {
         let launch = std::env::var("RABI_RUN_LAUNCH").ok()?.parse().ok()?;
         let provider = std::env::var("RABI_RUN_PROVIDER").ok()?.parse().ok()?;
         crate::run::validate_handoff_source(
-            &self.common,
+            &self.repository.common,
             &self.identity.workspace_id,
             &self.identity.path,
             &run_id,

@@ -867,6 +867,73 @@ fn task_root(args: &[String]) -> Result<i32> {
     )))
 }
 
+fn task_new(args: &[String]) -> Result<i32> {
+    task_store(args, "new")
+}
+fn task_list(args: &[String]) -> Result<i32> {
+    task_store(args, "list")
+}
+fn task_show(args: &[String]) -> Result<i32> {
+    task_store(args, "show")
+}
+fn task_abandon(args: &[String]) -> Result<i32> {
+    task_store(args, "abandon")
+}
+fn task_store(args: &[String], command: &str) -> Result<i32> {
+    let parsed = args::parse(args, &command_options(&format!("task {command}")), true)?;
+    let expected = usize::from(command != "list");
+    if parsed.positionals.len() != expected {
+        return Err(Error::validation(format!(
+            "task {command} requires {expected} positional argument(s); see rabi help task {command}"
+        )));
+    }
+    let branch = single_value(&parsed, "branch")?;
+    let base = single_value(&parsed, "base")?;
+    let reason = single_value(&parsed, "reason")?;
+    let repository = selected_repository(&parsed)?;
+    let cwd = std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?;
+    let root = crate::git::git_root(repository.as_deref().unwrap_or(&cwd))?;
+    let store = crate::task::store::Store::locate(&root)?;
+    if command == "list" {
+        let entries = store.list(parsed.flag("all"))?;
+        if crate::output::json() {
+            return emit_json(&serde_json::json!({"tasks": entries}));
+        }
+        for entry in entries {
+            entry.print();
+        }
+        return Ok(SUCCESS);
+    }
+    let argument = &parsed.positionals[0];
+    let view = match command {
+        "new" => {
+            let intent = if argument == "-" {
+                use std::io::Read;
+                let mut intent = String::new();
+                std::io::stdin()
+                    .read_to_string(&mut intent)
+                    .map_err(|e| Error::msg(format!("Failed to read task intent: {e}")))?;
+                intent
+            } else {
+                argument.clone()
+            };
+            store.create(intent, branch, base)?
+        }
+        "abandon" => store.transition(
+            argument,
+            crate::task::store::TaskState::Abandoned,
+            reason.unwrap_or("abandoned"),
+        )?,
+        _ => store.show(argument)?,
+    };
+    if crate::output::json() {
+        emit_json(&view)
+    } else {
+        view.print();
+        Ok(SUCCESS)
+    }
+}
+
 fn task_status(args: &[String]) -> Result<i32> {
     task_github(args, false)
 }
@@ -2011,6 +2078,14 @@ fn set(args: &[String]) -> Result<i32> {
 fn command_options(key: &str) -> Vec<Opt> {
     let mut options = match key {
         "doctor" | "task" => vec![repo_flag()],
+        "task new" => vec![
+            repo_flag(),
+            value_flag("branch", None),
+            value_flag("base", None),
+        ],
+        "task list" => vec![repo_flag(), flag("all", None)],
+        "task show" => vec![repo_flag()],
+        "task abandon" => vec![repo_flag(), value_flag("reason", None)],
         "task risk" => vec![repo_flag(), value_flag("base", None)],
         "task status" => vec![repo_flag()],
         "task merge" => vec![repo_flag(), value_flag("base", None), flag("dry-run", None)],
@@ -2587,6 +2662,30 @@ static COMMANDS: &[Command] = &[
         help_key: "task",
         run: task_root,
         children: &[
+            Command {
+                name: "new",
+                help_key: "task new",
+                run: task_new,
+                children: &[],
+            },
+            Command {
+                name: "list",
+                help_key: "task list",
+                run: task_list,
+                children: &[],
+            },
+            Command {
+                name: "show",
+                help_key: "task show",
+                run: task_show,
+                children: &[],
+            },
+            Command {
+                name: "abandon",
+                help_key: "task abandon",
+                run: task_abandon,
+                children: &[],
+            },
             Command {
                 name: "risk",
                 help_key: "task risk",

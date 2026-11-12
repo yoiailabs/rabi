@@ -8,7 +8,7 @@ use std::os::unix::fs::{DirBuilderExt, MetadataExt};
 use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, Instant};
 
-pub(super) struct Directory(File);
+pub(crate) struct Directory(File);
 fn name(value: &OsStr) -> io::Result<CString> {
     CString::new(value.as_bytes()).map_err(io::Error::other)
 }
