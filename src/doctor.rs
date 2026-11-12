@@ -107,19 +107,19 @@ fn evaluate(facts: Facts) -> Report {
             "required_status_checks",
             "required_checks_not_enforced",
             false,
-            "GitHub does not block merging on red CI; rabi's preflight is the only gate",
+            "No required-status-checks ruleset rule protects the default branch; rabi's preflight remains a gate",
         ),
         (
             "non_fast_forward",
             "force_push_allowed",
             false,
-            "GitHub does not prohibit force pushes to the default branch",
+            "No non-fast-forward ruleset rule protects the default branch",
         ),
         (
             "deletion",
             "deletion_allowed",
             false,
-            "GitHub does not prohibit deletion of the default branch",
+            "No deletion ruleset rule protects the default branch",
         ),
         (
             "merge_queue",
@@ -130,9 +130,13 @@ fn evaluate(facts: Facts) -> Report {
     ];
     for (kind, code, present, message) in rules {
         match &facts.rules {
-            Ok(rules) if rules.iter().any(|rule| rule["type"] == kind) == present => findings.push(
-                Finding::warning(code, message, "Effective default-branch rules"),
-            ),
+            Ok(rules) if rules.iter().any(|rule| rule["type"] == kind) == present => {
+                findings.push(Finding::warning(
+                    code,
+                    message,
+                    "Default-branch rulesets only; classic branch protection is not inspected",
+                ))
+            }
             Err(reason) => findings.push(Finding::unavailable(code, reason)),
             _ => {}
         }
@@ -453,13 +457,10 @@ pub(crate) fn inspect(root: &Path) -> Report {
     }
     if let Some(branch) = &facts.default_branch {
         let remote = default_remote(root, branch);
-        facts.push_ssh = remote
-            .as_ref()
-            .map_err(|reason| *reason)
-            .and_then(|remote| {
-                let urls = git_text(root, &["remote", "get-url", "--push", "--all", remote])?;
-                Ok(urls.lines().any(is_ssh))
-            });
+        facts.push_ssh = push_remote(root, branch).and_then(|remote| {
+            let urls = git_text(root, &["remote", "get-url", "--push", "--all", &remote])?;
+            Ok(urls.lines().any(is_ssh))
+        });
         facts.workflows = workflows(root, branch, remote.as_deref().ok());
     }
     evaluate(facts)
@@ -537,6 +538,21 @@ fn default_remote(root: &Path, branch: &str) -> Probe<String> {
         return Ok(names[0].to_owned());
     }
     Err("Default branch remote could not be determined")
+}
+
+fn push_remote(root: &Path, branch: &str) -> Probe<String> {
+    for key in [
+        format!("branch.{branch}.pushRemote"),
+        "remote.pushDefault".into(),
+        format!("branch.{branch}.remote"),
+    ] {
+        if let Ok(remote) = git_text(root, &["config", "--get", &key]) {
+            if !remote.is_empty() {
+                return Ok(remote);
+            }
+        }
+    }
+    Ok("origin".into())
 }
 
 fn is_ssh(url: &str) -> bool {
@@ -675,6 +691,21 @@ mod tests {
                 _ => unreachable!(),
             }
             let report = evaluate(facts);
+            if matches!(
+                code,
+                "required_checks_not_enforced"
+                    | "force_push_allowed"
+                    | "deletion_allowed"
+                    | "merge_queue"
+            ) {
+                assert!(report
+                    .findings
+                    .iter()
+                    .filter(|finding| finding.code == code)
+                    .all(|finding| finding
+                        .detail
+                        .contains("classic branch protection is not inspected")));
+            }
             assert!(
                 report.findings.iter().any(|finding| finding.code == code),
                 "{code}"

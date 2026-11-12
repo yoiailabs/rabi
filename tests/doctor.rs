@@ -421,3 +421,104 @@ fn effective_rules_and_rulesets_are_paginated() {
     assert!(calls.contains("rulesets?per_page=100&page=2"));
     fixture.assert_get_only();
 }
+
+#[test]
+fn ssh_uses_push_remote_precedence_without_changing_workflow_source() {
+    for (name, push, global, fetch, ssh, expected) in [
+        (
+            "branch push override",
+            Some("branch-push"),
+            Some("global-push"),
+            Some("fetch"),
+            "branch-push",
+            true,
+        ),
+        (
+            "global push override",
+            None,
+            Some("global-push"),
+            Some("fetch"),
+            "global-push",
+            true,
+        ),
+        ("fetch fallback", None, None, Some("fetch"), "fetch", true),
+        ("origin fallback", None, None, None, "origin", true),
+        (
+            "branch HTTPS overrides global SSH",
+            Some("branch-push"),
+            Some("global-push"),
+            Some("fetch"),
+            "global-push",
+            false,
+        ),
+        (
+            "global HTTPS overrides fetch SSH",
+            None,
+            Some("global-push"),
+            Some("fetch"),
+            "fetch",
+            false,
+        ),
+    ] {
+        let fixture =
+            Fixture::new("on: pull_request\npermissions: {}\nenv:\n  KEY: ${{ secrets.DEPLOY }}\n");
+        for remote in ["branch-push", "global-push", "fetch"] {
+            fixture.git(&[
+                "remote",
+                "add",
+                remote,
+                "https://github.example/example/project.git",
+            ]);
+        }
+        fixture.git(&[
+            "remote",
+            "set-url",
+            "--push",
+            ssh,
+            "git@github.example:example/project.git",
+        ]);
+        fixture.git(&["config", "--unset", "branch.main.remote"]);
+        for (key, value) in [
+            ("branch.main.pushRemote", push),
+            ("remote.pushDefault", global),
+            ("branch.main.remote", fetch),
+        ] {
+            if let Some(value) = value {
+                fixture.git(&["config", key, value]);
+            }
+        }
+        // Give fetch its committed workflow, but no tracking tip to either
+        // push-only remote. Push overrides must not redirect workflow reads.
+        fixture.git(&["update-ref", "refs/remotes/fetch/main", "HEAD"]);
+        fs::write(
+            fixture.repo.join(".github/workflows/check.yml"),
+            "on: push\npermissions: {}\n",
+        )
+        .unwrap();
+        fixture.git(&["add", "."]);
+        fixture.git(&["commit", "-m", "local workflow differs from tracking tip"]);
+        let before = snapshot(&fixture.repo);
+        let document = fixture.json("safe");
+        assert_eq!(
+            codes(&document).contains(&"remote_push_ssh"),
+            expected,
+            "{name}: {document}"
+        );
+        assert!(
+            codes(&document).contains(&"pull_request_secrets"),
+            "{name}: {document}"
+        );
+        assert!(
+            !codes(&document).contains(&"could_not_check"),
+            "{name}: {document}"
+        );
+        fixture.assert_get_only();
+        assert_eq!(snapshot(&fixture.repo), before, "{name}");
+        let selected = push.or(global).or(fetch).unwrap_or("origin");
+        let calls = fs::read_to_string(fixture.root.join("git.log")).unwrap();
+        assert!(
+            calls.contains(&format!("remote\tget-url\t--push\t--all\t{selected}\t")),
+            "{name}: {calls}"
+        );
+    }
+}
