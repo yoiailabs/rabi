@@ -1,10 +1,7 @@
 //! Read-only diagnostics: collect a snapshot, then evaluate it without I/O.
-mod workflow;
-
 use serde::Serialize;
 use serde_json::Value;
 use std::path::Path;
-use workflow::Workflow;
 
 // Reasons are fixed strings. Never propagate subprocess output: a remote URL,
 // gh error, API body or response header may contain credentials.
@@ -19,7 +16,7 @@ struct Facts {
     scopes: Probe<Option<Vec<String>>>,
     workflow_permissions: Probe<String>,
     push_ssh: Probe<bool>,
-    workflows: Probe<Vec<Workflow>>,
+    workflows: Probe<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -195,20 +192,15 @@ fn evaluate(facts: Facts) -> Report {
     }
     match facts.workflows {
         Ok(workflows) => {
-            for file in workflows {
-                findings.extend(workflow::evaluate(&file));
+            for path in workflows {
+                findings.push(Finding::info(
+                    "workflow_review_manually",
+                    format!("{path}: review its triggers and permissions manually; rabi doctor does not parse workflow YAML"),
+                    "Committed workflow file on the locally available default-branch tip",
+                ));
             }
         }
-        Err(reason) => {
-            for check in [
-                "pull_request_target_trigger",
-                "pull_request_write_permissions",
-                "pull_request_secrets",
-                "required_job_conditional",
-            ] {
-                findings.push(Finding::unavailable(check, reason));
-            }
-        }
+        Err(reason) => findings.push(Finding::unavailable("workflow_review_manually", reason)),
     }
     let warning = findings
         .iter()
@@ -587,7 +579,7 @@ fn tip(root: &Path, reference: &str) -> Probe<String> {
     )
 }
 
-fn workflows(root: &Path, branch: &str, remote: Option<&str>) -> Probe<Vec<Workflow>> {
+fn workflows(root: &Path, branch: &str, remote: Option<&str>) -> Probe<Vec<String>> {
     let sha = remote
         .and_then(|remote| tip(root, &format!("refs/remotes/{remote}/{branch}")).ok())
         .map(Ok)
@@ -617,12 +609,7 @@ fn workflows(root: &Path, branch: &str, remote: Option<&str>) -> Probe<Vec<Workf
         if parts.len() != 3 || !matches!(parts[0], "100644" | "100755") || parts[1] != "blob" {
             return Err("A committed workflow is not a regular file");
         }
-        let contents = String::from_utf8(git_read(root, &["cat-file", "blob", parts[2]])?)
-            .map_err(|_| "A committed workflow is not UTF-8")?;
-        result.push(Workflow {
-            name: name.to_owned(),
-            contents,
-        });
+        result.push(name.to_owned());
     }
     Ok(result)
 }
@@ -764,7 +751,7 @@ mod tests {
         facts.workflows = Err("unavailable");
         let report = evaluate(facts);
         assert_eq!(report.counts.warning, 0);
-        assert_eq!(report.counts.info, 8);
+        assert_eq!(report.counts.info, 5);
         assert!(report
             .findings
             .iter()

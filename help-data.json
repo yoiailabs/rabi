@@ -2387,8 +2387,8 @@
         }
       ],
       "notes": [
-        "Read-only: GET GitHub APIs and inspect locally committed default-branch workflows. Never fetches, writes settings, runs hooks, or prints credentials.",
-        "Workflow scanning is a conservative line/indent heuristic, not a full YAML parser. Unsupported forms may produce warnings.",
+        "Read-only: GET GitHub APIs and list locally committed default-branch workflow files for manual review. Never fetches, writes settings, runs hooks, or prints credentials.",
+        "Each workflow file produces an info finding for manual review of its triggers and permissions. Doctor does not read workflow contents or parse workflow YAML.",
         "Findings and inaccessible data do not change exit status 0. Invalid repository selection retains ordinary error statuses."
       ],
       "examples": [

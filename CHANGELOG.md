@@ -5,7 +5,7 @@
 ### Added
 
 - Read-only `rabi task status [SEL]` and `rabi task merge --dry-run [SEL]` collect paginated GitHub facts through GET APIs and evaluate three-valued merge preflight. Repository risk policies accept `[ci] required` check names with app issuers. Missing/failed checks, inconsistent heads, truncated files, forks, changes requested and unknown mergeability block evaluation; approvals and task records remain not evaluated. No merge or other writes are available; `task merge` requires `--dry-run`.
-- Add `rabi doctor [-R REPO] [--json]` for read-only GitHub and committed workflow diagnostics, with conservative workflow scanning and informational findings for unavailable data.
+- Add `rabi doctor [-R REPO] [--json]` for read-only GitHub diagnostics and workflow file listings for manual review. Doctor does not parse workflow YAML and reports unavailable data as informational findings.
 
 - `rabi task risk [SEL]` classifies committed changes locally using `.rabi/policy.toml` from the base commit, with path rules, built-in human-review floors, kind tiers, limits, and text/JSON output.
 

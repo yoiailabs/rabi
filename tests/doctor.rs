@@ -15,7 +15,13 @@ struct Fixture {
     repo: PathBuf,
 }
 impl Fixture {
-    fn new(workflow: &str) -> Self {
+    fn new() -> Self {
+        Self::with_files(&[(
+            ".github/workflows/check.yml",
+            b"Workflow YAML is not parsed",
+        )])
+    }
+    fn with_files(files: &[(&str, &[u8])]) -> Self {
         let root = std::env::temp_dir().join(format!("rabi-doctor-{}", uuid::Uuid::new_v4()));
         let repo = root.join("repo");
         fs::create_dir_all(repo.join(".github/workflows")).unwrap();
@@ -26,7 +32,12 @@ impl Fixture {
         fixture.git(&["init", "--template=", "-b", "main"]);
         fixture.git(&["config", "user.name", "Test"]);
         fixture.git(&["config", "user.email", "test@example.invalid"]);
-        fs::write(fixture.repo.join(".github/workflows/check.yml"), workflow).unwrap();
+        fs::write(fixture.repo.join("README.md"), "Fixture repository").unwrap();
+        for (name, contents) in files {
+            let path = fixture.repo.join(name);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(path, contents).unwrap();
+        }
         fixture.git(&["add", "."]);
         fixture.git(&["commit", "-m", "fixture"]);
         fixture.git(&[
@@ -164,7 +175,11 @@ while [ "$#" -gt 0 ]; do
   case "$1" in -c) shift 2 ;; --no-lazy-fetch) shift ;; *) break ;; esac
 done
 case "$1" in
-  rev-parse|symbolic-ref|ls-tree|cat-file) : ;;
+  ls-tree)
+    if [ "$DOCTOR_MODE" = workflow-enumeration-failed ]; then
+      printf '%s\n' "$GH_TOKEN" >&2; exit 1
+    fi ;;
+  rev-parse|symbolic-ref) : ;;
   worktree) [ "$2" = list ] || exit 96 ;;
   config) [ "$2" = --get ] || exit 97 ;;
   remote) [ "$#" = 1 ] || [ "$2" = get-url ] || exit 98 ;;
@@ -219,6 +234,8 @@ exec "$DOCTOR_REAL_GIT" "$@"
         document
     }
     fn assert_get_only(&self) {
+        let git_calls = fs::read_to_string(self.root.join("git.log")).unwrap();
+        assert!(!git_calls.contains("cat-file"), "{git_calls}");
         let calls = fs::read_to_string(self.root.join("gh.log")).unwrap();
         assert!(!calls.is_empty());
         for call in calls.lines() {
@@ -277,7 +294,7 @@ fn snapshot(directory: &Path) -> Vec<(PathBuf, Vec<u8>)> {
 
 #[test]
 fn unsafe_snapshot_uses_only_get_and_committed_default_workflows() {
-    let fixture = Fixture::new("on:\n  pull_request:\n    paths-ignore: ['docs/**']\npermissions:\n  contents: read\njobs:\n  check:\n    permissions: write-all\n    if: github.event.pull_request.draft == false\n    env:\n      KEY: ${{ secrets.PRIVATE }}\n");
+    let fixture = Fixture::new();
     fixture.git(&[
         "remote",
         "set-url",
@@ -286,16 +303,18 @@ fn unsafe_snapshot_uses_only_get_and_committed_default_workflows() {
         "git@github.example:example/project.git",
     ]);
     fixture.git(&["checkout", "-b", "topic"]);
-    fs::write(
+    fs::rename(
         fixture.repo.join(".github/workflows/check.yml"),
-        "on: push\npermissions: read-all\n",
+        fixture.repo.join(".github/workflows/topic.yml"),
     )
     .unwrap();
     fixture.git(&["add", "."]);
     fixture.git(&["commit", "-m", "topic workflow"]);
+    fs::write(fixture.repo.join(".github/workflows/staged.yml"), "staged").unwrap();
+    fixture.git(&["add", "."]);
     fs::write(
-        fixture.repo.join(".github/workflows/check.yml"),
-        "on: push\n",
+        fixture.repo.join(".github/workflows/untracked.yml"),
+        "untracked",
     )
     .unwrap();
     fs::write(
@@ -319,21 +338,27 @@ fn unsafe_snapshot_uses_only_get_and_committed_default_workflows() {
         "token_workflow_scope",
         "default_workflow_permissions",
         "remote_push_ssh",
-        "pull_request_write_permissions",
-        "pull_request_secrets",
-        "required_job_conditional",
+        "workflow_review_manually",
     ] {
         assert!(codes(&document).contains(&code), "{code}: {document}");
     }
-    assert_eq!(document["data"]["counts"]["warning"], 9);
+    let workflow = document["data"]["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|finding| finding["code"] == "workflow_review_manually")
+        .collect::<Vec<_>>();
+    assert_eq!(workflow.len(), 1);
+    assert!(workflow[0]["message"]
+        .as_str()
+        .unwrap()
+        .starts_with(".github/workflows/check.yml:"));
+    assert_eq!(document["data"]["counts"]["warning"], 7);
     assert_eq!(document["data"]["counts"]["info"], 2);
     fixture.assert_get_only();
     assert_eq!(snapshot(&fixture.repo), before);
     let calls = fs::read_to_string(fixture.root.join("git.log")).unwrap();
-    for call in calls
-        .lines()
-        .filter(|call| call.contains("ls-tree") || call.contains("cat-file"))
-    {
+    for call in calls.lines().filter(|call| call.contains("ls-tree")) {
         assert!(call.contains("--no-lazy-fetch"), "{call}");
     }
 }
@@ -347,7 +372,7 @@ fn inaccessible_apis_and_unknown_token_scopes_are_informational() {
         "no-default",
         "unknown-scopes",
     ] {
-        let fixture = Fixture::new("on: pull_request\npermissions: {contents: read}\n");
+        let fixture = Fixture::new();
         let document = fixture.json(mode);
         assert_eq!(
             document["data"]["counts"]["warning"], 0,
@@ -365,7 +390,7 @@ fn inaccessible_apis_and_unknown_token_scopes_are_informational() {
 
 #[test]
 fn empty_text_json_repository_selection_and_usage() {
-    let fixture = Fixture::new("on: pull_request\npermissions: {contents: read}\n");
+    let fixture = Fixture::with_files(&[]);
     let document = fixture.json("safe");
     assert_eq!(document["data"]["findings"], serde_json::json!([]));
     assert_eq!(
@@ -413,9 +438,12 @@ fn empty_text_json_repository_selection_and_usage() {
 
 #[test]
 fn effective_rules_and_rulesets_are_paginated() {
-    let fixture = Fixture::new("on: push\npermissions: {}\n");
+    let fixture = Fixture::new();
     let document = fixture.json("paginated");
-    assert_eq!(codes(&document), ["merge_queue", "ruleset_bypass"]);
+    assert_eq!(
+        codes(&document),
+        ["merge_queue", "ruleset_bypass", "workflow_review_manually"]
+    );
     let calls = fs::read_to_string(fixture.root.join("gh.log")).unwrap();
     assert!(calls.contains("rules/branches/main?per_page=100&page=2"));
     assert!(calls.contains("rulesets?per_page=100&page=2"));
@@ -460,8 +488,7 @@ fn ssh_uses_push_remote_precedence_without_changing_workflow_source() {
             false,
         ),
     ] {
-        let fixture =
-            Fixture::new("on: pull_request\npermissions: {}\nenv:\n  KEY: ${{ secrets.DEPLOY }}\n");
+        let fixture = Fixture::new();
         for remote in ["branch-push", "global-push", "fetch"] {
             fixture.git(&[
                 "remote",
@@ -488,11 +515,11 @@ fn ssh_uses_push_remote_precedence_without_changing_workflow_source() {
             }
         }
         // Give fetch its committed workflow, but no tracking tip to either
-        // push-only remote. Push overrides must not redirect workflow reads.
+        // push-only remote. Push overrides must not redirect enumeration.
         fixture.git(&["update-ref", "refs/remotes/fetch/main", "HEAD"]);
-        fs::write(
+        fs::rename(
             fixture.repo.join(".github/workflows/check.yml"),
-            "on: push\npermissions: {}\n",
+            fixture.repo.join(".github/workflows/local.yml"),
         )
         .unwrap();
         fixture.git(&["add", "."]);
@@ -504,8 +531,17 @@ fn ssh_uses_push_remote_precedence_without_changing_workflow_source() {
             expected,
             "{name}: {document}"
         );
+        let workflow = document["data"]["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|finding| finding["code"] == "workflow_review_manually")
+            .unwrap();
         assert!(
-            codes(&document).contains(&"pull_request_secrets"),
+            workflow["message"]
+                .as_str()
+                .unwrap()
+                .starts_with(".github/workflows/check.yml:"),
             "{name}: {document}"
         );
         assert!(
@@ -546,7 +582,7 @@ fn missing_or_local_push_remotes_have_a_specific_unavailable_reason() {
             false,
         ),
     ] {
-        let fixture = Fixture::new("on: push\npermissions: {}\n");
+        let fixture = Fixture::new();
         fixture.git(&["config", "--unset", "branch.main.remote"]);
         if remove_origin {
             fixture.git(&["remote", "remove", "origin"]);
@@ -573,48 +609,87 @@ fn missing_or_local_push_remotes_have_a_specific_unavailable_reason() {
 }
 
 #[test]
-fn uncertain_trigger_text_is_explicit_about_the_guess() {
-    let fixture = Fixture::new("on: *events\npermissions: {}\n");
-    let output = fixture.run("safe", &["doctor"], false);
-    assert!(output.status.success());
-    let text = String::from_utf8(output.stdout).unwrap();
-    assert!(text.contains("pull_request_target_trigger:"), "{text}");
-    assert!(
-        text.contains("(trigger set could not be fully parsed)"),
-        "{text}"
-    );
-    fixture.assert_get_only();
-}
-
-#[test]
-fn event_level_triggers_ignore_prose_without_masking_later_declarations() {
-    for (event, target) in [
-        ("", false),
+fn workflow_manual_review_enumeration_table() {
+    for (name, files, mode, expected_paths, unavailable) in [
+        ("no workflows", vec![], "safe", vec![], false),
         (
-            "  \"pull\\u005frequest_target\":\n    branches: [\"it's\"]\n",
+            "yml",
+            vec![(".github/workflows/check.yml", b"not YAML".as_slice())],
+            "safe",
+            vec![".github/workflows/check.yml"],
+            false,
+        ),
+        (
+            "yaml",
+            vec![(
+                ".github/workflows/check.yaml",
+                b"\xff\0not UTF-8 or YAML".as_slice(),
+            )],
+            "safe",
+            vec![".github/workflows/check.yaml"],
+            false,
+        ),
+        (
+            "multiple workflows",
+            vec![
+                (".github/workflows/a.yml", TOKEN.as_bytes()),
+                (".github/workflows/b.yaml", b"on: *events".as_slice()),
+            ],
+            "safe",
+            vec![".github/workflows/a.yml", ".github/workflows/b.yaml"],
+            false,
+        ),
+        (
+            "non-workflow files",
+            vec![
+                ("elsewhere/check.yml", b"".as_slice()),
+                (".github/check.yaml", b"".as_slice()),
+                (".github/workflows/check.txt", b"".as_slice()),
+                (".github/workflows/check.YML", b"".as_slice()),
+            ],
+            "safe",
+            vec![],
+            false,
+        ),
+        (
+            "nested directories ignored",
+            vec![
+                (".github/workflows/nested/check.yml", b"".as_slice()),
+                (".github/workflows/nested/deep/check.yaml", b"".as_slice()),
+            ],
+            "safe",
+            vec![],
+            false,
+        ),
+        (
+            "enumeration failure",
+            vec![(".github/workflows/check.yml", b"".as_slice())],
+            "workflow-enumeration-failed",
+            vec![],
             true,
         ),
-        ("  <<: *events\n    branches: [it's]\n", true),
     ] {
-        let workflow = format!(
-            "on:\n  workflow_dispatch:\n    inputs:\n      glob:\n        description: Paths (e.g., *.md)\n      quote:\n        description: pick a, 'b\n      comment:\n        description: Don't # note, \"x\n{event}permissions: {{}}\n"
-        );
-        let fixture = Fixture::new(&workflow);
+        let fixture = Fixture::with_files(&files);
         let before = snapshot(&fixture.repo);
-        let document = fixture.json("safe");
-        let expected = if target {
-            vec!["pull_request_target_trigger"]
+        let document = fixture.json(mode);
+        let findings = document["data"]["findings"].as_array().unwrap();
+        if unavailable {
+            assert_eq!(findings.len(), 1, "{name}: {document}");
+            assert_eq!(findings[0]["code"], "could_not_check", "{name}");
+            assert_eq!(findings[0]["level"], "info", "{name}");
+            assert_eq!(findings[0]["detail"], "workflow_review_manually", "{name}");
+            assert_eq!(findings[0]["message"], "Could not check workflow_review_manually: Git data is unavailable locally (Git 2.44 or later is required; no fetch was attempted)", "{name}");
         } else {
-            vec![]
-        };
-        assert_eq!(codes(&document), expected, "{event}: {document}");
-        if target {
-            assert!(document["data"]["findings"][0]["message"]
-                .as_str()
-                .unwrap()
-                .contains("trigger set could not be fully parsed"));
+            assert_eq!(findings.len(), expected_paths.len(), "{name}: {document}");
+            for (finding, path) in findings.iter().zip(&expected_paths) {
+                assert_eq!(finding["code"], "workflow_review_manually", "{name}");
+                assert_eq!(finding["level"], "info", "{name}");
+                assert_eq!(finding["message"], format!("{path}: review its triggers and permissions manually; rabi doctor does not parse workflow YAML"), "{name}");
+            }
         }
+        assert_eq!(document["data"]["counts"]["warning"], 0, "{name}");
+        assert_eq!(document["data"]["counts"]["info"], findings.len(), "{name}");
         fixture.assert_get_only();
-        assert_eq!(snapshot(&fixture.repo), before);
+        assert_eq!(snapshot(&fixture.repo), before, "{name}");
     }
 }
