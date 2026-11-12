@@ -1,6 +1,7 @@
 //! Conservative workflow heuristics without a YAML dependency. Trigger parsing
 //! interprets only the on header and declarations at one event indent. Nested
-//! configuration is opaque; comments and collection/quote checks are line-local.
+//! lines never add events; they are scanned only for quoted or flow values
+//! that may wrap across lines, which make triggers uncertain.
 //! Permissions, raw secret references and condition checks are independent.
 use super::Finding;
 
@@ -122,7 +123,6 @@ fn empty_trigger_line(raw: &str) -> bool {
 
 // This state exists for one structural line only. It removes comments and
 // checks that a quoted scalar/flow collection opened here also closes here.
-// No nested configuration line is ever passed to this function.
 fn trigger_line(text: &str) -> (&str, bool) {
     let mut quote = None;
     let mut flow = Vec::new();
@@ -185,10 +185,30 @@ fn block_header(value: &str) -> bool {
         && rest.chars().all(|ch| matches!(ch, '+' | '-' | '1'..='9'))
 }
 
+// Skip the indicators and node properties that may precede a node: `- `,
+// `? `, `: ` (space or tab), `&anchor `, and `!tag `.
+fn node_start(text: &str) -> &str {
+    let mut text = text.trim_start();
+    loop {
+        let mut chars = text.chars();
+        let rest = match chars.next() {
+            Some('-' | '?' | ':') if chars.next().is_none_or(char::is_whitespace) => &text[1..],
+            Some('&' | '!') => match text.find(char::is_whitespace) {
+                Some(end) => &text[end..],
+                None => return text,
+            },
+            _ => return text,
+        };
+        text = rest.trim_start();
+    }
+}
+
 // A quoted scalar or flow collection that does not close on its own line can
 // wrap to column 0 and change how later lines are read, which this line-based
-// scan cannot follow. Report whether any such value exists outside block
-// scalar bodies. Multiline quoted or flow values make triggers uncertain.
+// scan cannot follow. Report whether any line outside a block scalar body
+// has a node that starts with a quote or flow opener and does not close it.
+// Nested lines can only add uncertainty here, never events. The extent of a
+// block scalar body is the only state carried between lines.
 fn wrapped_value(raw: &[&str]) -> bool {
     let mut block: Option<usize> = None;
     for &line in raw {
@@ -202,20 +222,36 @@ fn wrapped_value(raw: &[&str]) -> bool {
         if empty_trigger_line(line) {
             continue;
         }
-        let mut content = line.trim();
-        while let Some(rest) = content.strip_prefix("- ") {
-            content = rest.trim_start();
-        }
-        let (code, complete) = trigger_line(content);
+        let (code, complete) = trigger_line(line.trim());
         if !complete {
             return true;
         }
-        let value = code
-            .rsplit_once(": ")
-            .map_or(code, |(_, value)| value)
-            .trim();
-        if block_header(value) {
-            block = Some(indent);
+        let segments = code
+            .split(": ")
+            .flat_map(|part| part.split(":\t"))
+            .collect::<Vec<_>>();
+        // Check the rest of the line from the start and after every `:`
+        // followed by whitespace, so flow content is checked as a whole.
+        let starts = std::iter::once(0).chain(
+            code.match_indices(':')
+                .map(|(offset, _)| offset + 1)
+                .filter(|&offset| code[offset..].starts_with([' ', '\t'])),
+        );
+        for offset in starts {
+            let node = node_start(&code[offset..]);
+            if node.starts_with(['"', '\'', '[', '{']) && !trigger_line(node).1 {
+                return true;
+            }
+        }
+        let last = segments.last().map_or("", |segment| node_start(segment));
+        if block_header(last) {
+            // The body must be indented past the key that owns the header,
+            // or past the sequence indicator of a bare `- |` entry.
+            block = Some(if segments.len() > 1 {
+                indent + (segments[0].len() - node_start(segments[0]).len())
+            } else {
+                (indent + code.len() - last.len()).saturating_sub(2)
+            });
         }
     }
     false
@@ -243,7 +279,8 @@ fn inline_events(value: &str, result: &mut Triggers) {
 }
 
 // Consume only the on header and event-level lines. Deeper indentation is
-// event configuration, so its prose, comments and YAML indicators are opaque.
+// event configuration and never adds events; wrapped_value covers its
+// multiline quoted and flow values.
 fn on_events(raw: &[&str], start: usize) -> (Triggers, usize) {
     let mut result = Triggers::default();
     let (header, complete) = trigger_line(raw[start].trim());
@@ -621,6 +658,16 @@ mod tests {
             ("root anchor mapping", "on:\n  push:\nenv: &e\n  A: b\njobs:\n  t:\n    env: *e\n", false, false, false),
             ("quoted prose block body", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        description: |\n          \"starts with a quote\n          [and a bracket\n  push:\n", false, false, false),
             ("run script block", "on:\n  push:\njobs:\n  t:\n    steps:\n      - run: |\n          echo \"unterminated\n          echo [x\n", false, false, false),
+            ("c2 anchor before quote", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        description: &a \"abc\nx:\n  def\"\n  pull_request_target:\npermissions: {}\n", true, true, true),
+            ("c3 tag before quote", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        description: !!str \"abc\nx:\n  def\"\n  pull_request_target:\n", true, true, true),
+            ("c3b tag before single quote", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        description: !!str 'abc\nx:\n  def'\n  pull_request_target:\n", true, true, true),
+            ("c5 anchor before flow", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        options: &o [a,\nx:\n  b]\n  pull_request_target:\n", true, true, true),
+            ("c4 explicit key quote", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        ? \"abc\nx:\n  def\"\n        : 1\n  pull_request_target:\n", true, true, true),
+            ("d1 tab after dash", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        options:\n          -\t\"abc\nx:\n  def\"\n  pull_request_target:\n", true, true, true),
+            ("c1 block in sequence mapping", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        options:\n          - a: |\n            b: \"abc\nx:\n  def\"\n  pull_request_target:\npermissions: {}\n", true, true, true),
+            ("c1b block in sequence mapping comment", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        options:\n          - a: |\n            b: \"abc\nx: # \"\n  pull_request_target:\n", true, true, true),
+            ("bare sequence block body", "on:\n  push:\njobs:\n  t:\n    steps:\n      - run:\n          - |\n            \"body\n", false, false, false),
+            ("sequence mapping block body", "on:\n  push:\njobs:\n  t:\n    steps:\n      - run: |\n          echo \"x\n        name: done\n", false, false, false),
             ("nested prose block", "on:\n  workflow_dispatch:\n    inputs:\n      text:\n        description: |\n          Are * and & and ! allowed (yes)?\n", false, false, false),
         ];
         for (name, contents, pr, target, uncertain) in cases {
