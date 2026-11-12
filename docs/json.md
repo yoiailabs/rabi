@@ -213,3 +213,21 @@ Records live at `<git-common-dir>/rabi/runs/run_<uuid v4>/state.json`. Per-launc
 Each entry is `{schema:1,id:"ho_<uuid v4>",createdAt:"<RFC3339 UTC milliseconds, Z>",kind:"checkpoint|decision|note|request",text,source?}`. Optional `source` is `{runId,launch,provider:"codex|cursor|claude"}`. Required fields are schema, id, createdAt, kind and text. Append/file order is authoritative. `request` is reserved for run capture; human and parent additions are at most 8 KiB, requests at most 64 KiB. Intent is stored verbatim without a size limit; oversized requests are skipped with `handoff_request_skipped` without failing the launch. Unknown, unterminated or invalid lines are skipped with `handoff_invalid_line` without rewriting files.
 
 Launch records optionally add `handoff: {injectedEntryIds:[...],bytes:N,snapshotAt?:"<RFC3339 UTC>"}`; disabled or unavailable memory is omitted (read as null), and old records remain readable with internal run schema 2. `bytes` measures the rendered UTF-8 prefix, including framing and reminder. The snapshot is read under the memory append lock; `snapshotAt` records the time immediately before that read. Resume uses the last launch with handoff and either an observed launch `sessionId` or `exitCode:0` as delivery evidence, comparing foreign entries with `createdAt > snapshotAt`. Old handoff records without `snapshotAt` fall back to that launch's `startedAt`. Launches without delivery evidence do not advance the baseline; no qualifying launch means a full first/fresh snapshot. Ids describe the selected snapshot, not a delivery acknowledgment. `handoff_unrecorded` signals skipped memory; `handoff_identity` signals an empty read or archival on a write after identity mismatch. Memory is separate retained XDG state; run and workspace stores remain in the git common directory.
+
+## Task risk
+
+`rabi task risk --json` uses the common schema 2 envelope with `command: "task risk"`. Its `data` has:
+
+| Field | Meaning |
+|---|---|
+| `base` | `{ref, sha}`: requested/default ref and resolved commit SHA |
+| `mergeBase`, `head` | Full merge-base and workspace HEAD commit SHAs |
+| `policy` | `{present, source}`: base SHA plus `:.rabi/policy.toml`, or `built-in defaults (no policy file)` |
+| `tier`, `floor` | Overall `low\|medium\|high` and whether any file requires a human |
+| `reasons` | Stable, deduplicated contributing reason strings, including limit reasons or `no changes` |
+| `files` | Changed files in Git raw diff order, each `{path, oldPath?, status, tier, floor, reasons}` |
+| `totals` | `{files, changedLines}`: changed-entry count and total added+deleted lines (binary counts zero) |
+
+`status` retains Git's status and any similarity score (for example `R100`); `oldPath` appears for renames/copies. Both paths are evaluated, and unknown encodings force high; replacement characters in displayed paths are never used for matching. Per-file reasons include applicable path rules/defaults, floors, kinds, and unknown data. Overall reasons collect file reasons plus limits. Reason forms and glob behavior are documented in [configuration](configuration.md#repository-risk-policy).
+
+Only committed changes are classified; the working tree and index are not read. Successful high/floor classifications still have `ok: true`, `error: null`, and exit 0. Invalid policy uses exit 1 with `error.code: "failed"`; failed Git inspection or ref resolution uses exit 1 with `git_failed`. Malformed invocation uses exit 2 with `usage`. No new error codes are introduced.

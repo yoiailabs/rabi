@@ -79,6 +79,8 @@ Read [removal safety and retries](docs/safety.md) and [sync strategies](docs/syn
 | `rabi repo show` | Inspect a repository |
 | `rabi repo forget` | Drop a registration |
 | `rabi run` | Launch or resume the workspace parent session |
+| `rabi task` | Local task inspection |
+| `rabi task risk` | Classify committed changes using the base commit risk policy |
 | `rabi skill` | Skill discovery |
 | `rabi skill list` | List skill names, sources and paths |
 | `rabi trust` | Hooks, run, and repository environment trust |

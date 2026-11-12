@@ -87,6 +87,10 @@
     {
       "name": "handoff",
       "description": "Read and append durable workspace context across parent providers"
+    },
+    {
+      "name": "task",
+      "description": "Inspect local task merge risk"
     }
   ],
   "helps": {
@@ -2163,6 +2167,95 @@
       ],
       "notes": [
         "SEL defaults to the current linked workspace; unrecorded workspaces require rabi adopt. Memory is retained after remove, gc and forget."
+      ]
+    },
+    "task": {
+      "name": "task",
+      "description": "Inspect local task merge risk",
+      "usage": "rabi task risk [SEL] [options]",
+      "options": [
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Repository to operate on; uses the shared workspace selector rules",
+          "example": "--repo owner/repo"
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "A subcommand is required; task risk classifies committed changes locally without modifying the repository."
+      ]
+    },
+    "task risk": {
+      "name": "task risk",
+      "description": "Classify committed workspace changes using the base commit policy",
+      "usage": "rabi task risk [SEL] [--base REF] [options]",
+      "options": [
+        {
+          "name": "base",
+          "type": "string",
+          "description": "Base commit-ish; defaults to origin/<default branch> (must resolve locally)"
+        },
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Repository to operate on; uses the shared workspace selector rules",
+          "example": "--repo owner/repo"
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "SEL defaults to the current checkout, including primary; follows show/path selector and -R rules.",
+        "Reads .rabi/policy.toml only from the resolved base commit. Classifies merge-base(base, HEAD)...HEAD; only committed changes are classified; the working tree and index are not read. No network calls or writes.",
+        "Tier low, medium or high never changes the successful exit status (0). Built-in floor paths always require human review."
+      ],
+      "examples": [
+        {
+          "command": "rabi task risk --base main --json",
+          "description": "Classify against the locally committed main policy"
+        }
       ]
     }
   },

@@ -859,6 +859,41 @@ fn handoff_root(args: &[String]) -> Result<i32> {
         args.join(" ")
     )))
 }
+
+fn task_root(args: &[String]) -> Result<i32> {
+    Err(Error::validation(format!(
+        "Unknown task subcommand: {}",
+        args.join(" ")
+    )))
+}
+
+fn task_risk(args: &[String]) -> Result<i32> {
+    let parsed = args::parse(args, &command_options("task risk"), true)?;
+    if parsed.positionals.len() > 1 {
+        return Err(Error::validation(
+            "Usage: rabi task risk [SEL] [--base REF]",
+        ));
+    }
+    let base = single_value(&parsed, "base")?;
+    let repository = selected_repository(&parsed)?;
+    let context = crate::context::open_for_inspection(repository.as_deref())?;
+    let tree = crate::selectors::resolve_without_status(
+        &context,
+        parsed
+            .positionals
+            .first()
+            .map(String::as_str)
+            .unwrap_or("."),
+    )?;
+    worktree::validate_checkout(&context, &tree, "task risk")?;
+    let report = crate::task::inspect(Path::new(&tree.path), base)?;
+    if crate::output::json() {
+        emit_json(&report)
+    } else {
+        report.print();
+        Ok(SUCCESS)
+    }
+}
 fn handoff_show(args: &[String]) -> Result<i32> {
     handoff_command(args, "show")
 }
@@ -1915,6 +1950,8 @@ fn set(args: &[String]) -> Result<i32> {
 /// Shared by common-option extraction and command validation.
 fn command_options(key: &str) -> Vec<Opt> {
     let mut options = match key {
+        "task" => vec![repo_flag()],
+        "task risk" => vec![repo_flag(), value_flag("base", None)],
         "handoff" => vec![],
         "handoff show" | "handoff path" => vec![repo_flag()],
         "handoff add" => vec![repo_flag(), value_flag("kind", None)],
@@ -2477,6 +2514,17 @@ static HANDOFF_COMMANDS: &[Command] = &[
 ];
 
 static COMMANDS: &[Command] = &[
+    Command {
+        name: "task",
+        help_key: "task",
+        run: task_root,
+        children: &[Command {
+            name: "risk",
+            help_key: "task risk",
+            run: task_risk,
+            children: &[],
+        }],
+    },
     Command {
         name: "handoff",
         help_key: "handoff",

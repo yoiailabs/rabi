@@ -41,6 +41,15 @@ pub fn open(repository: Option<&Path>) -> Result<Context> {
     create(&git_root)
 }
 
+/// Committed inspection needs workspace layout and records, not checkout config.
+pub(crate) fn open_for_inspection(repository: Option<&Path>) -> Result<Context> {
+    let root = match repository {
+        Some(root) => root.to_path_buf(),
+        None => git::git_root(&std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?)?,
+    };
+    assemble_with_config(&root, root.to_path_buf(), None)
+}
+
 /// Execution declarations always come from the selected primary checkout.
 pub(crate) fn open_for_execution(repository: Option<&Path>, no_env: bool) -> Result<Context> {
     let root = match repository {
@@ -77,6 +86,14 @@ fn assemble_for_execution(
     no_env: bool,
 ) -> Result<Context> {
     let config = config::load_config_for_execution(&source_checkout, no_env)?;
+    assemble_with_config(git_root, source_checkout, config)
+}
+
+fn assemble_with_config(
+    git_root: &Path,
+    source_checkout: PathBuf,
+    config: Option<RabiConfig>,
+) -> Result<Context> {
     let preferences = preferences::load_preferences()?;
     let common_dir = git::canonical_common_dir(git_root)?;
     let location = match preferences

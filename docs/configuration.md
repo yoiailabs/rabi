@@ -129,3 +129,43 @@ rabi clone git@github.com:yoiailabs/rabi.git --branch develop
 rabi clone github.com/yoiailabs/rabi --depth 1
 rabi clone yoiailabs/rabi --update
 ```
+
+## Repository risk policy
+
+`rabi task risk` reads `.rabi/policy.toml` from the resolved **base commit blob**, never the head or working tree. A missing file uses built-in defaults: unmatched files and all kinds are high, with no size limits. Invalid TOML, unknown fields/sections, wrong types, or invalid values fail with exit 1 (`failed`); there is no fallback for an invalid policy. Other repository configuration remains in `.rabi.toml`.
+
+```toml
+schema = 1
+# Optional; defaults to high for a path matching no rule.
+default-tier = "high"
+
+[[rule]]
+paths = ["docs/**", "*.md"]
+tier = "low"
+
+[[rule]]
+paths = ["install.sh"]
+floor = true
+
+[limits]
+max-changed-lines = 600
+max-files = 40
+
+[kinds]
+binary = "high"
+symlink = "high"
+submodule = "high"
+exec-bit = "high"
+```
+
+`schema` is required and must be integer 1. `default-tier` and each kind accept only `low`, `medium`, or `high`, defaulting to high. Rules require a nonempty `paths` array of nonempty strings, and either a tier or `floor = true`; floor defaults to false and implies high. All matching rules contribute their maximum tier. Paths matching no rule use `default-tier`. Renames and copies evaluate old and new paths independently, taking the maximum and retaining either side's floor.
+
+Globs are case-sensitive and anchored at the repository root, matching the entire path. `*` matches zero or more characters within one path segment, `?` matches one character within a segment, and `**` matches across segments. `**/` can match zero directories. A trailing `/**` matches everything below that directory (`docs/**` matches `docs/a/b.md`, not `docsx/a` or the file `docs`). Dotfiles match normally. All other characters are literal: no basename search, implicit leading-slash removal, negation, brackets, or backslash escapes. Use `**/*.md` for Markdown at any depth, or `*.md` only at the root.
+
+Built-in floor paths `.rabi/policy.toml`, `.rabi.toml`, and `.github/**` always yield high and `floor: true`, regardless of policy rules. A floor indicates that a human is always required; this read-only command does not enforce a merge gate. Policy floor rules add to these built-ins.
+
+Binary files (numstat `-` counts) contribute zero changed lines. Attribute lookup for the diff is pinned to the base commit, so `.gitattributes` edits on the head branch, staged, or uncommitted cannot change binary detection or line totals. Symlink mode 120000 or submodule mode 160000 on either side raises the file to that kind's tier. A new executable file (100755), or a mode change to/from 100755 (including deletion), raises it to `exec-bit`; ordinary content edits of an existing executable alone do not. Kinds can raise, never lower, a path's tier. Optional limits must be positive integers: strictly exceeding total added+deleted lines or changed-file count raises the overall tier to high; equality is allowed. Limits do not set floor.
+
+Non-UTF-8 paths, unrecognized statuses, or malformed diff data always classify high with an `unknown:*` reason. The ASCII `.github/` built-in floor still applies when its remaining path bytes are non-UTF-8. Paths are matched as Git reports them, without lossy decoding; non-UTF-8 paths use replacement characters only for output. Reasons identify contributing rules (`rule:docs/**`), defaults (`default-tier`), floors (`floor:builtin:.github/**`, `floor:rule:install.sh`), kinds (`kind:binary`), limits (`limit:max-files`), or unknown data. An empty diff yields low and `no changes`.
+
+Only committed changes are classified; the working tree and index are not read.
