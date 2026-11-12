@@ -579,37 +579,62 @@ fn tip(root: &Path, reference: &str) -> Probe<String> {
     )
 }
 
-fn workflows(root: &Path, branch: &str, remote: Option<&str>) -> Probe<Vec<String>> {
-    let sha = remote
-        .and_then(|remote| tip(root, &format!("refs/remotes/{remote}/{branch}")).ok())
-        .map(Ok)
-        .unwrap_or_else(|| tip(root, &format!("refs/heads/{branch}")))?;
-    // Enumerate the committed tree without path expressions or checkout reads.
-    let tree = git_read(root, &["ls-tree", "-r", "-z", "--full-tree", &sha])?;
-    let mut result = Vec::new();
-    for entry in tree
+// One non-recursive tree listing as (type, oid, name) entries.
+fn tree_entries(root: &Path, tree: &str) -> Probe<Vec<(String, String, Vec<u8>)>> {
+    let listing = git_read(root, &["ls-tree", "-z", "--full-tree", tree])?;
+    let mut entries = Vec::new();
+    for entry in listing
         .split(|byte| *byte == 0)
         .filter(|entry| !entry.is_empty())
     {
         let Some(tab) = entry.iter().position(|byte| *byte == b'\t') else {
             return Err("Git returned a malformed tree entry");
         };
-        let path = &entry[tab + 1..];
-        let Some(name) = path.strip_prefix(b".github/workflows/") else {
-            continue;
-        };
-        if name.contains(&b'/') || !(name.ends_with(b".yml") || name.ends_with(b".yaml")) {
-            continue;
-        }
-        let name =
-            std::str::from_utf8(path).map_err(|_| "A committed workflow path is not UTF-8")?;
         let header = std::str::from_utf8(&entry[..tab])
             .map_err(|_| "Git returned a malformed tree entry")?;
         let parts = header.split_whitespace().collect::<Vec<_>>();
-        if parts.len() != 3 || !matches!(parts[0], "100644" | "100755") || parts[1] != "blob" {
-            return Err("A committed workflow is not a regular file");
+        let [_, kind, oid] = parts.as_slice() else {
+            return Err("Git returned a malformed tree entry");
+        };
+        entries.push((
+            (*kind).to_owned(),
+            (*oid).to_owned(),
+            entry[tab + 1..].to_vec(),
+        ));
+    }
+    Ok(entries)
+}
+
+fn subtree(root: &Path, tree: &str, name: &[u8]) -> Probe<Option<String>> {
+    Ok(tree_entries(root, tree)?
+        .into_iter()
+        .find(|(kind, _, entry)| kind == "tree" && entry == name)
+        .map(|(_, oid, _)| oid))
+}
+
+fn workflows(root: &Path, branch: &str, remote: Option<&str>) -> Probe<Vec<String>> {
+    let sha = remote
+        .and_then(|remote| tip(root, &format!("refs/remotes/{remote}/{branch}")).ok())
+        .or_else(|| tip(root, &format!("refs/heads/{branch}")).ok())
+        .ok_or("The default branch tip is not available locally; no fetch was attempted")?;
+    // Walk only .github/workflows, one tree at a time, without path
+    // expressions, checkout reads, or reading any workflow contents.
+    let Some(github) = subtree(root, &sha, b".github")? else {
+        return Ok(Vec::new());
+    };
+    let Some(directory) = subtree(root, &github, b"workflows")? else {
+        return Ok(Vec::new());
+    };
+    let mut result = Vec::new();
+    for (kind, _, name) in tree_entries(root, &directory)? {
+        // Nested directories are ignored. Symlinks and submodule entries
+        // named like workflows are listed too, for manual review.
+        if kind == "tree" || !(name.ends_with(b".yml") || name.ends_with(b".yaml")) {
+            continue;
         }
-        result.push(name.to_owned());
+        let name =
+            std::str::from_utf8(&name).map_err(|_| "A committed workflow path is not UTF-8")?;
+        result.push(format!(".github/workflows/{name}"));
     }
     Ok(result)
 }

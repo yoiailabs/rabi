@@ -10,6 +10,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
 const TOKEN: &str = "fixture-secret-token-never-display";
+// Fixture file contents that request a symlink to the rest, or a gitlink.
+const SYMLINK: &[u8] = b"\0symlink:";
+const GITLINK: &[u8] = b"\0gitlink";
 struct Fixture {
     root: PathBuf,
     repo: PathBuf,
@@ -33,12 +36,23 @@ impl Fixture {
         fixture.git(&["config", "user.name", "Test"]);
         fixture.git(&["config", "user.email", "test@example.invalid"]);
         fs::write(fixture.repo.join("README.md"), "Fixture repository").unwrap();
+        let mut gitlinks = Vec::new();
         for (name, contents) in files {
             let path = fixture.repo.join(name);
             fs::create_dir_all(path.parent().unwrap()).unwrap();
-            fs::write(path, contents).unwrap();
+            if let Some(target) = contents.strip_prefix(SYMLINK) {
+                std::os::unix::fs::symlink(std::str::from_utf8(target).unwrap(), path).unwrap();
+            } else if *contents == GITLINK {
+                gitlinks.push(*name);
+            } else {
+                fs::write(path, contents).unwrap();
+            }
         }
         fixture.git(&["add", "."]);
+        for name in gitlinks {
+            let info = format!("160000,{},{name}", "1".repeat(40));
+            fixture.git(&["update-index", "--add", "--cacheinfo", &info]);
+        }
         fixture.git(&["commit", "-m", "fixture"]);
         fixture.git(&[
             "remote",
@@ -662,6 +676,28 @@ fn workflow_manual_review_enumeration_table() {
             false,
         ),
         (
+            "symlink and gitlink entries are listed",
+            vec![
+                (".github/workflows/a.yml", b"".as_slice()),
+                (".github/workflows/link.yml", b"\0symlink:a.yml".as_slice()),
+                (".github/workflows/sub.yaml", GITLINK),
+            ],
+            "safe",
+            vec![
+                ".github/workflows/a.yml",
+                ".github/workflows/link.yml",
+                ".github/workflows/sub.yaml",
+            ],
+            false,
+        ),
+        (
+            "no workflows directory",
+            vec![(".github/CODEOWNERS", b"".as_slice())],
+            "safe",
+            vec![],
+            false,
+        ),
+        (
             "enumeration failure",
             vec![(".github/workflows/check.yml", b"".as_slice())],
             "workflow-enumeration-failed",
@@ -692,4 +728,27 @@ fn workflow_manual_review_enumeration_table() {
         fixture.assert_get_only();
         assert_eq!(snapshot(&fixture.repo), before, "{name}");
     }
+}
+
+#[test]
+fn missing_default_branch_tip_has_a_specific_unavailable_reason() {
+    let fixture = Fixture::with_files(&[(".github/workflows/check.yml", b"".as_slice())]);
+    fixture.git(&["branch", "-m", "main", "other"]);
+    fixture.git(&["symbolic-ref", "-d", "refs/remotes/origin/HEAD"]);
+    fixture.git(&["update-ref", "-d", "refs/remotes/origin/main"]);
+    let before = snapshot(&fixture.repo);
+    let document = fixture.json("safe");
+    let finding = document["data"]["findings"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|finding| finding["detail"] == "workflow_review_manually")
+        .unwrap();
+    assert_eq!(finding["code"], "could_not_check");
+    assert_eq!(
+        finding["message"],
+        "Could not check workflow_review_manually: The default branch tip is not available locally; no fetch was attempted"
+    );
+    fixture.assert_get_only();
+    assert_eq!(snapshot(&fixture.repo), before);
 }
