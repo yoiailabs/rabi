@@ -108,6 +108,7 @@ fn hidden_trigger_syntax(text: &str, quote: &mut Option<char>) -> bool {
     while let Some((offset, ch)) = characters.next() {
         let token_start =
             previous.is_none_or(|prev| prev.is_whitespace() || "[:,{}".contains(prev));
+        let value_start = significant.is_none_or(|prev| ":,[{".contains(prev));
         if *quote == Some('\'')
             && ch == '\''
             && characters.peek().is_some_and(|(_, next)| *next == '\'')
@@ -122,20 +123,19 @@ fn hidden_trigger_syntax(text: &str, quote: &mut Option<char>) -> bool {
         }
         if Some(ch) == *quote {
             *quote = None;
-        } else if quote.is_none() && token_start && matches!(ch, '\'' | '"') {
+        } else if quote.is_none() && value_start && matches!(ch, '\'' | '"') {
+            // Only a quoted node can continue across lines. Quotes embedded
+            // in plain scalar prose never alter the persistent quote state.
             *quote = Some(ch);
-        } else if quote.is_none() {
-            let value_start = significant.is_none_or(|prev| ":,[{".contains(prev));
-            if token_start && matches!(ch, '&' | '*')
-                || value_start && ch == '!'
+        } else if quote.is_none()
+            && (value_start && matches!(ch, '&' | '*' | '!')
                 || significant.is_none_or(|prev| "{,".contains(prev)) && ch == '?'
                 || token_start
                     && text[offset..]
                         .strip_prefix("<<")
-                        .is_some_and(|rest| rest.trim_start().starts_with(':'))
-            {
-                return true;
-            }
+                        .is_some_and(|rest| rest.trim_start().starts_with(':')))
+        {
+            return true;
         }
         previous = Some(ch);
         if !ch.is_whitespace() {
@@ -184,7 +184,9 @@ fn triggers(lines: &[Line]) -> Triggers {
                 i == 0 || Some(line.indent) == event_indent,
                 &mut quote,
             )
-        });
+        })
+        // An unfinished quoted node cannot establish a safe trigger set.
+        || quote.is_some();
     Triggers {
         pull_request: contains("pull_request") || uncertain,
         pull_request_target: contains("pull_request_target") || uncertain,
@@ -467,6 +469,77 @@ mod tests {
                     "{name}"
                 );
             }
+        }
+    }
+
+    #[test]
+    fn plain_scalar_description_and_following_event_table() {
+        let descriptions = [
+            "Build & deploy",
+            "Use * for all",
+            r#"say "hi\n" now"#,
+            "pick 'a",
+            "5 'inch",
+            r#"pick "a"#,
+            r#"5 "inch"#,
+        ];
+        let events = [
+            ("", false),
+            ("  \"pull\\u005frequest_target\":\n", true),
+            ("  <<: *events\n", true),
+        ];
+        for description in descriptions {
+            for (event, uncertain) in events {
+                let contents = format!("on:\n  workflow_dispatch:\n    inputs:\n      choice:\n        description: {description}\n{event}permissions: {{}}\n");
+                let trigger = triggers(&lines(&contents));
+                assert_eq!(
+                    (
+                        trigger.pull_request,
+                        trigger.pull_request_target,
+                        trigger.uncertain
+                    ),
+                    (uncertain, uncertain, uncertain),
+                    "{description}/{event}"
+                );
+                let findings = evaluate(&Workflow {
+                    name: "workflow.yml".into(),
+                    contents,
+                });
+                if uncertain {
+                    assert!(
+                        findings
+                            .iter()
+                            .any(|finding| finding.code == "pull_request_target_trigger"),
+                        "{description}/{event}"
+                    );
+                    assert!(
+                        findings
+                            .iter()
+                            .all(|finding| finding.detail.contains("uncertain")
+                                && finding
+                                    .message
+                                    .contains("trigger set could not be fully parsed")),
+                        "{description}/{event}"
+                    );
+                } else {
+                    assert!(findings.is_empty(), "{description}: {findings:?}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn quoted_node_line_end_table() {
+        for (value, uncertain) in [
+            ("'pick a", true),
+            ("\"pick a", true),
+            ("'pick\n          a'", false),
+            ("\"pick\n          a\"", false),
+        ] {
+            let contents = format!("on:\n  workflow_dispatch:\n    inputs:\n      choice:\n        description: {value}\npermissions: {{}}\n");
+            let trigger = triggers(&lines(&contents));
+            assert_eq!(trigger.uncertain, uncertain, "{value}");
+            assert_eq!(trigger.pull_request_target, uncertain, "{value}");
         }
     }
 
