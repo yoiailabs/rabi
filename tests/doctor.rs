@@ -1,10 +1,11 @@
 #![cfg(unix)]
 #[path = "common/git.rs"]
 mod test_git;
+#[path = "common/scripts.rs"]
+mod test_scripts;
 
 use serde_json::Value;
 use std::fs;
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -250,8 +251,7 @@ impl Drop for Fixture {
     }
 }
 fn executable(path: &Path, contents: &str) {
-    fs::write(path, contents).unwrap();
-    fs::set_permissions(path, fs::Permissions::from_mode(0o755)).unwrap();
+    test_scripts::write_executable(path, contents).unwrap();
 }
 fn codes(document: &Value) -> Vec<&str> {
     document["data"]["findings"]
