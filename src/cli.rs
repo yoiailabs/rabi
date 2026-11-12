@@ -907,6 +907,23 @@ fn task_github(args: &[String], merge: bool) -> Result<i32> {
     )?;
     Ok(SUCCESS)
 }
+fn doctor(args: &[String]) -> Result<i32> {
+    let _hooks = crate::process::suppress_git_hooks();
+    let parsed = args::parse(args, &command_options("doctor"), true)?;
+    if !parsed.positionals.is_empty() {
+        return Err(Error::validation("Usage: rabi doctor [-R REPO] [--json]"));
+    }
+    let repository = selected_repository(&parsed)?;
+    let cwd = std::env::current_dir().map_err(|error| Error::msg(error.to_string()))?;
+    let root = crate::git::git_root(repository.as_deref().unwrap_or(&cwd))?;
+    let report = crate::doctor::inspect(&root);
+    if crate::output::json() {
+        emit_json(&report)
+    } else {
+        report.print();
+        Ok(SUCCESS)
+    }
+}
 
 fn task_risk(args: &[String]) -> Result<i32> {
     let parsed = args::parse(args, &command_options("task risk"), true)?;
@@ -1993,7 +2010,7 @@ fn set(args: &[String]) -> Result<i32> {
 /// Shared by common-option extraction and command validation.
 fn command_options(key: &str) -> Vec<Opt> {
     let mut options = match key {
-        "task" => vec![repo_flag()],
+        "doctor" | "task" => vec![repo_flag()],
         "task risk" => vec![repo_flag(), value_flag("base", None)],
         "task status" => vec![repo_flag()],
         "task merge" => vec![repo_flag(), value_flag("base", None), flag("dry-run", None)],
@@ -2559,6 +2576,12 @@ static HANDOFF_COMMANDS: &[Command] = &[
 ];
 
 static COMMANDS: &[Command] = &[
+    Command {
+        name: "doctor",
+        help_key: "doctor",
+        run: doctor,
+        children: &[],
+    },
     Command {
         name: "task",
         help_key: "task",

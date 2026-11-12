@@ -135,14 +135,14 @@ fn subject_link(repo: &RepoIdentity, number: u64, kind: &str) -> WorktreeLink {
 }
 
 #[derive(Debug, Clone)]
-struct RepoIdentity {
-    owner: String,
-    name: String,
+pub(crate) struct RepoIdentity {
+    pub(crate) owner: String,
+    pub(crate) name: String,
     /// Hostname for `gh api --hostname`, from `gh repo view`'s web `url`.
-    host: String,
+    pub(crate) host: String,
 }
 
-fn repo_info(cwd: &Path) -> Result<RepoIdentity> {
+pub(crate) fn repo_info(cwd: &Path) -> Result<RepoIdentity> {
     let captured = process::raw(
         "gh",
         &["repo", "view", "--json", "url,owner,name"],
@@ -521,8 +521,29 @@ pub fn current_repo_name(cwd: &Path) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-fn gh_api(directory: &Path, host: &str, path: &str) -> Result<process::Captured> {
-    let args = ["api", path, "--hostname", host];
+pub(crate) fn gh_api(directory: &Path, host: &str, path: &str) -> Result<process::Captured> {
+    gh_api_read(directory, host, path, false)
+}
+
+/// Header inspection uses the same GET-only API route as ordinary reads.
+pub(crate) fn gh_api_headers(
+    directory: &Path,
+    host: &str,
+    path: &str,
+) -> Result<process::Captured> {
+    gh_api_read(directory, host, path, true)
+}
+
+fn gh_api_read(
+    directory: &Path,
+    host: &str,
+    path: &str,
+    include: bool,
+) -> Result<process::Captured> {
+    let mut args = vec!["api", path, "--hostname", host];
+    if include {
+        args.push("--include");
+    }
     process::raw("gh", &args, Some(directory))
 }
 

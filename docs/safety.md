@@ -65,3 +65,24 @@ GC protects the primary checkout, default branch, current workspace, and Git-loc
 GC JSON is `data: {plan, items:[…]}`; each item has `workspace`, `reasons`, `action`, and `detail`, and may include `preservationReason`. See [JSON](json.md) and [exit codes](exit-codes.md).
 
 `rabi run` requires the same repository trust as hooks, without prompting. It runs a Codex parent in auto mode in the current linked workspace; the primary checkout is refused. The parent controls its own actions and subagents; rabi does not enforce task progress, check results, publication or completion. Trust is checked before inspecting worktree status, which can execute configured fsmonitor commands. Locks keyed by absolute checkout path prevent concurrent launches across branch changes and remain live while either the launcher or its Codex process group survives. SIGINT/SIGTERM and timeout terminate the parent process group and preserve records; commits and pushes are not rolled back. Missing sessions never silently start over. Skills are verbatim instructions, with no resolution or validation by rabi.
+
+## Doctor findings
+
+`rabi doctor` writes nothing: it only reads GitHub with GET requests and local Git configuration/committed objects. It never fetches, executes hooks, changes merge policy, or blocks other commands. Its findings are advisory and always exit 0. It never prints tokens, push URLs, raw API responses, or subprocess diagnostics. Missing access is not evidence of safe settings.
+
+| Code | Meaning |
+| --- | --- |
+| `required_checks_not_enforced` | No required-status-checks ruleset rule protects the default branch. Classic branch protection may still enforce checks; it is not inspected. |
+| `force_push_allowed` | No non-fast-forward ruleset rule protects the default branch. Classic branch protection is not inspected. |
+| `deletion_allowed` | No deletion ruleset rule protects the default branch. Classic branch protection is not inspected. |
+| `merge_queue` | A merge queue is enabled; rabi's merge flow does not support it yet. |
+| `ruleset_bypass` | The current user may bypass a named active ruleset targeting the default branch. |
+| `token_workflow_scope` | Warning: the OAuth token has `workflow` scope, so anything that can push with it can rewrite CI definitions. Info: no scopes header was returned, so fine-grained/app token permissions could not be determined. |
+| `default_workflow_permissions` | Repository workflow tokens default to write permissions. |
+| `remote_push_ssh` | An SSH push URL is configured for the default branch push remote, selected by `branch.<branch>.pushRemote`, then `remote.pushDefault`, then `branch.<branch>.remote`, then `origin`. The selected name must be a configured remote other than `.`; otherwise `could_not_check` reports that the push remote could not be determined. SSH keys cannot exclude workflow changes; prefer HTTPS with a token without workflow permission. |
+| `workflow_review_manually` | Info: a committed workflow file needs manual review of its triggers and permissions; doctor does not parse workflow YAML. |
+| `could_not_check` | A named check lacked API access, authentication, a default branch, or readable local data. Its reason is sanitized; no credentials are included. |
+
+Doctor lists `.yml` and `.yaml` entries directly inside `.github/workflows/` on the locally available default-branch tip (remote-tracking tip preferred, local branch fallback), including symlinks and submodule entries with those names. Nested directories and other files are ignored. Only the `.github` and `.github/workflows` trees are read. It emits one informational `workflow_review_manually` finding per file, without reading workflow contents or parsing workflow YAML. Review each file's triggers and permissions manually. No workflow files means no workflow findings; an empty report is not proof of CI safety.
+
+Only rulesets are inspected through `rules/branches`; classic branch protection is not inspected. Rulesets are paginated, including inherited rulesets, and active details are inspected for default-branch conditions and bypass access. Unknown ref pattern forms are conservatively included and cannot establish an exclusion. Doctor inspects the locally available default-branch tip without fetching; rerun after updating refs yourself if current remote workflow definitions are needed.
