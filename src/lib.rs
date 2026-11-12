@@ -17,6 +17,7 @@ pub(crate) mod atomic;
 pub mod cli;
 pub mod config;
 pub mod context;
+mod doctor;
 pub mod error;
 mod execution_env;
 pub mod gc;

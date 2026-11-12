@@ -65,3 +65,27 @@ GC protects the primary checkout, default branch, current workspace, and Git-loc
 GC JSON is `data: {plan, items:[…]}`; each item has `workspace`, `reasons`, `action`, and `detail`, and may include `preservationReason`. See [JSON](json.md) and [exit codes](exit-codes.md).
 
 `rabi run` requires the same repository trust as hooks, without prompting. It runs a Codex parent in auto mode in the current linked workspace; the primary checkout is refused. The parent controls its own actions and subagents; rabi does not enforce task progress, check results, publication or completion. Trust is checked before inspecting worktree status, which can execute configured fsmonitor commands. Locks keyed by absolute checkout path prevent concurrent launches across branch changes and remain live while either the launcher or its Codex process group survives. SIGINT/SIGTERM and timeout terminate the parent process group and preserve records; commits and pushes are not rolled back. Missing sessions never silently start over. Skills are verbatim instructions, with no resolution or validation by rabi.
+
+## Doctor findings
+
+`rabi doctor` writes nothing: it only reads GitHub with GET requests and local Git configuration/committed objects. It never fetches, executes hooks, changes merge policy, or blocks other commands. Its findings are advisory and always exit 0. It never prints tokens, push URLs, raw API responses, or subprocess diagnostics. Missing access is not evidence of safe settings.
+
+| Code | Meaning |
+| --- | --- |
+| `required_checks_not_enforced` | No effective required-status-checks rule protects the default branch. GitHub does not block merging on red CI; rabi's preflight is the only gate. |
+| `force_push_allowed` | No effective non-fast-forward rule protects the default branch. History can be rewritten. |
+| `deletion_allowed` | No effective deletion rule protects the default branch. |
+| `merge_queue` | A merge queue is enabled; rabi's merge flow does not support it yet. |
+| `ruleset_bypass` | The current user may bypass a named active ruleset targeting the default branch. |
+| `token_workflow_scope` | Warning: the OAuth token has `workflow` scope, so anything that can push with it can rewrite CI definitions. Info: no scopes header was returned, so fine-grained/app token permissions could not be determined. |
+| `default_workflow_permissions` | Repository workflow tokens default to write permissions. |
+| `remote_push_ssh` | An SSH push URL is configured for the default branch remote. SSH keys cannot exclude workflow changes; prefer HTTPS with a token without workflow permission. |
+| `pull_request_target_trigger` | A workflow may use the privileged `pull_request_target` event. |
+| `pull_request_write_permissions` | A `pull_request` workflow grants write permissions at workflow or job level, lacks top-level permissions (inherits repository defaults), or uses an uncertain permissions form. File and job are named where known. |
+| `pull_request_secrets` | A `pull_request` workflow references secrets beyond `secrets.GITHUB_TOKEN`. |
+| `required_job_conditional` | A `pull_request` workflow uses path filters or a draft condition. A required check that is filtered or skipped never reports success; rabi's preflight treats a missing check as failure. |
+| `could_not_check` | A named check lacked API access, authentication, a default branch, or readable local data. Its reason is sanitized; no credentials are included. |
+
+Workflow detection is a conservative line/indent heuristic without a YAML parser. It recognizes scalar, list, and map triggers, quoted keys, comments outside quotes, block and inline permission maps, `write-all`, and job permissions. It scans active lines for secret expressions and draft conditions. Anchors, aliases, tags, expressions, malformed or unsupported structures cannot establish safety and may cause extra warnings. Path filters elsewhere in a mixed trigger block and draft conditions outside job scope can also produce extra info findings. Secret bracket expressions are conservatively treated as uncertain secrets. It does not evaluate expressions, expand YAML merges, or trace reusable workflows/actions; an empty report is not proof of CI safety.
+
+Rulesets are paginated, including inherited rulesets, and active details are inspected for default-branch conditions and bypass access. Unknown ref pattern forms are conservatively included and cannot establish an exclusion. Doctor inspects the locally available default-branch tip without fetching; rerun after updating refs yourself if current remote workflow definitions are needed.

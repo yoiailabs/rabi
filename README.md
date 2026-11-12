@@ -79,6 +79,7 @@ Read [removal safety and retries](docs/safety.md) and [sync strategies](docs/syn
 | `rabi repo show` | Inspect a repository |
 | `rabi repo forget` | Drop a registration |
 | `rabi run` | Launch or resume the workspace parent session |
+| `rabi doctor` | Read-only GitHub and committed workflow diagnostics; never fetches or changes settings |
 | `rabi task` | Local task inspection |
 | `rabi task risk` | Classify committed changes using the base commit risk policy |
 | `rabi task status` | Read GitHub PR facts without writes |

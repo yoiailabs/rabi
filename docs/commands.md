@@ -489,3 +489,13 @@ Usage: `rabi completions bash|zsh|fish`
 Output a shell function for rabi cd in bash, zsh or fish
 
 Usage: `rabi shell-init bash|zsh|fish`
+
+## Doctor
+
+`rabi doctor [-R REPO] [--json|--output text|json]` reports repository and environment settings that weaken a deterministic merge flow. Repository selection uses the shared global `-R/--repo` rules, before or after the command. No selector or other positional argument is accepted.
+
+Doctor uses the existing GitHub CLI identity/host lookup, GET API requests, the default branch's configured remote push URLs, and workflow blobs from its locally available committed tip (remote-tracking tip preferred, local branch fallback). It never fetches; a remote-tracking tip can be stale. Git 2.44 or later is needed for protected object reads with `--no-lazy-fetch`. It reads neither workflow contents nor policy from the working tree or index, does not depend on policy CI configuration, runs no hooks, and writes no settings, refs, objects, or records.
+
+Text prints one `WARN|INFO <code>: <message>` line per finding and warning/info counts; an empty report says `No findings`. JSON uses the schema 2 envelope with `data: {repository, defaultBranch, findings, counts: {warning, info}}`. Repository is `host/owner/name` (null if unavailable); defaultBranch is the branch name (null if unknown). Each finding has `code`, `level`, `message`, and `detail`. Findings live in `data.findings`, including warnings; the envelope remains successful.
+
+Findings always exit 0, including `could_not_check` for inaccessible APIs, missing authentication, missing default branch, or unavailable local objects. Invalid repositories, bad `-R`, and usage errors retain existing error codes. Doctor only reports and never blocks another command. See [safety](safety.md#doctor-findings) for finding meanings and heuristic limits.

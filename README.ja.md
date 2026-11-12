@@ -79,6 +79,7 @@ rabi remove task/auth
 | `rabi repo show` | リポジトリを確認 |
 | `rabi repo forget` | 登録だけを削除 |
 | `rabi run` | ワークスペースの親セッションを起動・再開 |
+| `rabi doctor` | Read-only GitHub and committed workflow diagnostics; never fetches or changes settings |
 | `rabi task` | ローカルのタスク検査 |
 | `rabi task risk` | ベースコミットのリスクポリシーでコミット済みの変更を分類 |
 | `rabi task status` | 書き込みなしで GitHub の PR 情報を表示 |
