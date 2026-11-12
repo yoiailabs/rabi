@@ -585,3 +585,36 @@ fn uncertain_trigger_text_is_explicit_about_the_guess() {
     );
     fixture.assert_get_only();
 }
+
+#[test]
+fn event_level_triggers_ignore_prose_without_masking_later_declarations() {
+    for (event, target) in [
+        ("", false),
+        (
+            "  \"pull\\u005frequest_target\":\n    branches: [\"it's\"]\n",
+            true,
+        ),
+        ("  <<: *events\n    branches: [it's]\n", true),
+    ] {
+        let workflow = format!(
+            "on:\n  workflow_dispatch:\n    inputs:\n      glob:\n        description: Paths (e.g., *.md)\n      quote:\n        description: pick a, 'b\n      comment:\n        description: Don't # note, \"x\n{event}permissions: {{}}\n"
+        );
+        let fixture = Fixture::new(&workflow);
+        let before = snapshot(&fixture.repo);
+        let document = fixture.json("safe");
+        let expected = if target {
+            vec!["pull_request_target_trigger"]
+        } else {
+            vec![]
+        };
+        assert_eq!(codes(&document), expected, "{event}: {document}");
+        if target {
+            assert!(document["data"]["findings"][0]["message"]
+                .as_str()
+                .unwrap()
+                .contains("trigger set could not be fully parsed"));
+        }
+        fixture.assert_get_only();
+        assert_eq!(snapshot(&fixture.repo), before);
+    }
+}
