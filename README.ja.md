@@ -81,6 +81,8 @@ rabi remove task/auth
 | `rabi run` | ワークスペースの親セッションを起動・再開 |
 | `rabi task` | ローカルのタスク検査 |
 | `rabi task risk` | ベースコミットのリスクポリシーでコミット済みの変更を分類 |
+| `rabi task status` | Read GitHub PR facts without writes |
+| `rabi task merge` | Evaluate merge preflight with required `--dry-run` (no writes) |
 | `rabi skill` | スキル探索 |
 | `rabi skill list` | スキル名・探索元・パスを一覧表示 |
 | `rabi trust` | フック・run・リポジトリ環境の信頼設定 |

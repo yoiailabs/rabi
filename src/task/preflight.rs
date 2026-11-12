@@ -1,0 +1,735 @@
+//! Pure merge preflight: no Git, filesystem, or network access.
+use std::collections::BTreeSet;
+
+use serde::Serialize;
+use serde_json::{json, Value};
+
+use super::{
+    classify::{self, ChangedEntry, Classification},
+    policy::{Policy, Tier},
+};
+use crate::github::facts::Snapshot;
+
+pub(crate) struct Local {
+    pub head: Option<String>,
+    pub kinds: Option<Vec<ChangedEntry>>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum Outcome {
+    Pass,
+    Fail,
+    NotEvaluated,
+}
+
+#[derive(Serialize)]
+pub(crate) struct Item {
+    pub id: &'static str,
+    pub result: Outcome,
+    pub reason: String,
+    pub detail: Value,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct Evaluation {
+    pub items: Vec<Item>,
+    pub verdict: &'static str,
+    pub classification: Option<Classification>,
+}
+
+fn item(id: &'static str, pass: bool, reason: impl Into<String>, detail: Value) -> Item {
+    Item {
+        id,
+        result: if pass { Outcome::Pass } else { Outcome::Fail },
+        reason: reason.into(),
+        detail,
+    }
+}
+fn pending(id: &'static str, reason: &str, detail: Value) -> Item {
+    Item {
+        id,
+        result: Outcome::NotEvaluated,
+        reason: reason.into(),
+        detail,
+    }
+}
+
+fn classify_files(
+    facts: &Snapshot,
+    policy: &Policy,
+    kinds: Option<&[ChangedEntry]>,
+) -> std::result::Result<Classification, &'static str> {
+    if facts.files_truncated {
+        return Err("GitHub file list is truncated");
+    }
+    if let Some(kinds) = kinds {
+        let paths = |entries: &[ChangedEntry]| -> BTreeSet<Vec<u8>> {
+            entries
+                .iter()
+                .flat_map(|entry| std::iter::once(entry.path.clone()).chain(entry.old_path.clone()))
+                .collect()
+        };
+        let remote: BTreeSet<_> = facts
+            .files
+            .iter()
+            .flat_map(|file| {
+                std::iter::once(file.filename.as_bytes().to_vec()).chain(
+                    file.previous_filename
+                        .as_ref()
+                        .map(|path| path.as_bytes().to_vec()),
+                )
+            })
+            .collect();
+        if paths(kinds) != remote || kinds.len() != facts.files.len() {
+            return Err("Local diff path set differs from GitHub file list");
+        }
+    }
+    let entries: Vec<_> = facts
+        .files
+        .iter()
+        .map(|file| {
+            let kind = kinds.and_then(|entries| {
+                entries
+                    .iter()
+                    .find(|entry| entry.path == file.filename.as_bytes())
+            });
+            ChangedEntry {
+                path: file.filename.as_bytes().to_vec(),
+                old_path: file
+                    .previous_filename
+                    .as_ref()
+                    .map(|path| path.as_bytes().to_vec()),
+                status: match file.status.as_str() {
+                    "added" => "A",
+                    "removed" => "D",
+                    "modified" | "changed" => "M",
+                    "renamed" => "R",
+                    "copied" => "C",
+                    other => other,
+                }
+                .into(),
+                old_mode: kind.map_or(0, |entry| entry.old_mode),
+                new_mode: kind.map_or(0, |entry| entry.new_mode),
+                added: file.additions,
+                deleted: file.deletions,
+                binary: kind.is_some_and(|entry| entry.binary),
+                unknown: kind.map_or_else(
+                    || vec!["unknown:kinds".into()],
+                    |entry| entry.unknown.clone(),
+                ),
+            }
+        })
+        .collect();
+    let mut classification = classify::classify(policy, &entries);
+    if kinds.is_none() {
+        classification.tier = Tier::High;
+        if !classification
+            .reasons
+            .iter()
+            .any(|reason| reason == "unknown:kinds")
+        {
+            classification.reasons.push("unknown:kinds".into());
+        }
+    }
+    Ok(classification)
+}
+
+pub(crate) fn evaluate(
+    facts: &Snapshot,
+    policy: &Policy,
+    local: &Local,
+    base: Option<&str>,
+) -> Evaluation {
+    let pr = &facts.pr;
+    let expected_base = base.unwrap_or(&facts.default_branch);
+    let mut problems = Vec::new();
+    if pr.state != "open" {
+        problems.push("PR is not open");
+    }
+    if pr.draft {
+        problems.push("PR is draft");
+    }
+    if !pr.same_repository {
+        problems.push("PR head is a fork or unavailable repository");
+    }
+    if pr.base_ref != expected_base {
+        problems.push("PR base differs from expected branch");
+    }
+    let mut items = vec![item(
+        "pr_open",
+        problems.is_empty(),
+        if problems.is_empty() {
+            "PR is open, ready for review, same repository and expected base".into()
+        } else {
+            problems.join("; ")
+        },
+        json!({"expectedBase": expected_base}),
+    )];
+    items.push(if facts.inconsistent {
+        item(
+            "head_consistent",
+            false,
+            "PR head moved during collection",
+            json!({"head":pr.head_sha,"finalHead":facts.final_head_sha}),
+        )
+    } else if let Some(head) = &local.head {
+        item(
+            "head_consistent",
+            head == &pr.head_sha,
+            if head == &pr.head_sha {
+                "PR head is stable and matches local HEAD"
+            } else {
+                "local HEAD differs from PR head"
+            },
+            json!({"localHead":head,"prHead":pr.head_sha}),
+        )
+    } else {
+        pending(
+            "head_consistent",
+            "PR head is stable; local comparison not evaluated for pr:N",
+            Value::Null,
+        )
+    });
+    let checks: Vec<_> = policy.ci.required.iter().map(|required| {
+        let name = required.name();
+        let app = required.app(&policy.ci);
+        let latest = facts.check_runs.iter().filter(|run| run.name == name && run.app.as_deref() == Some(app)).max_by_key(|run| run.id);
+        let pass = latest.is_some_and(|run| run.status == "completed" && run.conclusion.as_deref() == Some("success"));
+        let observed = latest.map_or_else(|| "missing".into(), |run| format!("{}:{}", run.status, run.conclusion.as_deref().unwrap_or("none")));
+        let ignored_runs: Vec<_> = facts.check_runs.iter().filter(|run| run.name == name && run.app.as_deref() != Some(app)).collect();
+        let ignored_statuses: Vec<_> = facts.statuses.iter().filter(|status| status.context == name).collect();
+        json!({"name":name,"app":app,"pass":pass,"observed":observed,"ignoredCheckRuns":ignored_runs,"ignoredStatuses":ignored_statuses})
+    }).collect();
+    let passed = !checks.is_empty() && checks.iter().all(|check| check["pass"] == true);
+    let reason = if checks.is_empty() {
+        "no_required_checks".into()
+    } else {
+        checks
+            .iter()
+            .map(|check| {
+                format!(
+                    "{}: {}{}",
+                    check["name"].as_str().unwrap_or(""),
+                    check["observed"].as_str().unwrap_or(""),
+                    if check["ignoredCheckRuns"]
+                        .as_array()
+                        .is_some_and(|rows| !rows.is_empty())
+                        || check["ignoredStatuses"]
+                            .as_array()
+                            .is_some_and(|rows| !rows.is_empty())
+                    {
+                        " (other apps and commit statuses ignored)"
+                    } else {
+                        ""
+                    }
+                )
+            })
+            .collect::<Vec<_>>()
+            .join("; ")
+    };
+    items.push(item(
+        "required_checks",
+        passed,
+        reason,
+        json!({"checks":checks}),
+    ));
+    let (classification, risk) = match classify_files(facts, policy, local.kinds.as_deref()) {
+        Ok(classification) => {
+            let risk = item(
+                "risk_tier",
+                true,
+                "Risk tier computed",
+                json!({"tier":classification.tier,"floor":classification.floor,"reasons":classification.reasons}),
+            );
+            (Some(classification), risk)
+        }
+        Err(reason) => (None, item("risk_tier", false, reason, Value::Null)),
+    };
+    items.push(risk);
+    items.push(pending(
+        "approval",
+        "approvals not implemented",
+        classification.as_ref().map_or(
+            Value::Null,
+            |risk| json!({"tier":risk.tier,"floor":risk.floor}),
+        ),
+    ));
+    items.push(pending(
+        "review_record",
+        "No task review records yet",
+        Value::Null,
+    ));
+    items.push(pending(
+        "classification_record",
+        "No task classification records yet",
+        Value::Null,
+    ));
+    let requested: Vec<_> = facts
+        .reviews
+        .iter()
+        .filter(|review| review.state == "CHANGES_REQUESTED")
+        .collect();
+    let no_requests =
+        requested.is_empty() && facts.review_decision.as_deref() != Some("CHANGES_REQUESTED");
+    items.push(item(
+        "no_changes_requested",
+        no_requests,
+        if no_requests {
+            "No changes requested"
+        } else {
+            "CHANGES_REQUESTED"
+        },
+        json!({"reviews":requested,"reviewDecision":facts.review_decision}),
+    ));
+    let mergeable = pr.mergeable == Some(true)
+        && !matches!(
+            pr.mergeable_state.as_str(),
+            "dirty" | "conflicting" | "unknown"
+        );
+    let reason = if pr.mergeable.is_none() || pr.mergeable_state == "unknown" {
+        "GitHub has not computed mergeability"
+    } else if mergeable {
+        "GitHub reports mergeable"
+    } else {
+        "GitHub reports conflicting or unmergeable"
+    };
+    items.push(item(
+        "mergeable",
+        mergeable,
+        reason,
+        json!({"mergeable":pr.mergeable,"state":pr.mergeable_state}),
+    ));
+    let verdict = if items
+        .iter()
+        .any(|item| matches!(item.result, Outcome::Fail))
+    {
+        "blocked"
+    } else if items
+        .iter()
+        .any(|item| matches!(item.result, Outcome::NotEvaluated))
+    {
+        "incomplete"
+    } else {
+        "ready"
+    };
+    Evaluation {
+        items,
+        verdict,
+        classification,
+    }
+}
+
+impl Evaluation {
+    pub fn print(&self) {
+        use crate::output::{outln, visible_text};
+        for item in &self.items {
+            let detail = if matches!(item.id, "risk_tier" | "approval") {
+                self.classification.as_ref().map_or(String::new(), |risk| {
+                    format!(
+                        " (tier: {}, floor: {}, reasons: {})",
+                        risk.tier,
+                        risk.floor,
+                        visible_text(&risk.reasons.join(", "))
+                    )
+                })
+            } else {
+                String::new()
+            };
+            outln!(
+                "{} {}: {}{}",
+                match item.result {
+                    Outcome::Pass => "PASS",
+                    Outcome::Fail => "FAIL",
+                    Outcome::NotEvaluated => "N/A",
+                },
+                item.id,
+                visible_text(&item.reason),
+                detail
+            );
+        }
+        outln!("Verdict: {}", self.verdict);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    const POLICY: &str = "schema = 1\ndefault-tier = 'low'\n[ci]\nrequired = ['Rust test']";
+
+    #[test]
+    fn preflight_table() {
+        // Each row starts from a serializable snapshot fixture and changes one fact.
+        let cases = [
+            ("success", "", Value::Null, true, "", "incomplete"),
+            (
+                "skipped",
+                "/checkRuns/0/conclusion",
+                json!("skipped"),
+                true,
+                "required_checks",
+                "blocked",
+            ),
+            (
+                "neutral",
+                "/checkRuns/0/conclusion",
+                json!("neutral"),
+                true,
+                "required_checks",
+                "blocked",
+            ),
+            (
+                "failure",
+                "/checkRuns/0/conclusion",
+                json!("failure"),
+                true,
+                "required_checks",
+                "blocked",
+            ),
+            (
+                "cancelled",
+                "/checkRuns/0/conclusion",
+                json!("cancelled"),
+                true,
+                "required_checks",
+                "blocked",
+            ),
+            (
+                "timed out",
+                "/checkRuns/0/conclusion",
+                json!("timed_out"),
+                true,
+                "required_checks",
+                "blocked",
+            ),
+            (
+                "action required",
+                "/checkRuns/0/conclusion",
+                json!("action_required"),
+                true,
+                "required_checks",
+                "blocked",
+            ),
+            (
+                "stale",
+                "/checkRuns/0/conclusion",
+                json!("stale"),
+                true,
+                "required_checks",
+                "blocked",
+            ),
+            (
+                "queued",
+                "/checkRuns/0/status",
+                json!("queued"),
+                true,
+                "required_checks",
+                "blocked",
+            ),
+            ("rerun", "", Value::Null, true, "required_checks", "blocked"),
+            (
+                "path filter missing",
+                "/checkRuns",
+                json!([]),
+                true,
+                "required_checks",
+                "blocked",
+            ),
+            (
+                "wrong app and status",
+                "",
+                Value::Null,
+                true,
+                "required_checks",
+                "blocked",
+            ),
+            (
+                "truncated",
+                "/filesTruncated",
+                json!(true),
+                true,
+                "risk_tier",
+                "blocked",
+            ),
+            (
+                "head moved",
+                "/inconsistent",
+                json!(true),
+                true,
+                "head_consistent",
+                "blocked",
+            ),
+            (
+                "local mismatch",
+                "",
+                Value::Null,
+                true,
+                "head_consistent",
+                "blocked",
+            ),
+            (
+                "fork",
+                "/pr/sameRepository",
+                json!(false),
+                true,
+                "pr_open",
+                "blocked",
+            ),
+            (
+                "draft",
+                "/pr/draft",
+                json!(true),
+                true,
+                "pr_open",
+                "blocked",
+            ),
+            (
+                "closed",
+                "/pr/state",
+                json!("closed"),
+                true,
+                "pr_open",
+                "blocked",
+            ),
+            (
+                "wrong base",
+                "/pr/baseRef",
+                json!("release"),
+                true,
+                "pr_open",
+                "blocked",
+            ),
+            (
+                "empty required",
+                "",
+                Value::Null,
+                true,
+                "required_checks",
+                "blocked",
+            ),
+            (
+                "missing ci",
+                "",
+                Value::Null,
+                true,
+                "required_checks",
+                "blocked",
+            ),
+            (
+                "mergeable null",
+                "/pr/mergeable",
+                Value::Null,
+                true,
+                "mergeable",
+                "blocked",
+            ),
+            (
+                "mergeable unknown",
+                "/pr/mergeableState",
+                json!("unknown"),
+                true,
+                "mergeable",
+                "blocked",
+            ),
+            (
+                "conflicting",
+                "/pr/mergeable",
+                json!(false),
+                true,
+                "mergeable",
+                "blocked",
+            ),
+            (
+                "dirty",
+                "/pr/mergeableState",
+                json!("dirty"),
+                true,
+                "mergeable",
+                "blocked",
+            ),
+            (
+                "requested",
+                "/reviews",
+                json!([{"reviewer":"reviewer-1","state":"CHANGES_REQUESTED","id":1}]),
+                true,
+                "no_changes_requested",
+                "blocked",
+            ),
+            (
+                "decision",
+                "/reviewDecision",
+                json!("CHANGES_REQUESTED"),
+                true,
+                "no_changes_requested",
+                "blocked",
+            ),
+            ("unknown kinds", "", Value::Null, false, "", "incomplete"),
+            (
+                "floor",
+                "/files/0/filename",
+                json!(".github/workflows/ci.yml"),
+                true,
+                "",
+                "incomplete",
+            ),
+            (
+                "path mismatch",
+                "",
+                Value::Null,
+                true,
+                "risk_tier",
+                "blocked",
+            ),
+            (
+                "explicit base",
+                "/pr/baseRef",
+                json!("release"),
+                true,
+                "",
+                "incomplete",
+            ),
+            ("pr selector", "", Value::Null, true, "", "incomplete"),
+            (
+                "unstable",
+                "/pr/mergeableState",
+                json!("unstable"),
+                true,
+                "",
+                "incomplete",
+            ),
+            (
+                "has hooks",
+                "/pr/mergeableState",
+                json!("has_hooks"),
+                true,
+                "",
+                "incomplete",
+            ),
+        ];
+        for (name, pointer, value, available, failed, verdict) in cases {
+            let mut fixture: Value =
+                serde_json::from_str(include_str!("../../tests/fixtures/task_facts.json")).unwrap();
+            if !pointer.is_empty() {
+                *fixture.pointer_mut(pointer).unwrap() = value;
+            }
+            if name == "rerun" {
+                let mut rerun = fixture["checkRuns"][0].clone();
+                rerun["id"] = json!(11);
+                rerun["status"] = json!("in_progress");
+                rerun["conclusion"] = Value::Null;
+                fixture["checkRuns"]
+                    .as_array_mut()
+                    .unwrap()
+                    .insert(0, rerun);
+            }
+            if name == "wrong app and status" {
+                fixture["checkRuns"][0]["app"] = json!("another-app");
+                fixture["statuses"] =
+                    json!([{"context":"Rust test","state":"success","creator":"issuer-1"}]);
+            }
+            let facts: Snapshot = serde_json::from_value(fixture).unwrap();
+            let policy = Policy::parse(match name {
+                "empty required" => "schema=1\n[ci]\nrequired=[]",
+                "missing ci" => "schema=1",
+                _ => POLICY,
+            })
+            .unwrap();
+            let kinds = available.then(|| {
+                facts
+                    .files
+                    .iter()
+                    .map(|file| ChangedEntry {
+                        path: if name == "path mismatch" {
+                            b"other".to_vec()
+                        } else {
+                            file.filename.as_bytes().to_vec()
+                        },
+                        old_path: None,
+                        status: "M".into(),
+                        old_mode: 0o100644,
+                        new_mode: 0o100644,
+                        added: 0,
+                        deleted: 0,
+                        binary: false,
+                        unknown: Vec::new(),
+                    })
+                    .collect()
+            });
+            let head = if name == "pr selector" {
+                None
+            } else {
+                Some(if name == "local mismatch" {
+                    "different".into()
+                } else {
+                    facts.pr.head_sha.clone()
+                })
+            };
+            let report = evaluate(
+                &facts,
+                &policy,
+                &Local { head, kinds },
+                (name == "explicit base").then_some("release"),
+            );
+            assert_eq!(report.verdict, verdict, "{name}");
+            let ids = [
+                "pr_open",
+                "head_consistent",
+                "required_checks",
+                "risk_tier",
+                "approval",
+                "review_record",
+                "classification_record",
+                "no_changes_requested",
+                "mergeable",
+            ];
+            for (item, id) in report.items.iter().zip(ids) {
+                assert_eq!(item.id, id, "{name}");
+                let expected = if id == failed {
+                    "fail"
+                } else if matches!(id, "approval" | "review_record" | "classification_record")
+                    || (name == "pr selector" && id == "head_consistent")
+                {
+                    "not_evaluated"
+                } else {
+                    "pass"
+                };
+                assert_eq!(
+                    serde_json::to_value(&item.result).unwrap(),
+                    expected,
+                    "{name}: {id}"
+                );
+            }
+            assert_eq!(report.items.len(), ids.len());
+            if name == "unknown kinds" {
+                let risk = report.classification.as_ref().unwrap();
+                assert_eq!(risk.tier, Tier::High);
+                assert!(risk.reasons.contains(&"unknown:kinds".into()));
+            }
+            if name == "floor" {
+                let risk = report.classification.as_ref().unwrap();
+                assert_eq!(risk.tier, Tier::High);
+                assert!(risk.floor);
+                assert_eq!(report.items[4].detail["floor"], true);
+            }
+            if name == "wrong app and status" {
+                let detail = &report.items[2].detail["checks"][0];
+                assert_eq!(detail["ignoredCheckRuns"].as_array().unwrap().len(), 1);
+                assert_eq!(detail["ignoredStatuses"].as_array().unwrap().len(), 1);
+                assert!(report.items[2].reason.contains("ignored"));
+            }
+            if matches!(name, "empty required" | "missing ci") {
+                assert_eq!(report.items[2].reason, "no_required_checks");
+            }
+            if name == "local mismatch" {
+                assert_eq!(report.items[1].reason, "local HEAD differs from PR head");
+            }
+            if name == "mergeable null" {
+                assert_eq!(
+                    report.items[8].reason,
+                    "GitHub has not computed mergeability"
+                );
+            }
+        }
+    }
+}

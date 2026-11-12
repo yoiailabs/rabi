@@ -36,6 +36,33 @@ rabi task risk topic --base main --json
 rabi -R owner/repo task risk topic --output text
 ```
 
+## Task status and merge preflight
+
+`rabi task status [SEL] [--json|--output text|json]` collects a GitHub facts snapshot. `rabi task merge --dry-run [SEL] [--base REF] [--json|--output text|json]` evaluates that snapshot against the base commit policy. Both support global `-R/--repo REF` and default to the current workspace, including primary. Here `pr:N` selects any positive PR number in the selected repository without requiring a workspace record. Other selectors follow `task risk`. A workspace uses its recorded PR; its URL must identify the selected repository. Without a recorded PR, the command looks for an open PR with the same head branch and head repository. None exits 3 (`not_found`); several exit 2 (`ambiguous`). A detached workspace needs a recorded PR. These commands require authenticated `gh` and the same Git protections as `task risk`.
+
+All remote facts come from `gh api` GET calls using the existing repository identity/host lookup. Files, check runs, commit statuses and reviews are paginated. The snapshot includes PR refs/SHAs, repository identity, draft/state, mergeability, counts, file changes, check runs and issuers, commit statuses and creators, and each reviewer's latest submitted review state. REST has no aggregate review decision, so `reviewDecision` is null. The PR head is re-read after collection; movement marks the snapshot inconsistent. A file count mismatch or reaching GitHub's 3000-file cap marks files truncated.
+
+Preflight prints one PASS/FAIL/N/A line per item, then its verdict, in this order:
+
+1. `pr_open`: open, not draft, same-repository head, and base ref equal to the repository default branch or `--base`.
+2. `head_consistent`: head stable throughout collection, and equal to the selected workspace's local HEAD. With `pr:N`, the local comparison is N/A; head movement still fails.
+3. `required_checks`: nonempty policy `[ci] required`; the newest run by ID for each name and expected app must be completed with success. Missing, queued, in-progress, skipped, neutral and every other conclusion fail. Same-name runs from other apps and commit statuses are reported as ignored and never satisfy requirements.
+4. `risk_tier`: classify the GitHub file list with the existing classifier and the policy at the PR base SHA. Local commit objects supplement kinds through a protected base-to-head diff; a different path set or truncated files fails. Unavailable kinds force high (`unknown:kinds`). A computed high/floor tier passes this item.
+5. `approval`: N/A, `approvals not implemented`, with computed tier/floor detail.
+6. `review_record` and `classification_record`: N/A; no task records exist yet.
+7. `no_changes_requested`: no latest reviewer state or aggregate decision is `CHANGES_REQUESTED`.
+8. `mergeable`: GitHub must report true with a known mergeable state. False/conflicting fails; null/unknown fails with `GitHub has not computed mergeability`.
+
+Any failed item yields `blocked`; otherwise any N/A yields `incomplete`; otherwise the verdict is `ready`. The unimplemented approval/record items make ready unreachable in this version. Every completed evaluation exits 0, including blocked. API/auth/policy/Git errors exit 1 (missing API resources use 3); usage errors use 2 and selectors retain shared error codes. `task merge` without `--dry-run` exits 2: only `--dry-run` is available.
+
+Both commands are read-only: no merge, status, comment, label, Git fetch/ref change or rabi record write. They skip working-tree status/config and never fetch missing objects. Remote policy reads do not install objects locally. See [policy](configuration.md#repository-risk-policy) and [JSON](json.md#task-status-and-merge-preflight).
+
+```bash
+rabi task status pr:7 --json
+rabi task merge --dry-run
+rabi -R owner/repo task merge --dry-run pr:7 --base main
+```
+
 ## Workspace handoff
 
 `rabi handoff show [SEL] [--json]` reads the original task and all entries, without a size cap. `rabi handoff path [SEL]` prints the memory directory, including its would-be path before first use. Both commands are read-only. `rabi handoff add [SEL] [--kind checkpoint|decision|note] (TEXT | -)` appends one entry and prints its id; `-` reads all stdin. Default kind is `note`. Both TEXT and stdin have trailing whitespace (including line endings) removed before validation and storage; leading whitespace and internal newlines are preserved. Text must then be nonblank UTF-8, at most 8192 bytes; invalid input and the reserved `request` kind exit 2. I/O failures exit 1. SEL defaults to dot and follows the shared selector rules, including `-R/--repo`; use `--` to protect text starting with a hyphen. Primary checkouts are refused. Unrecorded checkouts require `rabi adopt`.

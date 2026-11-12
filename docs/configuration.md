@@ -140,7 +140,7 @@ schema = 1
 default-tier = "high"
 
 [[rule]]
-paths = ["docs/**", "*.md"]
+paths = ["docs/**"]
 tier = "low"
 
 [[rule]]
@@ -156,6 +156,10 @@ binary = "high"
 symlink = "high"
 submodule = "high"
 exec-bit = "high"
+
+[ci]
+required = ["Rust fmt", { name = "Rust test", app = "github-actions" }]
+app = "github-actions"
 ```
 
 `schema` is required and must be integer 1. `default-tier` and each kind accept only `low`, `medium`, or `high`, defaulting to high. Rules require a nonempty `paths` array of nonempty strings, and either a tier or `floor = true`; floor defaults to false and implies high. All matching rules contribute their maximum tier. Paths matching no rule use `default-tier`. Renames and copies evaluate old and new paths independently, taking the maximum and retaining either side's floor.
@@ -169,3 +173,7 @@ Binary files (numstat `-` counts) contribute zero changed lines. Attribute looku
 Non-UTF-8 paths, unrecognized statuses, or malformed diff data always classify high with an `unknown:*` reason. Every non-UTF-8 path also sets `floor: true` with reason `floor:unknown:path-encoding`: policy floor rules cannot be evaluated safely, so human review is always required. Built-in floors still add their canonical reasons when identifiable. Paths are matched as Git reports them, without lossy decoding; non-UTF-8 paths use replacement characters only for output. Reasons identify contributing rules (`rule:docs/**`), defaults (`default-tier`), floors (`floor:builtin:.github/**`, `floor:rule:install.sh`), kinds (`kind:binary`), limits (`limit:max-files`), or unknown data. An empty diff yields low and `no changes`.
 
 Only committed changes are classified; the working tree and index are not read.
+
+The optional `[ci]` section declares required check runs for `task merge --dry-run`. `required` is an array of nonempty check names or `{ name, app }` tables; tables require both fields and reject unknown keys. String entries use `[ci] app`, which defaults to `github-actions`. Names and app slugs cannot be empty or whitespace-only. Check names and app slugs match exactly. A missing or empty `required` array blocks preflight with `no_required_checks`; no checks are inferred from GitHub branch protection. Other keys and types are rejected. `task risk` accepts this section without changing its classification.
+
+Merge preflight reads the policy at the PR's **base SHA**, independently of `--base` (which selects the expected base branch). It reads local commit objects when available, otherwise uses read-only GitHub tree/blob endpoints. Neither path fetches or installs Git objects. GitHub file paths, statuses, renames, additions and deletions drive classification. Local base-to-head tree diffs supplement file kinds only when both commits exist, and their path set must match GitHub's. Missing local commits force high with `unknown:kinds`; truncated GitHub files prevent classification.

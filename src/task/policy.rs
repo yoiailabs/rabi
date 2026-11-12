@@ -36,6 +36,8 @@ pub(crate) struct Policy {
     pub limits: Limits,
     #[serde(default)]
     pub kinds: Kinds,
+    #[serde(default)]
+    pub ci: Ci,
 }
 
 impl Default for Policy {
@@ -46,6 +48,7 @@ impl Default for Policy {
             rules: Vec::new(),
             limits: Limits::default(),
             kinds: Kinds::default(),
+            ci: Ci::default(),
         }
     }
 }
@@ -89,7 +92,65 @@ impl Policy {
                 )));
             }
         }
+        if policy.ci.app.trim().is_empty()
+            || policy.ci.required.iter().any(|check| {
+                check.name().trim().is_empty() || check.app(&policy.ci).trim().is_empty()
+            })
+        {
+            return Err(Error::msg(
+                "Invalid risk policy ci: names and apps must not be empty",
+            ));
+        }
         Ok(policy)
+    }
+}
+
+fn default_app() -> String {
+    "github-actions".into()
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct Ci {
+    pub required: Vec<RequiredCheck>,
+    pub app: String,
+}
+
+impl Default for Ci {
+    fn default() -> Self {
+        Self {
+            required: Vec::new(),
+            app: default_app(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum RequiredCheck {
+    Name(String),
+    Issued(CheckIssuer),
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CheckIssuer {
+    name: String,
+    app: String,
+}
+
+impl RequiredCheck {
+    pub fn name(&self) -> &str {
+        match self {
+            Self::Name(name) => name,
+            Self::Issued(check) => &check.name,
+        }
+    }
+    pub fn app<'a>(&'a self, ci: &'a Ci) -> &'a str {
+        match self {
+            Self::Name(_) => &ci.app,
+            Self::Issued(check) => &check.app,
+        }
     }
 }
 
@@ -231,7 +292,6 @@ mod tests {
             ("schema = 2", "schema"),
             ("default-tier = 'low'", "schema"),
             ("schema = 1\nunknown = true", "unknown"),
-            ("schema = 1\n[ci]", "ci"),
             ("schema = 1\ndefault-tier = 'safe'", "default-tier"),
             ("schema = 1\n[[rule]]\npaths = []\ntier = 'low'", "paths"),
             ("schema = 1\n[[rule]]\npaths = ['docs/**']", "tier"),
@@ -273,6 +333,59 @@ mod tests {
         ] {
             let error = Policy::parse(text).expect_err(text).to_string();
             assert!(error.contains(key), "{key}: {error}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod ci_tests {
+    use super::*;
+    #[test]
+    fn ci_policy_table() {
+        for (text, valid, names) in [
+            ("[ci]", true, vec![]),
+            ("[ci]\nrequired = []", true, vec![]),
+            (
+                "[ci]\nrequired = ['Rust fmt', {name='Rust test', app='custom'}]",
+                true,
+                vec![("Rust fmt", "github-actions"), ("Rust test", "custom")],
+            ),
+            (
+                "[ci]\napp='custom'\nrequired=['test']",
+                true,
+                vec![("test", "custom")],
+            ),
+            ("[ci]\nother=true", false, vec![]),
+            ("[ci]\nrequired=['']", false, vec![]),
+            ("[ci]\nrequired=[{name=' ',app='custom'}]", false, vec![]),
+            ("[ci]\nrequired=[{name='test',app=''}]", false, vec![]),
+            ("[ci]\napp=''", false, vec![]),
+            (
+                "[ci]\nrequired=[{name='test',app='custom',extra=true}]",
+                false,
+                vec![],
+            ),
+            ("[ci]\nrequired=[{name='test'}]", false, vec![]),
+            ("[ci]\nrequired=[{name=1,app='custom'}]", false, vec![]),
+            ("[ci]\nrequired=[{name='test',app=1}]", false, vec![]),
+            ("[ci]\nrequired='test'", false, vec![]),
+            ("[ci]\nrequired=[true]", false, vec![]),
+            ("[ci]\napp=1", false, vec![]),
+        ] {
+            let policy = Policy::parse(&format!("schema=1\n{text}"));
+            assert_eq!(policy.is_ok(), valid, "{text}: {policy:?}");
+            if let Ok(policy) = policy {
+                assert_eq!(
+                    policy
+                        .ci
+                        .required
+                        .iter()
+                        .map(|check| (check.name(), check.app(&policy.ci)))
+                        .collect::<Vec<_>>(),
+                    names,
+                    "{text}"
+                );
+            }
         }
     }
 }

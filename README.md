@@ -81,6 +81,8 @@ Read [removal safety and retries](docs/safety.md) and [sync strategies](docs/syn
 | `rabi run` | Launch or resume the workspace parent session |
 | `rabi task` | Local task inspection |
 | `rabi task risk` | Classify committed changes using the base commit risk policy |
+| `rabi task status` | Read GitHub PR facts without writes |
+| `rabi task merge` | Evaluate merge preflight with required `--dry-run` (no writes) |
 | `rabi skill` | Skill discovery |
 | `rabi skill list` | List skill names, sources and paths |
 | `rabi trust` | Hooks, run, and repository environment trust |
