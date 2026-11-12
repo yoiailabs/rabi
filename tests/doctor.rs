@@ -522,3 +522,66 @@ fn ssh_uses_push_remote_precedence_without_changing_workflow_source() {
         );
     }
 }
+
+#[test]
+fn missing_or_local_push_remotes_have_a_specific_unavailable_reason() {
+    for (name, key, value, remove_origin) in [
+        ("missing origin fallback", None, None, true),
+        (
+            "local fetch remote",
+            Some("branch.main.remote"),
+            Some("."),
+            false,
+        ),
+        (
+            "missing push override",
+            Some("branch.main.pushRemote"),
+            Some("missing"),
+            false,
+        ),
+        (
+            "local global push override",
+            Some("remote.pushDefault"),
+            Some("."),
+            false,
+        ),
+    ] {
+        let fixture = Fixture::new("on: push\npermissions: {}\n");
+        fixture.git(&["config", "--unset", "branch.main.remote"]);
+        if remove_origin {
+            fixture.git(&["remote", "remove", "origin"]);
+        }
+        if let (Some(key), Some(value)) = (key, value) {
+            fixture.git(&["config", key, value]);
+        }
+        let document = fixture.json("safe");
+        let finding = document["data"]["findings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|finding| finding["detail"] == "remote_push_ssh")
+            .unwrap();
+        assert_eq!(finding["code"], "could_not_check", "{name}");
+        assert_eq!(
+            finding["message"],
+            "Could not check remote_push_ssh: push remote could not be determined",
+            "{name}"
+        );
+        assert!(!codes(&document).contains(&"remote_push_ssh"), "{name}");
+        fixture.assert_get_only();
+    }
+}
+
+#[test]
+fn uncertain_trigger_text_is_explicit_about_the_guess() {
+    let fixture = Fixture::new("on: *events\npermissions: {}\n");
+    let output = fixture.run("safe", &["doctor"], false);
+    assert!(output.status.success());
+    let text = String::from_utf8(output.stdout).unwrap();
+    assert!(text.contains("pull_request_target_trigger:"), "{text}");
+    assert!(
+        text.contains("(trigger set could not be fully parsed)"),
+        "{text}"
+    );
+    fixture.assert_get_only();
+}

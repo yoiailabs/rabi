@@ -541,6 +541,8 @@ fn default_remote(root: &Path, branch: &str) -> Probe<String> {
 }
 
 fn push_remote(root: &Path, branch: &str) -> Probe<String> {
+    let reason = "push remote could not be determined";
+    let mut selected = "origin".to_owned();
     for key in [
         format!("branch.{branch}.pushRemote"),
         "remote.pushDefault".into(),
@@ -548,11 +550,17 @@ fn push_remote(root: &Path, branch: &str) -> Probe<String> {
     ] {
         if let Ok(remote) = git_text(root, &["config", "--get", &key]) {
             if !remote.is_empty() {
-                return Ok(remote);
+                selected = remote;
+                break;
             }
         }
     }
-    Ok("origin".into())
+    let remotes = git_text(root, &["remote"]).map_err(|_| reason)?;
+    if selected != "." && remotes.lines().any(|remote| remote == selected) {
+        Ok(selected)
+    } else {
+        Err(reason)
+    }
 }
 
 fn is_ssh(url: &str) -> bool {

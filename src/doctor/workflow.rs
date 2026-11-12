@@ -14,6 +14,7 @@ struct Line {
     text: String,
     key: String,
     value: String,
+    in_scalar: bool,
 }
 
 fn uncomment(line: &str) -> String {
@@ -75,6 +76,7 @@ fn lines(contents: &str) -> Vec<Line> {
                 text: trimmed.to_owned(),
                 key: key.trim().trim_matches(['\'', '"']).to_owned(),
                 value: value.trim().to_owned(),
+                in_scalar,
             })
         })
         .collect()
@@ -93,53 +95,66 @@ struct Triggers {
     uncertain: bool,
 }
 
-// Recognize a small structural subset, never infer safety from an unknown
-// line. Event tokens are collected from every line, including continuations.
-fn known_trigger_line(line: &Line, first: bool) -> bool {
-    let mapping = first || !line.key.is_empty();
-    if !first
-        && mapping
-        && !line
-            .key
-            .chars()
-            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
-    {
+// Event tokens are already scanned on every line. Only YAML constructs that
+// can hide an event name make the set uncertain; config prose and punctuation
+// do not. Scalar-block bodies are text rather than YAML node properties.
+fn hidden_trigger_syntax(text: &str, quote: &mut Option<char>) -> bool {
+    if text.contains("${{") {
+        return true;
+    }
+    let mut previous: Option<char> = None;
+    let mut significant = None;
+    let mut characters = text.char_indices().peekable();
+    while let Some((offset, ch)) = characters.next() {
+        let token_start =
+            previous.is_none_or(|prev| prev.is_whitespace() || "[:,{}".contains(prev));
+        if *quote == Some('\'')
+            && ch == '\''
+            && characters.peek().is_some_and(|(_, next)| *next == '\'')
+        {
+            characters.next();
+            previous = Some(ch);
+            significant = Some(ch);
+            continue;
+        }
+        if *quote == Some('"') && ch == '\\' {
+            return true;
+        }
+        if Some(ch) == *quote {
+            *quote = None;
+        } else if quote.is_none() && token_start && matches!(ch, '\'' | '"') {
+            *quote = Some(ch);
+        } else if quote.is_none() {
+            let value_start = significant.is_none_or(|prev| ":,[{".contains(prev));
+            if token_start && matches!(ch, '&' | '*')
+                || value_start && ch == '!'
+                || significant.is_none_or(|prev| "{,".contains(prev)) && ch == '?'
+                || token_start
+                    && text[offset..]
+                        .strip_prefix("<<")
+                        .is_some_and(|rest| rest.trim_start().starts_with(':'))
+            {
+                return true;
+            }
+        }
+        previous = Some(ch);
+        if !ch.is_whitespace() {
+            significant = Some(ch);
+        }
+    }
+    false
+}
+
+fn known_trigger_line(line: &Line, event_level: bool, quote: &mut Option<char>) -> bool {
+    if line.in_scalar {
+        return true;
+    }
+    let text = line.text.strip_prefix("- ").unwrap_or(&line.text);
+    if hidden_trigger_syntax(text, quote) {
         return false;
     }
-    let value = if mapping {
-        line.value.as_str()
-    } else {
-        line.text.as_str()
-    };
-    if value.contains("${{")
-        || value.contains("<<")
-        || value
-            .split([' ', ':', '{', '[', ','])
-            .any(|part| part.starts_with(['*', '&', '!']))
-    {
-        return false;
-    }
-    if value.is_empty() {
-        return mapping;
-    }
-    if value.starts_with(['|', '>']) {
-        return false;
-    }
-    // Ordinary event configuration mappings and flow maps are understood only
-    // lexically. Unexpected punctuation remains uncertain.
-    if mapping && (!first || value.starts_with('{')) || value.starts_with("- ") {
-        return value.chars().all(|ch| {
-            ch.is_ascii_alphanumeric() || ch.is_whitespace() || "_-.:/[]{}*,\"'".contains(ch)
-        });
-    }
-    let value = value.strip_prefix("- ").unwrap_or(value);
-    value.trim_matches(['[', ']', ',']).split(',').all(|part| {
-        let part = part.trim().trim_matches(['\'', '"']);
-        !part.is_empty()
-            && part
-                .chars()
-                .all(|ch| ch.is_ascii_alphanumeric() || ch == '_')
-    })
+    let value = text.split_once(':').map_or(text, |(_, value)| value.trim());
+    !(event_level && value.starts_with(['|', '>']))
 }
 
 fn triggers(lines: &[Line]) -> Triggers {
@@ -160,11 +175,16 @@ fn triggers(lines: &[Line]) -> Triggers {
             .iter()
             .any(|line| tokens(&line.text).any(|token| token == name))
     };
+    let event_indent = section[1..].iter().map(|line| line.indent).min();
+    let mut quote = None;
     let uncertain = (section.len() == 1 && section[0].value.is_empty())
-        || section
-            .iter()
-            .enumerate()
-            .any(|(i, line)| !known_trigger_line(line, i == 0));
+        || section.iter().enumerate().any(|(i, line)| {
+            !known_trigger_line(
+                line,
+                i == 0 || Some(line.indent) == event_indent,
+                &mut quote,
+            )
+        });
     Triggers {
         pull_request: contains("pull_request") || uncertain,
         pull_request_target: contains("pull_request_target") || uncertain,
@@ -372,12 +392,83 @@ pub(super) fn evaluate(workflow: &Workflow) -> Vec<Finding> {
     if filtered || conditional {
         findings.push(Finding::info("required_job_conditional", format!("{} filters pull_request paths or draft jobs; a required check that is filtered or skipped never reports success; rabi's preflight treats a missing check as failure", workflow.name), &detail));
     }
+    if triggers.uncertain {
+        for finding in &mut findings {
+            finding
+                .message
+                .push_str(" (trigger set could not be fully parsed)");
+        }
+    }
     findings
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trigger_uncertainty_table() {
+        let cases = [
+            ("schedule cron", "on:\n  schedule:\n    - cron: \"0 3 * * *\"\n", false, false, false),
+            ("dispatch prose", "on:\n  workflow_dispatch:\n    inputs:\n      version:\n        description: Which version (optional)? Choose ? carefully\n", false, false, false),
+            ("quoted prose apostrophe", "on:\n  workflow_dispatch:\n    inputs:\n      note:\n        description: 'It''s optional * not an alias'\n", false, false, false),
+            ("dispatch apostrophe", "on:\n  workflow_dispatch:\n    inputs:\n      note:\n        description: What's optional?\n", false, false, false),
+            ("merge after prose apostrophe", "on:\n  workflow_dispatch:\n    inputs:\n      note:\n        description: What's optional?\n  <<: *events\n", true, true, true),
+            ("quoted negative branch", "on:\n  push:\n    branches: [\"!gh-pages\"]\n", false, false, false),
+            ("release trigger shape", "on:\n  workflow_dispatch:\n    inputs:\n      make_latest:\n        description: Latest choice (prereleases use false)\n        type: choice\n        options: ['true', 'false', legacy]\n  pull_request:\n    branches: [main]\npermissions: {}\n", true, false, false),
+            ("repository release workflow", include_str!("../../.github/workflows/release-compile.yml"), true, false, false),
+            ("escaped event", "on: \"pull\\u005frequest_target\"\n", true, true, true),
+            ("escaped event key", "on:\n  \"pull\\u005frequest_target\":\n", true, true, true),
+            ("continued escaped event", "on: \"push,\n  pull\\u005frequest_target\"\n", true, true, true),
+            ("single quoted literal escape", "on: 'pull\\u005frequest_target'\n", false, false, false),
+            ("anchor", "on: &events push\n", true, true, true),
+            ("alias", "on: *events\n", true, true, true),
+            ("tag", "on: !!str push\n", true, true, true),
+            ("merge key", "on:\n  <<: *events\n", true, true, true),
+            ("complex key", "on:\n  ? [push]\n  : {}\n", true, true, true),
+            ("expression", "on: ${{ events }}\n", true, true, true),
+            ("event scalar block", "on:\n  push: >-\n    folded text\n", true, true, true),
+            ("nested prose block", "on:\n  workflow_dispatch:\n    inputs:\n      text:\n        description: |\n          Are * and & and ! allowed (yes)?\n", false, false, false),
+        ];
+        for (name, contents, pr, target, uncertain) in cases {
+            let actual = triggers(&lines(contents));
+            assert_eq!(
+                (
+                    actual.pull_request,
+                    actual.pull_request_target,
+                    actual.uncertain
+                ),
+                (pr, target, uncertain),
+                "{name}"
+            );
+            let findings = evaluate(&Workflow {
+                name: "workflow.yml".into(),
+                contents: contents.into(),
+            });
+            if !pr && !target {
+                assert!(findings.is_empty(), "{name}: {findings:?}");
+            }
+            assert_eq!(
+                findings
+                    .iter()
+                    .any(|finding| finding.code == "pull_request_target_trigger"),
+                target,
+                "{name}"
+            );
+            if uncertain {
+                assert!(!findings.is_empty(), "{name}");
+                assert!(
+                    findings
+                        .iter()
+                        .all(|finding| finding.detail.contains("uncertain")
+                            && finding
+                                .message
+                                .contains("trigger set could not be fully parsed")),
+                    "{name}"
+                );
+            }
+        }
+    }
 
     #[test]
     fn workflow_table() {
