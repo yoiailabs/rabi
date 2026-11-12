@@ -1,0 +1,103 @@
+# Path-based merge-risk policy for this repository. `rabi task risk` and
+# `rabi task merge --dry-run` read it from the base commit. Path tiers are a
+# mechanical lower bound; the behavioral classification in risk-tiers.md still
+# applies and can only raise the tier. Files matching no rule are high.
+schema = 1
+default-tier = "high"
+
+# Reference documentation and changelog.
+[[rule]]
+paths = ["docs/**", "README.md", "README.ja.md", "CHANGELOG.md"]
+tier = "low"
+
+# Ordinary code, tests, and generated help data.
+[[rule]]
+paths = ["src/**", "tests/**", "help-data.json"]
+tier = "medium"
+
+# Files that hold trust, hook, configuration, process execution, provider,
+# removal/gc/preservation, selection, sync, Git, or GitHub API behavior, plus
+# build and toolchain inputs. This includes command entry points in cli.rs,
+# run.rs, and allocation.rs, and the shell scripts users load interactively.
+[[rule]]
+paths = [
+  "src/cli.rs",
+  "src/run.rs",
+  "src/run/lifecycle.rs",
+  "src/allocation.rs",
+  "src/context.rs",
+  "src/preferences.rs",
+  "src/metadata.rs",
+  "src/selectors.rs",
+  "src/paths.rs",
+  "src/repository.rs",
+  "src/handoff.rs",
+  "src/handoff/**",
+  "src/shell.rs",
+  "src/shell/**",
+  "src/skill.rs",
+  "src/trust.rs",
+  "src/setup.rs",
+  "src/config.rs",
+  "src/execution_env.rs",
+  "src/process.rs",
+  "src/runtime.rs",
+  "src/provider.rs",
+  "src/provider/**",
+  "src/worktree.rs",
+  "src/gc.rs",
+  "src/git.rs",
+  "src/sync.rs",
+  "src/sync/**",
+  "src/github.rs",
+  "build.rs",
+  "build_git.rs",
+  "Cargo.toml",
+  "rust-toolchain.toml",
+  "mise.toml",
+  "clippy.toml",
+  ".worktreeinclude",
+  "LICENSE",
+]
+tier = "high"
+
+# Always needs a maintainer: merge-gate and review policy, agent guidance and
+# skills, the risk classifier and the GitHub facts it relies on, their tests,
+# the installer and its tests, and the lockfile.
+[[rule]]
+paths = [
+  "risk-tiers.md",
+  "REVIEW.md",
+  "CONTRIBUTING.md",
+  "AGENTS.md",
+  "CLAUDE.md",
+  "skills/**",
+  ".codex/**",
+  "src/task.rs",
+  "src/task/**",
+  "src/github/**",
+  "tests/task_risk.rs",
+  "tests/task_preflight.rs",
+  "tests/fixtures/task_*",
+  "install.sh",
+  "tests/install/**",
+  "Cargo.lock",
+]
+floor = true
+
+[limits]
+max-changed-lines = 600
+max-files = 40
+
+# Check runs that must succeed on the PR head before `rabi task merge`.
+# These are the jobs in .github/workflows/ci.yml, which runs on every pull
+# request targeting main.
+[ci]
+required = [
+  "Rust fmt",
+  "Rust clippy",
+  "Rust test",
+  "Rust test (musl)",
+  "Installer (ubuntu-latest)",
+  "Installer (macos-latest)",
+]
