@@ -78,8 +78,10 @@ fn text(root: &Path, args: &[&str]) -> Result<String> {
 }
 
 /// Reject unsupported Git before shared repository/selector discovery begins.
+/// `git version` works outside a repository, so discovery keeps its own
+/// `not_repository` classification.
 pub(crate) fn check_git(root: &Path) -> Result<()> {
-    text(root, &["rev-parse", "--git-dir"]).map(|_| ())
+    text(root, &["version"]).map(|_| ())
 }
 
 fn default_branch(root: &Path) -> Result<String> {
@@ -150,9 +152,9 @@ fn policy_blob(root: &Path, base_sha: &str) -> Result<Option<Vec<u8>>> {
     let Some((mode, blob)) = tree_entry(root, &directory, b"policy.toml", oid_bytes)? else {
         return Ok(None);
     };
-    if !matches!(mode, 0o100644 | 0o100755 | 0o120000) {
+    if !matches!(mode, 0o100644 | 0o100755) {
         return Err(Error::msg(
-            "Invalid risk policy .rabi/policy.toml: expected a blob",
+            "Invalid risk policy .rabi/policy.toml: must be a regular file",
         ));
     }
     read(root, &["cat-file", "blob", &blob]).map(Some)

@@ -132,7 +132,7 @@ rabi clone yoiailabs/rabi --update
 
 ## Repository risk policy
 
-`rabi task risk` reads `.rabi/policy.toml` from the resolved **base commit blob**, never the head or working tree. A missing file uses built-in defaults: unmatched files and all kinds are high, with no size limits. Invalid TOML, unknown fields/sections, wrong types, or invalid values fail with exit 1 (`failed`); there is no fallback for an invalid policy. Other repository configuration remains in `.rabi.toml`.
+`rabi task risk` reads `.rabi/policy.toml` from the resolved **base commit blob**, never the head or working tree. A missing file uses built-in defaults: unmatched files and all kinds are high, with no size limits. Invalid TOML, unknown fields/sections, wrong types, or invalid values fail with exit 1 (`failed`); there is no fallback for an invalid policy. `.rabi/policy.toml` must be a regular file in the base commit; a symlink, directory, or submodule there fails with exit 1 (`failed`). If `.rabi` itself is not a directory in the base commit, the policy is treated as missing. Other repository configuration remains in `.rabi.toml`.
 
 ```toml
 schema = 1

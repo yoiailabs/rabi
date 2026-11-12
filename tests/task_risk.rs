@@ -750,3 +750,45 @@ fn missing_committed_policy_tree_is_an_error_not_defaults() {
     assert_eq!(json["error"]["code"], "git_failed");
     assert!(json["data"].is_null());
 }
+
+#[test]
+fn outside_a_repository_keeps_the_shared_not_repository_status() {
+    let repo = Repo::new(None);
+    let outside = repo.root.join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    let output = repo
+        .command(
+            env!("CARGO_BIN_EXE_rabi"),
+            &["task", "risk", "--json"],
+            &outside,
+        )
+        .env("GIT_CEILING_DIRECTORIES", &repo.root)
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(3));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["error"]["code"], "not_repository");
+}
+
+#[cfg(unix)]
+#[test]
+fn a_policy_that_is_not_a_regular_file_fails() {
+    let repo = Repo::new(None);
+    repo.git(&["checkout", "main"]);
+    fs::create_dir_all(repo.repo.join(".rabi")).unwrap();
+    std::os::unix::fs::symlink("../policy-target.toml", repo.repo.join(".rabi/policy.toml"))
+        .unwrap();
+    repo.write("policy-target.toml", "schema = 1\n");
+    repo.commit();
+    repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    repo.git(&["checkout", "topic"]);
+    repo.git(&["merge", "--ff-only", "main"]);
+    let output = repo.rabi(&["task", "risk", "--json"]);
+    assert_eq!(output.status.code(), Some(1));
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["error"]["code"], "failed");
+    assert!(json["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("must be a regular file"));
+}
