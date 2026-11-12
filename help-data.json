@@ -90,7 +90,7 @@
     },
     {
       "name": "task",
-      "description": "Inspect local task merge risk"
+      "description": "Inspect task risk, GitHub facts and merge preflight"
     }
   ],
   "helps": {
@@ -2171,8 +2171,8 @@
     },
     "task": {
       "name": "task",
-      "description": "Inspect local task merge risk",
-      "usage": "rabi task risk [SEL] [options]",
+      "description": "Inspect task risk, GitHub facts and merge preflight",
+      "usage": "rabi task risk|status|merge [SEL] [options]",
       "options": [
         {
           "name": "repo",
@@ -2257,6 +2257,95 @@
           "command": "rabi task risk --base main --json",
           "description": "Classify against the locally committed main policy"
         }
+      ]
+    },
+    "task status": {
+      "name": "task status",
+      "description": "Read GitHub pull request facts",
+      "usage": "rabi task status [SEL] [options]",
+      "options": [
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Repository to operate on; uses the shared workspace selector rules",
+          "example": "--repo owner/repo"
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "SEL defaults to current workspace; pr:N selects any PR in the selected repository. Workspace selection uses its recorded PR or exactly one open same-repository PR for its branch.",
+        "GitHub facts use gh api GET only. No merges, comments, statuses, labels, fetches, refs or records are written."
+      ]
+    },
+    "task merge": {
+      "name": "task merge",
+      "description": "Evaluate read-only merge preflight",
+      "usage": "rabi task merge --dry-run [SEL] [--base REF] [options]",
+      "options": [
+        {
+          "name": "dry-run",
+          "type": "boolean",
+          "description": "Required: evaluate only; never merge or write"
+        },
+        {
+          "name": "base",
+          "type": "string",
+          "description": "Expected PR base branch; defaults to the repository default branch"
+        },
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Repository to operate on; uses the shared workspace selector rules",
+          "example": "--repo owner/repo"
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "SEL defaults to current workspace; pr:N selects any PR in the selected repository. Workspace selection uses its recorded PR or exactly one open same-repository PR for its branch.",
+        "GitHub facts use gh api GET only. No merges, comments, statuses, labels, fetches, refs or records are written.",
+        "Completed evaluations exit 0 with blocked, incomplete or ready. Approvals and task records are not evaluated; only --dry-run is available. Policy is read from the PR base SHA."
       ]
     }
   },

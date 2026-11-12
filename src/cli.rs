@@ -867,6 +867,47 @@ fn task_root(args: &[String]) -> Result<i32> {
     )))
 }
 
+fn task_status(args: &[String]) -> Result<i32> {
+    task_github(args, false)
+}
+fn task_merge(args: &[String]) -> Result<i32> {
+    task_github(args, true)
+}
+fn task_github(args: &[String], merge: bool) -> Result<i32> {
+    let key = if merge { "task merge" } else { "task status" };
+    let parsed = args::parse(args, &command_options(key), true)?;
+    if merge && !parsed.flag("dry-run") {
+        return Err(Error::validation(
+            "Only --dry-run is available for rabi task merge",
+        ));
+    }
+    if parsed.positionals.len() > 1 {
+        return Err(Error::validation(format!(
+            "{key} accepts at most one selector"
+        )));
+    }
+    let base = if merge {
+        single_value(&parsed, "base")?
+    } else {
+        None
+    };
+    let repository = selected_repository(&parsed)?;
+    let cwd = std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?;
+    crate::task::check_git(repository.as_deref().unwrap_or(&cwd))?;
+    let context = crate::context::open_for_inspection(repository.as_deref())?;
+    crate::task::github_report(
+        &context,
+        parsed
+            .positionals
+            .first()
+            .map(String::as_str)
+            .unwrap_or("."),
+        base,
+        merge,
+    )?;
+    Ok(SUCCESS)
+}
+
 fn task_risk(args: &[String]) -> Result<i32> {
     let parsed = args::parse(args, &command_options("task risk"), true)?;
     if parsed.positionals.len() > 1 {
@@ -1954,6 +1995,8 @@ fn command_options(key: &str) -> Vec<Opt> {
     let mut options = match key {
         "task" => vec![repo_flag()],
         "task risk" => vec![repo_flag(), value_flag("base", None)],
+        "task status" => vec![repo_flag()],
+        "task merge" => vec![repo_flag(), value_flag("base", None), flag("dry-run", None)],
         "handoff" => vec![],
         "handoff show" | "handoff path" => vec![repo_flag()],
         "handoff add" => vec![repo_flag(), value_flag("kind", None)],
@@ -2520,12 +2563,26 @@ static COMMANDS: &[Command] = &[
         name: "task",
         help_key: "task",
         run: task_root,
-        children: &[Command {
-            name: "risk",
-            help_key: "task risk",
-            run: task_risk,
-            children: &[],
-        }],
+        children: &[
+            Command {
+                name: "risk",
+                help_key: "task risk",
+                run: task_risk,
+                children: &[],
+            },
+            Command {
+                name: "status",
+                help_key: "task status",
+                run: task_status,
+                children: &[],
+            },
+            Command {
+                name: "merge",
+                help_key: "task merge",
+                run: task_merge,
+                children: &[],
+            },
+        ],
     },
     Command {
         name: "handoff",

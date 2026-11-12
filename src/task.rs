@@ -2,6 +2,7 @@
 mod classify;
 mod diff;
 mod policy;
+mod preflight;
 
 use std::path::Path;
 
@@ -319,4 +320,86 @@ impl Report {
             );
         }
     }
+}
+
+/// GitHub inspection shares risk's status-free selectors and protected object reads.
+pub(crate) fn github_report(
+    context: &crate::context::Context,
+    selector: &str,
+    base: Option<&str>,
+    merge: bool,
+) -> Result<()> {
+    let client = crate::github::facts::Client::new(&context.git_root)?;
+    let (number, workspace) = if let Some(number) = selector.strip_prefix("pr:") {
+        let number = number
+            .parse::<u64>()
+            .ok()
+            .filter(|n| *n > 0)
+            .ok_or_else(|| Error::validation("Expected pr:N with a positive PR number"))?;
+        (number, None)
+    } else {
+        let tree = crate::selectors::resolve_without_status(context, selector)?;
+        crate::worktree::validate_checkout(context, &tree, "task")?;
+        let number = match &tree.metadata.links.pr {
+            Some(link) => client.recorded_number(link)?,
+            None => client.branch_number(&tree.branch)?,
+        };
+        (number, Some(tree))
+    };
+    let facts = client.snapshot(number)?;
+    if !merge {
+        if crate::output::json() {
+            crate::output::data(&facts)?;
+        } else {
+            facts.print();
+        }
+        return Ok(());
+    }
+    let root = &context.git_root;
+    let base_local = resolves_commit(root, &facts.pr.base_sha)?;
+    let blob = if base_local {
+        policy_blob(root, &facts.pr.base_sha)?
+    } else {
+        client.policy(&facts.pr.base_sha)?
+    };
+    let policy = match blob {
+        Some(bytes) => Policy::parse(
+            std::str::from_utf8(&bytes)
+                .map_err(|_| Error::msg("Invalid .rabi/policy.toml: policy must be UTF-8"))?,
+        )?,
+        None => Policy::default(),
+    };
+    let merge_base = if base_local && resolves_commit(root, &facts.pr.head_sha)? {
+        text(
+            root,
+            &["merge-base", &facts.pr.base_sha, &facts.pr.head_sha],
+        )
+        .ok()
+    } else {
+        None
+    };
+    let kinds = if let Some(merge_base) = merge_base {
+        let attributes = format!("--attr-source={}", facts.pr.base_sha);
+        let mut raw_args = vec![attributes.as_str()];
+        raw_args.extend(diff_args("--raw", &merge_base, &facts.pr.head_sha));
+        let mut numstat_args = vec![attributes.as_str()];
+        numstat_args.extend(diff_args("--numstat", &merge_base, &facts.pr.head_sha));
+        Some(diff::parse(
+            &read(root, &raw_args)?,
+            &read(root, &numstat_args)?,
+        ))
+    } else {
+        None
+    };
+    let head = workspace
+        .as_ref()
+        .map(|tree| commit(Path::new(&tree.path), "HEAD"))
+        .transpose()?;
+    let report = preflight::evaluate(&facts, &policy, &preflight::Local { head, kinds }, base);
+    if crate::output::json() {
+        crate::output::data(&report)?;
+    } else {
+        report.print();
+    }
+    Ok(())
 }

@@ -1,0 +1,29 @@
+{
+  "repository": "example/project",
+  "defaultBranch": "main",
+  "pr": {
+    "number": 7,
+    "state": "open",
+    "draft": false,
+    "baseRef": "main",
+    "baseSha": "1111111111111111111111111111111111111111",
+    "headRef": "topic",
+    "headSha": "2222222222222222222222222222222222222222",
+    "headRepository": "example/project",
+    "sameRepository": true,
+    "mergeable": true,
+    "mergeableState": "clean",
+    "changedFiles": 1,
+    "additions": 2,
+    "deletions": 1
+  },
+  "files": [{"filename":"docs/guide.md","previousFilename":null,"status":"modified","additions":2,"deletions":1}],
+  "filesTruncated": false,
+  "checkRuns": [{"id":10,"name":"Rust test","status":"completed","conclusion":"success","app":"github-actions","startedAt":"2026-01-01T00:00:00Z","completedAt":"2026-01-01T00:01:00Z"}],
+  "checksIncomplete": false,
+  "statuses": [],
+  "reviews": [],
+  "reviewDecision": null,
+  "inconsistent": false,
+  "finalHeadSha": "2222222222222222222222222222222222222222"
+}

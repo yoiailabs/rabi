@@ -231,3 +231,37 @@ Launch records optionally add `handoff: {injectedEntryIds:[...],bytes:N,snapshot
 `status` retains Git's status and any similarity score (for example `R100`); `oldPath` appears for renames/copies. Both paths are evaluated, and unknown encodings force high and floor with `floor:unknown:path-encoding`; replacement characters in displayed paths are never used for matching. Per-file reasons include applicable path rules/defaults, floors, kinds, and unknown data. Overall reasons collect file reasons plus limits. Reason forms and glob behavior are documented in [configuration](configuration.md#repository-risk-policy).
 
 Only committed changes are classified; the working tree and index are not read. Successful high/floor classifications still have `ok: true`, `error: null`, and exit 0. Invalid policy uses exit 1 with `error.code: "failed"`; failed Git inspection or ref resolution uses exit 1 with `git_failed`. Malformed invocation uses exit 2 with `usage`. No new error codes are introduced.
+
+
+## Task status and merge preflight
+
+Both commands use the common schema 2 envelope. A completed evaluation has `ok: true`, `error: null`, and exit 0 for every verdict. Data field names use camelCase; item IDs and the `not_evaluated` enum are stable identifiers.
+
+`task status` (`command: "task status"`) returns a facts snapshot:
+
+| Field | Meaning |
+|---|---|
+| `repository`, `defaultBranch` | Selected owner/repository and GitHub default branch |
+| `pr` | `{number, state, draft, baseRef, baseSha, headRef, headSha, headRepository, sameRepository, mergeable, mergeableState, changedFiles, additions, deletions}` |
+| `files` | Every fetched `{filename, previousFilename, status, additions, deletions}`; previousFilename is null unless supplied |
+| `filesTruncated` | Count differs from changedFiles, or at least 3000 files fetched |
+| `checkRuns` | `{id, name, status, conclusion, app, startedAt, completedAt}` on the initial head SHA; app is its slug, missing fields are null |
+| `checksIncomplete` | Collected check runs differ from `total_count`, or any page has a missing/changing total; fails required_checks |
+| `statuses` | `{context, state, creator}` on that SHA; creator is login or null; separate from checks |
+| `reviews` | Effective `{reviewer, state, id}` per reviewer, in reviewer order: latest APPROVED, CHANGES_REQUESTED or DISMISSED; COMMENTED/PENDING do not change state |
+| `reviewDecision` | Null for REST snapshots; evaluator also accepts an aggregate decision |
+| `inconsistent`, `finalHeadSha` | Whether the final PR head differs from the initial head, and that final SHA |
+
+PR `state` and file statuses retain REST values such as `open` and `renamed`. `headRepository` is null for an unavailable head repository. `mergeable` can be null; null/missing REST mergeable state is normalized to `unknown`. Mergeability passes only for true with state `clean`, `unstable` or `has_hooks`; every other state fails with the observed state. GitHub may return null while computing mergeability lazily; that fails and can be retried later. Times and conclusions may be null. Files/check runs/statuses retain API pagination order; check selection uses the maximum run ID for the exact name and app.
+
+`task merge --dry-run` (`command: "task merge"`) returns:
+
+| Field | Meaning |
+|---|---|
+| `items` | Ordered `{id, result, reason, detail}` preflight items |
+| `verdict` | `blocked` if any fail; otherwise `incomplete` if any not_evaluated; otherwise `ready` |
+| `classification` | Existing risk `{tier, floor, reasons, files, totals}`, or null if classification could not complete |
+
+Item order is `pr_open`, `head_consistent`, `required_checks`, `risk_tier`, `approval`, `review_record`, `classification_record`, `no_changes_requested`, `mergeable`. Result is `pass`, `fail` or `not_evaluated`. Missing/empty CI requirements give reason `no_required_checks`. `required_checks.detail.checksIncomplete` mirrors the snapshot flag; incomplete checks fail even when collected required runs succeed. `required_checks.detail.checks` contains `{name, app, pass, observed, ignoredCheckRuns, ignoredStatuses}` for each policy requirement. Observed is `missing` or `status:conclusion` (`none` for null); ignored arrays preserve the facts objects. `risk_tier.detail` contains `{tier, floor, reasons}` when computed, and `approval.detail` contains `{tier, floor}` or null. Other details identify expected base, compared SHAs, changes-requested reviews, or mergeability. Approvals and record items are always not_evaluated, so no evaluation is ready yet. Reasons are explanations rather than error codes.
+
+For example, passing facts yield `pr_open: pass`, `required_checks: pass`, `risk_tier: pass`, `no_changes_requested: pass`, `mergeable: pass`, and verdict `incomplete` because approval/records remain not_evaluated. With `pr:N`, `head_consistent` is also not_evaluated when stable; an inconsistent head fails it. Errors use the common envelope and existing [exit codes](exit-codes.md); evaluation failures remain successful envelopes.
