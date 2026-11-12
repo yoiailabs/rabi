@@ -202,7 +202,9 @@ pub(crate) fn evaluate(
         let ignored_statuses: Vec<_> = facts.statuses.iter().filter(|status| status.context == name).collect();
         json!({"name":name,"app":app,"pass":pass,"observed":observed,"ignoredCheckRuns":ignored_runs,"ignoredStatuses":ignored_statuses})
     }).collect();
-    let passed = !checks.is_empty() && checks.iter().all(|check| check["pass"] == true);
+    let passed = !facts.checks_incomplete
+        && !checks.is_empty()
+        && checks.iter().all(|check| check["pass"] == true);
     let reason = if checks.is_empty() {
         "no_required_checks".into()
     } else {
@@ -229,11 +231,16 @@ pub(crate) fn evaluate(
             .collect::<Vec<_>>()
             .join("; ")
     };
+    let reason = if facts.checks_incomplete {
+        format!("GitHub check runs are incomplete: collected count differs from total_count, or total_count is missing or changed; {reason}")
+    } else {
+        reason
+    };
     items.push(item(
         "required_checks",
         passed,
         reason,
-        json!({"checks":checks}),
+        json!({"checks":checks,"checksIncomplete":facts.checks_incomplete}),
     ));
     let (classification, risk) = match classify_files(facts, policy, local.kinds.as_deref()) {
         Ok(classification) => {
@@ -284,16 +291,22 @@ pub(crate) fn evaluate(
         json!({"reviews":requested,"reviewDecision":facts.review_decision}),
     ));
     let mergeable = pr.mergeable == Some(true)
-        && !matches!(
+        && matches!(
             pr.mergeable_state.as_str(),
-            "dirty" | "conflicting" | "unknown"
+            "clean" | "unstable" | "has_hooks"
         );
     let reason = if pr.mergeable.is_none() || pr.mergeable_state == "unknown" {
-        "GitHub has not computed mergeability"
+        format!(
+            "GitHub has not computed mergeability (state: {}); rerun later",
+            pr.mergeable_state
+        )
     } else if mergeable {
-        "GitHub reports mergeable"
+        format!("GitHub reports mergeable (state: {})", pr.mergeable_state)
     } else {
-        "GitHub reports conflicting or unmergeable"
+        format!(
+            "GitHub mergeability rejected (mergeable: {:?}, state: {})",
+            pr.mergeable, pr.mergeable_state
+        )
     };
     items.push(item(
         "mergeable",
@@ -363,6 +376,46 @@ mod tests {
         // Each row starts from a serializable snapshot fixture and changes one fact.
         let cases = [
             ("success", "", Value::Null, true, "", "incomplete"),
+            (
+                "incomplete checks",
+                "/checksIncomplete",
+                json!(true),
+                true,
+                "required_checks",
+                "blocked",
+            ),
+            (
+                "blocked",
+                "/pr/mergeableState",
+                json!("blocked"),
+                true,
+                "mergeable",
+                "blocked",
+            ),
+            (
+                "behind",
+                "/pr/mergeableState",
+                json!("behind"),
+                true,
+                "mergeable",
+                "blocked",
+            ),
+            (
+                "unrecognized",
+                "/pr/mergeableState",
+                json!("unrecognized"),
+                true,
+                "mergeable",
+                "blocked",
+            ),
+            (
+                "draft state",
+                "/pr/mergeableState",
+                json!("draft"),
+                true,
+                "mergeable",
+                "blocked",
+            ),
             (
                 "skipped",
                 "/checkRuns/0/conclusion",
@@ -721,14 +774,22 @@ mod tests {
             if matches!(name, "empty required" | "missing ci") {
                 assert_eq!(report.items[2].reason, "no_required_checks");
             }
+            if name == "incomplete checks" {
+                assert!(report.items[2].reason.contains("incomplete"));
+                assert_eq!(report.items[2].detail["checksIncomplete"], true);
+            }
+            if matches!(name, "blocked" | "behind" | "unrecognized" | "draft state") {
+                assert!(report.items[8].reason.contains(&facts.pr.mergeable_state));
+                assert_eq!(report.items[8].detail["state"], facts.pr.mergeable_state);
+            }
             if name == "local mismatch" {
                 assert_eq!(report.items[1].reason, "local HEAD differs from PR head");
             }
             if name == "mergeable null" {
-                assert_eq!(
-                    report.items[8].reason,
-                    "GitHub has not computed mergeability"
-                );
+                assert!(report.items[8]
+                    .reason
+                    .contains("GitHub has not computed mergeability"));
+                assert!(report.items[8].reason.contains("rerun later"));
             }
         }
     }

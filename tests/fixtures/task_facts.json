@@ -20,6 +20,7 @@
   "files": [{"filename":"docs/guide.md","previousFilename":null,"status":"modified","additions":2,"deletions":1}],
   "filesTruncated": false,
   "checkRuns": [{"id":10,"name":"Rust test","status":"completed","conclusion":"success","app":"github-actions","startedAt":"2026-01-01T00:00:00Z","completedAt":"2026-01-01T00:01:00Z"}],
+  "checksIncomplete": false,
   "statuses": [],
   "reviews": [],
   "reviewDecision": null,

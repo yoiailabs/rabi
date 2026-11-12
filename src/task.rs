@@ -369,16 +369,21 @@ pub(crate) fn github_report(
         )?,
         None => Policy::default(),
     };
-    let kinds = if base_local && resolves_commit(root, &facts.pr.head_sha)? {
+    let merge_base = if base_local && resolves_commit(root, &facts.pr.head_sha)? {
+        text(
+            root,
+            &["merge-base", &facts.pr.base_sha, &facts.pr.head_sha],
+        )
+        .ok()
+    } else {
+        None
+    };
+    let kinds = if let Some(merge_base) = merge_base {
         let attributes = format!("--attr-source={}", facts.pr.base_sha);
         let mut raw_args = vec![attributes.as_str()];
-        raw_args.extend(diff_args("--raw", &facts.pr.base_sha, &facts.pr.head_sha));
+        raw_args.extend(diff_args("--raw", &merge_base, &facts.pr.head_sha));
         let mut numstat_args = vec![attributes.as_str()];
-        numstat_args.extend(diff_args(
-            "--numstat",
-            &facts.pr.base_sha,
-            &facts.pr.head_sha,
-        ));
+        numstat_args.extend(diff_args("--numstat", &merge_base, &facts.pr.head_sha));
         Some(diff::parse(
             &read(root, &raw_args)?,
             &read(root, &numstat_args)?,

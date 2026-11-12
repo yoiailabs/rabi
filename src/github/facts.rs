@@ -19,6 +19,7 @@ pub(crate) struct Snapshot {
     pub files: Vec<File>,
     pub files_truncated: bool,
     pub check_runs: Vec<CheckRun>,
+    pub checks_incomplete: bool,
     pub statuses: Vec<CommitStatus>,
     pub reviews: Vec<Review>,
     pub review_decision: Option<String>,
@@ -144,7 +145,19 @@ impl<'a> Client<'a> {
     }
 
     fn pages(&self, suffix: &str, key: Option<&str>, cap: Option<usize>) -> Result<Vec<Value>> {
+        self.pages_with_completeness(suffix, key, cap)
+            .map(|(rows, _)| rows)
+    }
+
+    fn pages_with_completeness(
+        &self,
+        suffix: &str,
+        key: Option<&str>,
+        cap: Option<usize>,
+    ) -> Result<(Vec<Value>, bool)> {
         let mut all = Vec::new();
+        let mut expected = None;
+        let mut incomplete = false;
         for page in 1.. {
             let separator = if suffix.contains('?') { '&' } else { '?' };
             let value = self.get(&format!("{suffix}{separator}per_page=100&page={page}"))?;
@@ -152,12 +165,22 @@ impl<'a> Client<'a> {
                 .map_or(Some(&value), |key| value.get(key))
                 .and_then(Value::as_array)
                 .ok_or_else(|| Error::msg("Invalid GitHub facts: expected a paginated array"))?;
+            if key.is_some() {
+                match value.get("total_count").and_then(Value::as_u64) {
+                    Some(total) => {
+                        incomplete |= expected.is_some_and(|previous| previous != total);
+                        expected = Some(total);
+                    }
+                    None => incomplete = true,
+                }
+            }
             all.extend(rows.iter().cloned());
             if rows.len() < 100 || cap.is_some_and(|cap| all.len() >= cap) {
                 break;
             }
         }
-        Ok(all)
+        incomplete |= expected.is_some_and(|total| total != all.len() as u64);
+        Ok((all, incomplete))
     }
 
     pub fn recorded_number(&self, link: &WorktreeLink) -> Result<u64> {
@@ -251,7 +274,7 @@ impl<'a> Client<'a> {
                 })
             })
             .collect::<Result<Vec<_>>>()?;
-        let checks = self.pages(
+        let (checks, checks_incomplete) = self.pages_with_completeness(
             &format!("/commits/{}/check-runs?filter=all", raw.head.sha),
             Some("check_runs"),
             None,
@@ -312,7 +335,10 @@ impl<'a> Client<'a> {
                 user: User,
             }
             let review: RawReview = decode(value)?;
-            if review.state == "PENDING" {
+            if !matches!(
+                review.state.as_str(),
+                "APPROVED" | "CHANGES_REQUESTED" | "DISMISSED"
+            ) {
                 continue;
             }
             let key = review.user.login.to_ascii_lowercase();
@@ -360,6 +386,7 @@ impl<'a> Client<'a> {
             },
             files,
             check_runs,
+            checks_incomplete,
             statuses,
             reviews: latest.into_values().collect(),
             review_decision: None,
@@ -534,6 +561,7 @@ impl Snapshot {
                 file.deletions
             );
         }
+        outln!("Checks incomplete: {}", self.checks_incomplete);
         for run in &self.check_runs {
             outln!(
                 "Check: {} [{}] {}:{} id={} started={} completed={}",

@@ -136,7 +136,7 @@ impl Repo {
                 json!(files),
             );
             let runs: Vec<_> = ((page-1)*100..usize::min(page*100,101)).map(|index| json!({"id":index+1,"name":if index == 100 { "Rust test".into() } else { format!("Extra {index}") },"status":"completed","conclusion":"success","app":{"slug":"github-actions"},"started_at":"2026-01-01T00:00:00Z","completed_at":"2026-01-01T00:01:00Z"})).collect();
-            responses.insert(format!("repos/example/project/commits/{}/check-runs?filter=all&per_page=100&page={page}", self.head), json!({"check_runs":runs}));
+            responses.insert(format!("repos/example/project/commits/{}/check-runs?filter=all&per_page=100&page={page}", self.head), json!({"total_count":101,"check_runs":runs}));
         }
         responses.insert(
             format!(
@@ -222,6 +222,7 @@ fn status_and_preflight_paginate_and_leave_git_unchanged() {
     assert_eq!(status["data"]["checkRuns"].as_array().unwrap().len(), 101);
     assert_eq!(status["data"]["filesTruncated"], false);
     assert_eq!(status["data"]["inconsistent"], false);
+    assert_eq!(status["data"]["checksIncomplete"], false);
     assert_eq!(status["data"]["reviews"][0]["state"], "APPROVED");
     assert_eq!(status["data"]["statuses"][0]["creator"], "issuer-1");
     let merge = repo.json(&["task", "merge", "--dry-run", "pr:7", "--json"]);
@@ -413,6 +414,128 @@ fn api_failure_and_invalid_facts_return_operational_errors() {
         assert_eq!(value["ok"], false);
         assert!(value["data"].is_null());
         assert_eq!(value["error"]["code"], "failed");
+    }
+    repo.assert_get_only();
+}
+
+#[test]
+fn advanced_base_uses_merge_base_for_kinds_and_base_tip_for_policy() {
+    let mut repo = Repo::new();
+    repo.git(&["checkout", "main"]);
+    repo.write("docs/base-only.md", "base advance\n");
+    repo.write(
+        ".rabi/policy.toml",
+        "schema=1\ndefault-tier='medium'\n[ci]\nrequired=['Rust test']\n",
+    );
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-m", "advance base"]);
+    repo.base = repo.git(&["rev-parse", "HEAD"]);
+    repo.git(&["checkout", "topic"]);
+    repo.serve(&repo.responses());
+    let before = inventory(&repo.repo.join(".git"));
+    let report = repo.json(&["task", "merge", "--dry-run", "pr:7", "--json"]);
+    assert_eq!(report["data"]["items"][3]["result"], "pass");
+    assert_eq!(report["data"]["classification"]["tier"], "medium");
+    assert_eq!(report["data"]["classification"]["totals"]["files"], 101);
+    assert_eq!(report["data"]["verdict"], "incomplete");
+    assert!(!report["data"]["classification"]["reasons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|reason| reason == "unknown:kinds"));
+    assert_eq!(inventory(&repo.repo.join(".git")), before);
+    repo.assert_get_only();
+}
+
+#[test]
+fn unavailable_merge_base_leaves_kinds_unknown() {
+    let mut repo = Repo::new();
+    repo.head = repo.git(&["commit-tree", "HEAD^{tree}", "-m", "unrelated head"]);
+    repo.serve(&repo.responses());
+    let before = inventory(&repo.repo.join(".git"));
+    let report = repo.json(&["task", "merge", "--dry-run", "pr:7", "--json"]);
+    assert_eq!(report["data"]["items"][3]["result"], "pass");
+    assert_eq!(report["data"]["classification"]["tier"], "high");
+    assert!(report["data"]["classification"]["reasons"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|reason| reason == "unknown:kinds"));
+    assert_eq!(inventory(&repo.repo.join(".git")), before);
+    repo.assert_get_only();
+}
+
+#[test]
+fn effective_review_state_table() {
+    let repo = Repo::new();
+    for (new_state, effective, result, verdict) in [
+        ("COMMENTED", "CHANGES_REQUESTED", "fail", "blocked"),
+        ("PENDING", "CHANGES_REQUESTED", "fail", "blocked"),
+        ("DISMISSED", "DISMISSED", "pass", "incomplete"),
+        ("APPROVED", "APPROVED", "pass", "incomplete"),
+    ] {
+        let mut responses = repo.responses();
+        // Reverse API order so effective state must be chosen by ID.
+        responses.insert(
+            "repos/example/project/pulls/7/reviews?per_page=100&page=1".into(),
+            json!([
+                {"id":2,"state":new_state,"user":{"login":"reviewer-1"}},
+                {"id":1,"state":"CHANGES_REQUESTED","user":{"login":"reviewer-1"}}
+            ]),
+        );
+        repo.serve(&responses);
+        let status = repo.json(&["task", "status", "pr:7", "--json"]);
+        assert_eq!(
+            status["data"]["reviews"][0]["state"], effective,
+            "{new_state}"
+        );
+        let report = repo.json(&["task", "merge", "--dry-run", "pr:7", "--json"]);
+        assert_eq!(report["data"]["items"][7]["result"], result, "{new_state}");
+        assert_eq!(report["data"]["verdict"], verdict, "{new_state}");
+    }
+    repo.assert_get_only();
+}
+
+#[test]
+fn check_run_total_count_table() {
+    let repo = Repo::new();
+    for (first_count, second_count, incomplete) in [
+        (Some(101), Some(101), false),
+        (Some(102), Some(102), true),
+        (Some(100), Some(100), true),
+        (Some(102), Some(101), true),
+        (None, Some(101), true),
+    ] {
+        let mut responses = repo.responses();
+        for (page, total) in [(1, first_count), (2, second_count)] {
+            let response = responses.get_mut(&format!("repos/example/project/commits/{}/check-runs?filter=all&per_page=100&page={page}", repo.head)).unwrap();
+            if let Some(total) = total {
+                response["total_count"] = json!(total);
+            } else {
+                response.as_object_mut().unwrap().remove("total_count");
+            }
+        }
+        repo.serve(&responses);
+        let status = repo.json(&["task", "status", "pr:7", "--json"]);
+        assert_eq!(
+            status["data"]["checksIncomplete"], incomplete,
+            "{first_count:?}/{second_count:?}"
+        );
+        let report = repo.json(&["task", "merge", "--dry-run", "pr:7", "--json"]);
+        assert_eq!(
+            report["data"]["items"][2]["result"],
+            if incomplete { "fail" } else { "pass" }
+        );
+        assert_eq!(
+            report["data"]["items"][2]["detail"]["checksIncomplete"],
+            incomplete
+        );
+        if incomplete {
+            assert!(report["data"]["items"][2]["reason"]
+                .as_str()
+                .unwrap()
+                .contains("incomplete"));
+        }
     }
     repo.assert_get_only();
 }
