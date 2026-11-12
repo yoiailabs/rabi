@@ -259,16 +259,29 @@ fn on_events(raw: &[&str], start: usize) -> (Triggers, usize) {
 }
 
 fn triggers(contents: &str) -> Triggers {
+    let contents = contents.strip_prefix('\u{feff}').unwrap_or(contents);
     let raw = contents.lines().collect::<Vec<_>>();
     let mut result = Triggers::default();
     let mut seen = false;
+    // A root line with an inline value cannot have indented children. An
+    // indented line after it means a multiline scalar or flow collection
+    // that this scan cannot follow, so it could hide later events.
+    let mut inline_root = false;
     let mut i = 0;
     while i < raw.len() {
         let line = raw[i];
         if !empty_trigger_line(line) {
             let (indent, bad_indent) = indentation(line);
             result.uncertain |= bad_indent;
+            if indent > 0 {
+                result.uncertain |= inline_root;
+            }
             if indent == 0 && !matches!(line.trim(), "---" | "...") {
+                inline_root = line.split_once(':').is_some_and(|(_, value)| {
+                    let (value, _) = trigger_line(value.trim());
+                    let value = value.trim();
+                    !value.is_empty() && !value.starts_with(['|', '>'])
+                });
                 if let Some((key, _)) = line.split_once(':') {
                     let key = key.trim();
                     if matches!(key, "on" | "\"on\"" | "'on'") {
@@ -541,6 +554,12 @@ mod tests {
             ("complex key", "on:\n  ? [push]\n  : {}\n", true, true, true),
             ("expression", "on: ${{ events }}\n", true, true, true),
             ("event scalar block", "on:\n  push: >-\n    folded text\n", true, true, true),
+            ("wrapped double quote hides later event", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        description: \"abc\nx: y\"\n  pull_request_target:\npermissions: {}\n", true, true, true),
+            ("wrapped single quote hides later event", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        description: 'abc\nx: y'\n  pull_request_target:\npermissions: {}\n", true, true, true),
+            ("wrapped flow mapping hides later event", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        options: {a: 1,\n\"b\": 2}\n  pull_request_target:\npermissions: {}\n", true, true, true),
+            ("root inline values then jobs", "on:\n  push:\nname: CI # comment\npermissions: {}\njobs:\n  test:\n    runs-on: ubuntu-latest\n", false, false, false),
+            ("root block scalar", "on:\n  push:\nrun-name: >-\n  folded\n", false, false, false),
+            ("byte order mark", "\u{feff}on:\n  push:\npermissions: {}\n", false, false, false),
             ("nested prose block", "on:\n  workflow_dispatch:\n    inputs:\n      text:\n        description: |\n          Are * and & and ! allowed (yes)?\n", false, false, false),
         ];
         for (name, contents, pr, target, uncertain) in cases {
