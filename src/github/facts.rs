@@ -15,6 +15,7 @@ use crate::{
 pub(crate) struct Snapshot {
     pub repository: String,
     pub default_branch: String,
+    pub base_tip_sha: Option<String>,
     pub pr: Pull,
     pub files: Vec<File>,
     pub files_truncated: bool,
@@ -275,6 +276,22 @@ impl<'a> Client<'a> {
         }
     }
 
+    fn base_tip(&self, reference: &str) -> Result<String> {
+        let value = self.get(&format!("/git/ref/heads/{}", encode(reference)))?;
+        if value.get("ref").and_then(Value::as_str)
+            != Some(format!("refs/heads/{reference}").as_str())
+            || value.pointer("/object/type").and_then(Value::as_str) != Some("commit")
+        {
+            return Err(Error::msg("Invalid GitHub base branch tip"));
+        }
+        value
+            .pointer("/object/sha")
+            .and_then(Value::as_str)
+            .filter(|sha| valid_sha(sha))
+            .map(str::to_owned)
+            .ok_or_else(|| Error::msg("Invalid GitHub base branch tip SHA"))
+    }
+
     pub fn snapshot(&self, number: u64) -> Result<Snapshot> {
         let pull = format!("/pulls/{number}");
         let raw: RawPr = decode(self.get(&pull)?)?;
@@ -397,10 +414,14 @@ impl<'a> Client<'a> {
         if !valid_sha(&final_pr.head.sha) {
             return Err(Error::msg("Invalid GitHub facts: final head SHA"));
         }
+        // Unavailable branch tips fail the approval gate, without preventing
+        // collection/evaluation of the remaining facts.
+        let base_tip_sha = self.base_tip(&raw.base.r#ref).ok();
         let head_repository = raw.head.repo.map(|repo| repo.full_name);
         Ok(Snapshot {
             repository: repository.clone(),
             default_branch,
+            base_tip_sha,
             files_truncated: files.len() as u64 != raw.changed_files || files.len() >= 3000,
             inconsistent: raw.head.sha != final_pr.head.sha,
             final_head_sha: final_pr.head.sha,
@@ -568,6 +589,10 @@ impl Snapshot {
             self.pr.same_repository
         );
         outln!("Default branch: {}", visible_text(&self.default_branch));
+        outln!(
+            "Base branch tip: {}",
+            self.base_tip_sha.as_deref().unwrap_or("unavailable")
+        );
         outln!(
             "Base: {} ({})",
             visible_text(&self.pr.base_ref),

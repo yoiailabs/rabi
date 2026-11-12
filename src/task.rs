@@ -39,7 +39,19 @@ struct PolicySource {
 fn capture(root: &Path, args: &[&str]) -> Result<std::process::Output> {
     let mut options = vec!["--no-lazy-fetch"];
     options.extend_from_slice(args);
-    crate::process::raw_bytes("git", &options, Some(root), &[("LC_ALL", "C")], None)
+    // GIT_NO_REPLACE_OBJECTS does not disable legacy info/grafts. A path
+    // beneath the null device cannot exist, and overrides inherited graft files.
+    crate::process::raw_bytes(
+        "git",
+        &options,
+        Some(root),
+        &[
+            ("LC_ALL", "C"),
+            ("GIT_NO_REPLACE_OBJECTS", "1"),
+            ("GIT_GRAFT_FILE", "/dev/null/rabi-grafts"),
+        ],
+        None,
+    )
 }
 
 fn git_error(args: &[&str], stderr: &[u8]) -> Error {
@@ -380,9 +392,9 @@ pub(crate) fn github_report(
     } else {
         client.policy(&facts.pr.base_sha)?
     };
-    let policy = match blob {
+    let policy = match &blob {
         Some(bytes) => Policy::parse(
-            std::str::from_utf8(&bytes)
+            std::str::from_utf8(bytes)
                 .map_err(|_| Error::msg("Invalid .rabi/policy.toml: policy must be UTF-8"))?,
         )?,
         None => Policy::default(),
@@ -436,11 +448,33 @@ pub(crate) fn github_report(
         }
         return Ok(());
     }
+    let policy_matches_base_tip = facts.base_tip_sha.as_deref().and_then(|tip| {
+        if tip == facts.pr.base_sha {
+            return Some(true);
+        }
+        let tip_blob = resolves_commit(root, tip).and_then(|local| {
+            if local {
+                policy_blob(root, tip)
+            } else {
+                client.policy(tip)
+            }
+        });
+        tip_blob.ok().map(|tip_blob| tip_blob == blob)
+    });
     let head = workspace
         .as_ref()
         .map(|tree| commit(Path::new(&tree.path), "HEAD"))
         .transpose()?;
-    let report = preflight::evaluate(&facts, &policy, &preflight::Local { head, kinds }, base);
+    let report = preflight::evaluate(
+        &facts,
+        &policy,
+        &preflight::Local {
+            head,
+            kinds,
+            policy_matches_base_tip,
+        },
+        base,
+    );
     if crate::output::json() {
         crate::output::data(&report)?;
     } else {

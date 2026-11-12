@@ -13,6 +13,7 @@ use crate::github::facts::Snapshot;
 pub(crate) struct Local {
     pub head: Option<String>,
     pub kinds: Option<Vec<ChangedEntry>>,
+    pub policy_matches_base_tip: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -264,7 +265,17 @@ pub(crate) fn evaluate(
         .statuses
         .iter()
         .find(|status| status.context == "rabi/approval");
-    let (approved, reason) = if automatic {
+    let (approved, reason) = if local.policy_matches_base_tip.is_none() {
+        (
+            false,
+            "Cannot determine base branch tip or read its policy; retry or update the PR",
+        )
+    } else if local.policy_matches_base_tip == Some(false) {
+        (
+            false,
+            "Policy changed on base branch since PR base; update the PR",
+        )
+    } else if automatic {
         (true, "auto tier")
     } else if classification.is_none() {
         (false, "Risk classification unavailable")
@@ -782,7 +793,11 @@ mod tests {
             let report = evaluate(
                 &facts,
                 &policy,
-                &Local { head, kinds },
+                &Local {
+                    head,
+                    kinds,
+                    policy_matches_base_tip: Some(true),
+                },
                 (name == "explicit base").then_some("release"),
             );
             assert_eq!(report.verdict, verdict, "{name}");
@@ -984,15 +999,22 @@ mod tests {
                 binary: false,
                 unknown: vec![],
             }]);
-            let report = evaluate(
-                &facts,
-                &policy,
-                &Local {
-                    head: Some(facts.pr.head_sha.clone()),
-                    kinds,
-                },
-                None,
-            );
+            let mut local = Local {
+                head: Some(facts.pr.head_sha.clone()),
+                kinds,
+                policy_matches_base_tip: Some(true),
+            };
+            for freshness in [Some(false), None] {
+                local.policy_matches_base_tip = freshness;
+                let stale = evaluate(&facts, &policy, &local, None);
+                assert!(
+                    matches!(stale.items[4].result, Outcome::Fail),
+                    "{name}: {freshness:?}"
+                );
+                assert!(stale.items[4].reason.contains("base branch"));
+            }
+            local.policy_matches_base_tip = Some(true);
+            let report = evaluate(&facts, &policy, &local, None);
             let approval = &report.items[4];
             assert_eq!(
                 matches!(approval.result, Outcome::Pass),

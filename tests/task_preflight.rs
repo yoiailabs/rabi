@@ -127,6 +127,10 @@ impl Repo {
         );
         responses.insert("repos/example/project/pulls/7".into(), self.pull());
         responses.insert(
+            "repos/example/project/git/ref/heads/main".into(),
+            json!({"ref":"refs/heads/main", "object":{"type":"commit", "sha": self.base}}),
+        );
+        responses.insert(
             "repos/example/project/pulls?state=open&head=example%3Atopic&per_page=100&page=1"
                 .into(),
             json!([self.pull()]),
@@ -884,4 +888,157 @@ fn merge_uses_base_policy_method_and_auto_tier_table() {
             ]]
         );
     }
+}
+
+#[test]
+fn replace_ref_cannot_swap_the_evaluated_base_policy() {
+    let repo = Repo::new();
+    let mut responses = repo.responses();
+    responses.insert(
+        format!(
+            "repos/example/project/commits/{}/statuses?per_page=100&page=1",
+            repo.head
+        ),
+        json!([]),
+    );
+    repo.serve(&responses);
+    let before = repo.json(&["task", "merge", ".", "--dry-run", "--json"]);
+    assert_eq!(before["data"]["items"][4]["result"], "fail");
+
+    let replacement_policy =
+        "schema=1\ndefault-tier='low'\n[ci]\nrequired=['Rust test']\n[merge]\nauto=['low']\n";
+    repo.git(&["checkout", "main"]);
+    repo.write(".rabi/policy.toml", replacement_policy);
+    repo.git(&["add", "."]);
+    let tree = repo.git(&["write-tree"]);
+    let replacement = repo.git(&["commit-tree", &tree, "-m", "replacement policy"]);
+    repo.git(&["reset", "--hard"]);
+    repo.git(&["checkout", "topic"]);
+    repo.git(&["replace", &repo.base, &replacement]);
+    assert_eq!(
+        repo.git(&["show", &format!("{}:.rabi/policy.toml", repo.base)]),
+        replacement_policy.trim()
+    );
+
+    let after = repo.json(&["task", "merge", ".", "--dry-run", "--json"]);
+    assert_eq!(after["data"], before["data"]);
+    let refused = repo.rabi(&["task", "merge", ".", "--external-review", "--json"]);
+    assert_eq!(refused.status.code(), Some(4));
+    repo.assert_get_only();
+}
+
+#[test]
+fn current_base_policy_comparison_table() {
+    for (case, absent_base, tip_policy, remote, expected) in [
+        ("equal", false, "equal", false, "pass"),
+        ("changed", false, "changed", false, "fail"),
+        ("missing at both", true, "missing", false, "no approvers"),
+        ("added", true, "changed", false, "fail"),
+        ("removed", false, "missing", false, "fail"),
+        ("lookup failure", false, "lookup failure", false, "fail"),
+        ("invalid SHA", false, "invalid SHA", false, "fail"),
+        ("wrong ref", false, "wrong ref", false, "fail"),
+        ("remote equal", true, "missing", true, "no approvers"),
+        ("remote changed", false, "missing", true, "fail"),
+        ("unreadable policy", false, "unreadable", true, "fail"),
+    ] {
+        let mut repo = Repo::new();
+        if absent_base {
+            repo.git(&["checkout", "main"]);
+            repo.git(&["rm", ".rabi/policy.toml"]);
+            repo.git(&["commit", "-m", "remove base policy"]);
+            repo.base = repo.git(&["rev-parse", "HEAD"]);
+            // Keep a shared merge-base with topic and use the original head.
+            repo.git(&["checkout", "topic"]);
+        }
+        let policy = repo.git(&["show", "topic~1:.rabi/policy.toml"]);
+        let tip = if remote {
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()
+        } else {
+            repo.git(&["checkout", "main"]);
+            match tip_policy {
+                "changed" => repo.write(
+                    ".rabi/policy.toml",
+                    &format!("{policy}\n# tightened policy\n"),
+                ),
+                "missing" if !absent_base => {
+                    repo.git(&["rm", ".rabi/policy.toml"]);
+                }
+                _ => (),
+            }
+            repo.git(&["add", "."]);
+            repo.git(&["commit", "--allow-empty", "-m", "advance base"]);
+            let tip = repo.git(&["rev-parse", "HEAD"]);
+            repo.git(&["checkout", "topic"]);
+            tip
+        };
+        let mut responses = repo.responses();
+        let ref_path = "repos/example/project/git/ref/heads/main";
+        responses.insert(
+            ref_path.into(),
+            json!({"ref":"refs/heads/main", "object":{"type":"commit", "sha":tip}}),
+        );
+        match tip_policy {
+            "lookup failure" => {
+                responses.remove(ref_path);
+            }
+            "invalid SHA" => {
+                responses.get_mut(ref_path).unwrap()["object"]["sha"] = json!("abc");
+            }
+            "wrong ref" => {
+                responses.get_mut(ref_path).unwrap()["ref"] = json!("refs/heads/other");
+            }
+            _ => (),
+        }
+        if remote && tip_policy != "unreadable" {
+            responses.insert(
+                format!("repos/example/project/git/trees/{tip}"),
+                json!({"truncated":false,"tree":[]}),
+            );
+        }
+        // Both-missing still evaluates checks using the default base policy;
+        // missing approvers still fail approval, but not with a freshness error.
+        repo.serve(&responses);
+        let before = inventory(&repo.repo.join(".git"));
+        let dry = repo.json(&["task", "merge", ".", "--dry-run", "--json"]);
+        assert_eq!(
+            dry["data"]["items"][4]["result"],
+            if expected == "pass" { "pass" } else { "fail" },
+            "{case}: {}",
+            dry["data"]["items"][4]
+        );
+        assert_eq!(dry["data"]["items"].as_array().unwrap().len(), 9, "{case}");
+        if expected != "pass" {
+            let reason = dry["data"]["items"][4]["reason"].as_str().unwrap();
+            if expected == "no approvers" {
+                assert_eq!(reason, "No approval.approvers configured", "{case}");
+            } else {
+                assert!(reason.contains("base branch"), "{case}: {reason}");
+            }
+            let real = repo.rabi(&["task", "merge", ".", "--external-review", "--json"]);
+            assert_eq!(real.status.code(), Some(4), "{case}");
+            let real: Value = serde_json::from_slice(&real.stdout).unwrap();
+            assert_eq!(real["data"], dry["data"], "{case}");
+        }
+        assert_eq!(inventory(&repo.repo.join(".git")), before, "{case}");
+        repo.assert_get_only();
+    }
+}
+
+#[test]
+fn base_tip_lookup_encodes_the_branch_as_a_path_segment() {
+    let repo = Repo::new();
+    let mut responses = repo.responses();
+    responses.get_mut("repos/example/project/pulls/7").unwrap()["base"]["ref"] =
+        json!("release/qa#%?雪");
+    let path = "repos/example/project/git/ref/heads/release%2Fqa%23%25%3F%E9%9B%AA";
+    responses.insert(
+        path.into(),
+        json!({"ref":"refs/heads/release/qa#%?雪","object":{"type":"commit","sha":repo.base}}),
+    );
+    repo.serve(&responses);
+    let status = repo.json(&["task", "status", "pr:7", "--json"]);
+    assert_eq!(status["data"]["baseTipSha"], repo.base);
+    assert!(repo.trace().iter().any(|argv| argv[1] == path));
+    repo.assert_get_only();
 }

@@ -13,6 +13,10 @@
 
 - Repository `.rabi.toml` supports trusted `[env]` declarations for `run` and `exec`: ordered `path-prepend`, validated `set` variables, and limited HOME/workspace/repository expansion. Declarations always come from the primary checkout, including resume. Loading validates syntax; expansion happens only during application, with clear errors for referenced non-UTF-8 paths. `--no-env` bypasses environment-value validation while retaining TOML/schema parsing; untrusted exec warns and continues without env. Run resolves provider binaries before applying PATH, skips workspace PATH entries and workspace-token set values with `env_workspace_path_skipped`, and reports only retained entries. Exec retains workspace declarations. Reserved variables protect rabi state/configuration and Git repository selection. `trust add` shows escaped `KEY=value` assignments and PATH entries for review; never commit secrets in `[env]`. Hooks keep their existing environment. (#930)
 
+### Fixed
+
+- Task Git reads ignore replace refs and default/inherited grafts. Merge preflight refuses approval when the current base-branch policy differs from the PR base policy or cannot be verified, including auto tiers. Facts expose `baseTipSha`; approval documentation clarifies that statuses bind to commits, not PRs or bases.
+
 ### Changed (Breaking)
 
 - `task merge` now attempts a guarded merge unless `--dry-run` is supplied. Approval is evaluated instead of remaining N/A; real merge preflight refusals exit 4.

@@ -1,6 +1,7 @@
 {
   "repository": "example/project",
   "defaultBranch": "main",
+  "baseTipSha": "1111111111111111111111111111111111111111",
   "pr": {
     "number": 7,
     "state": "open",
