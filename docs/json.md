@@ -272,23 +272,23 @@ For example, passing facts yield `pr_open: pass`, `required_checks: pass`, `risk
 
 ## Local task store
 
-`task new`, `task show` and `task abandon` return `data: {task, recorded_state, events}`. `task` is the record with its **displayed** state, while `recorded_state` preserves its saved state. `task list` returns `data: {tasks: [{id, state, branch, intent}]}`; intent is its first line, and unreadable/corrupt records have null branch and intent. `--all` includes terminal records. Warnings use `record_mismatch` for invalid records or branch/state disagreement, and `internal` for unreadable records. List/show never rewrite records or events.
+`task new`, `task show` and `task abandon` return `data: {task, recordedState, events}`. `task` is the record with its **displayed** state, while `recordedState` preserves its saved state. `task list` returns `data: {tasks: [{id, state, branch, intent}]}`; intent is its first line, and unreadable/corrupt records have null branch and intent. `--all` includes terminal records. Warnings use `record_mismatch` for invalid records or branch/state disagreement, and `internal` for unreadable records. List/show never rewrite records or events. Invalid or unreadable task records and event files fail show/abandon with exit 1 (`failed`), naming the task ID. Creation fails closed with the same code and task ID if an unreadable record prevents checking branch reservations.
 
-Files live outside Git at `<state_dir>/repositories/<sha256 hex of canonical git common-dir bytes>/tasks/task_<uuid>/task.json` and `events.jsonl`. `state_dir()` uses `$XDG_STATE_HOME/rabi`, falling back to `~/.local/state/rabi` for unset, empty or relative XDG values. Directories are 0700 and files 0600. `task.json` is atomically replaced under the task's `.lock` (Unix `flock`); `events.jsonl` is only appended under the same lock. Creation also locks `tasks/.lock` to serialize reservations. Readers do not lock. Events are synced before record replacement, so an interrupted replacement may leave an extra event; this pair of files is not a single atomic transaction.
+Files live outside Git at `<state_dir>/repositories/<sha256 hex of canonical git common-dir bytes>/tasks/task_<uuid>/task.json` and `events.jsonl`. `state_dir()` uses `$XDG_STATE_HOME/rabi`, falling back to `~/.local/state/rabi` for unset, empty or relative XDG values. The shared repository namespace publishes and validates schema 1 `repository.json` (`commonDir` is the canonical Git common directory), just like handoff memory. A corrupt manifest or mismatched identity fails with exit 1 (`failed`) without replacing it. Directories are 0700 and files 0600. `task.json` is atomically replaced under the task's `.lock` (Unix `flock`); `events.jsonl` is only appended under the same lock. Creation also locks `tasks/.lock` to serialize reservations. It builds each new task in `tasks/.staging-<uuid>/`, syncs both files, then renames that directory to `task_<uuid>/`. Incomplete staging directories remain invisible to listing, ID resolution and reservation checks. Readers do not lock. For existing tasks, events are synced before record replacement, so an interrupted replacement may leave an extra event; this pair of files is not a single atomic transaction.
 
-Task file schema 1 uses snake_case fields, independently of the schema 2 command envelope:
+Task file schema 1 and command data both use camelCase field names:
 
 | Field | Value |
 |---|---|
 | `schema` | Integer 1 |
 | `id` | `task_<UUID v4>`, matching its directory |
-| `created_at`, `updated_at` | UTC RFC3339 timestamps |
+| `createdAt`, `updatedAt` | UTC RFC3339 timestamps |
 | `state` | `{name: STATE}`, or `{name: "blocked", reason: CODE}` |
 | `intent` | Nonempty text, preserved verbatim |
 | `branch` | Reserved branch name; creation does not create the branch |
-| `base_ref` | Locally resolvable base ref captured at creation |
-| `push_remote_url` | Push URL captured once; userinfo, query and fragment stripped |
-| `workspace_path`, `pr_number` | Null; unset by these commands |
+| `baseRef` | Locally resolvable base ref captured at creation |
+| `pushRemoteUrl` | Push URL captured once; userinfo, query and fragment stripped |
+| `workspacePath`, `prNumber` | Null; unset by these commands |
 
 States are `new`, `implementing`, `prechecking`, `publishing`, `ci`, `reviewing`, `ready`, `classifying`, `awaiting_approval`, `merging`, `merged`, `blocked`, and `abandoned`. Blocked reason codes are `no_progress`, `no_ci`, `ci_timeout`, `conflict`, `diverged`, `policy_invalid`, `provider_failed`, `evidence_missing`, `floor_changed`, `precheck_changed`, `review_invalid`, `budget`, `internal`, and `record_mismatch`.
 
@@ -296,4 +296,4 @@ Each event is one JSON object and newline: `{at, from, to, reason}` with optiona
 
 The [transition table](commands.md#local-task-store) allows the forward chain through implementation, checks, publication, CI, review and classification; classification goes directly to merging or through awaiting approval. Prechecking, CI, reviewing and awaiting approval can return to implementing. Any non-terminal state can become blocked or abandoned; blocked can return to any non-terminal state. Merged and abandoned are terminal. Invalid edges use exit 2 (`usage`). These states are bookkeeping claims, not GitHub evidence, and do not authorize merges or launches. The existing merge preflight does not read this store.
 
-For non-terminal tasks, output derives `blocked(record_mismatch)` when a new task's local branch already exists or a later state's branch is missing. `recorded_state` and the saved record are preserved. No other Git or GitHub derivation is performed.
+For non-terminal tasks other than `blocked`, output derives `blocked(record_mismatch)` when a new task's local branch already exists or a later state's branch is missing. A stored `blocked` state keeps its reason regardless of branch existence. `recordedState` and the saved record are preserved. No other Git or GitHub derivation is performed.

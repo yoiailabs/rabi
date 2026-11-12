@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Task storage and handoff memory now share repository identity initialization and validation, preserving read-only handoff commands after task creation. New tasks publish complete staged directories; unreadable reservations fail closed with exit 1 and the task ID. Task JSON fields use camelCase in command output and stored records/events. Blocked tasks keep their recorded reason, and task/doctor push-remote selection shares one resolver.
+
 ### Added
 
 - Local `rabi task new|list|show|abandon` bookkeeping stores private task records and append-only transition events outside the repository. Branch reservations, ID prefixes, read-only branch/state mismatch reporting and credential-free push URLs require no GitHub calls, agents or workspace creation.

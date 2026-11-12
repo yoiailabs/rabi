@@ -26,6 +26,44 @@ pub fn run(args: &[&str], cwd: Option<&Path>) -> Result<()> {
         .map_err(repository_error)
 }
 
+/// Resolve Git's push-remote precedence without fetching or exposing config values.
+pub(crate) fn push_remote(root: &Path, branch: &str) -> Result<String> {
+    let failed = || Error::msg("Push remote could not be determined");
+    let read = |args: &[&str]| -> Result<Option<String>> {
+        let mut guarded = vec!["--no-lazy-fetch"];
+        guarded.extend_from_slice(args);
+        let output = process::raw_bytes("git", &guarded, Some(root), &[("LC_ALL", "C")], None)
+            .map_err(|_| failed())?;
+        if !output.status.success() {
+            return if output.status.code() == Some(1) {
+                Ok(None)
+            } else {
+                Err(failed())
+            };
+        }
+        String::from_utf8(output.stdout)
+            .map(|value| Some(value.trim().to_owned()))
+            .map_err(|_| failed())
+    };
+    let mut selected = "origin".to_owned();
+    for key in [
+        format!("branch.{branch}.pushRemote"),
+        "remote.pushDefault".into(),
+        format!("branch.{branch}.remote"),
+    ] {
+        if let Some(remote) = read(&["config", "--get", &key])?.filter(|value| !value.is_empty()) {
+            selected = remote;
+            break;
+        }
+    }
+    let remotes = read(&["remote"])?.ok_or_else(failed)?;
+    if selected != "." && remotes.lines().any(|remote| remote == selected) {
+        Ok(selected)
+    } else {
+        Err(failed())
+    }
+}
+
 fn repository_error(error: Error) -> Error {
     if error
         .to_string()

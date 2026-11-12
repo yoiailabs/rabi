@@ -449,10 +449,12 @@ pub(crate) fn inspect(root: &Path) -> Report {
     }
     if let Some(branch) = &facts.default_branch {
         let remote = default_remote(root, branch);
-        facts.push_ssh = push_remote(root, branch).and_then(|remote| {
-            let urls = git_text(root, &["remote", "get-url", "--push", "--all", &remote])?;
-            Ok(urls.lines().any(is_ssh))
-        });
+        facts.push_ssh = crate::git::push_remote(root, branch)
+            .map_err(|_| "push remote could not be determined")
+            .and_then(|remote| {
+                let urls = git_text(root, &["remote", "get-url", "--push", "--all", &remote])?;
+                Ok(urls.lines().any(is_ssh))
+            });
         facts.workflows = workflows(root, branch, remote.as_deref().ok());
     }
     evaluate(facts)
@@ -530,29 +532,6 @@ fn default_remote(root: &Path, branch: &str) -> Probe<String> {
         return Ok(names[0].to_owned());
     }
     Err("Default branch remote could not be determined")
-}
-
-fn push_remote(root: &Path, branch: &str) -> Probe<String> {
-    let reason = "push remote could not be determined";
-    let mut selected = "origin".to_owned();
-    for key in [
-        format!("branch.{branch}.pushRemote"),
-        "remote.pushDefault".into(),
-        format!("branch.{branch}.remote"),
-    ] {
-        if let Ok(remote) = git_text(root, &["config", "--get", &key]) {
-            if !remote.is_empty() {
-                selected = remote;
-                break;
-            }
-        }
-    }
-    let remotes = git_text(root, &["remote"]).map_err(|_| reason)?;
-    if selected != "." && remotes.lines().any(|remote| remote == selected) {
-        Ok(selected)
-    } else {
-        Err(reason)
-    }
 }
 
 fn is_ssh(url: &str) -> bool {

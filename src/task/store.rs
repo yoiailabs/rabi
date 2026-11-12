@@ -4,7 +4,6 @@ use crate::{git, output};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
-use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 use std::path::{Path, PathBuf};
 
@@ -112,6 +111,7 @@ impl TaskState {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct Task {
     schema: u32,
     pub id: String,
@@ -127,6 +127,7 @@ pub(crate) struct Task {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct Event {
     at: String,
     from: Option<TaskState>,
@@ -137,6 +138,7 @@ pub(crate) struct Event {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct View {
     pub task: Task,
     recorded_state: TaskState,
@@ -144,6 +146,7 @@ pub(crate) struct View {
 }
 
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct Entry {
     id: String,
     state: TaskState,
@@ -205,23 +208,24 @@ fn bytes(path: &Path) -> Result<Vec<u8>> {
 
 pub(crate) struct Store {
     root: PathBuf,
+    repository: crate::repository_state::RepositoryState,
     path: PathBuf,
 }
 
 impl Store {
     pub fn locate(root: &Path) -> Result<Self> {
-        let common = git::canonical_common_dir(root)?;
-        let digest = crate::hash::sha256_hex(common.as_os_str().as_bytes());
+        let repository = crate::repository_state::RepositoryState::locate(root)?;
         Ok(Self {
             root: root.to_path_buf(),
-            path: crate::paths::state_dir()?
-                .join("repositories")
-                .join(digest)
-                .join("tasks"),
+            path: repository.path().join("tasks"),
+            repository,
         })
     }
 
     fn ids(&self) -> Result<Vec<String>> {
+        if self.repository.directory(false)?.is_none() {
+            return Ok(Vec::new());
+        }
         let entries = match fs::read_dir(&self.path) {
             Ok(entries) => entries,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
@@ -239,6 +243,11 @@ impl Store {
     }
 
     fn load(&self, id: &str) -> Result<Task> {
+        self.load_record(id)
+            .map_err(|error| Error::msg(format!("Cannot read task {id}: {error}")))
+    }
+
+    fn load_record(&self, id: &str) -> Result<Task> {
         if !io(fs::symlink_metadata(self.path.join(id)))?.is_dir() {
             return Err(Error::validation(
                 "Task directory is not a regular directory",
@@ -285,7 +294,7 @@ impl Store {
     }
 
     fn derived(&self, task: &Task) -> Result<TaskState> {
-        if !task.state.terminal() {
+        if !task.state.terminal() && !matches!(task.state, TaskState::Blocked(_)) {
             let exists = git::reference_exists(&self.root, &format!("refs/heads/{}", task.branch))?;
             if exists == (task.state == TaskState::New) {
                 output::warning(
@@ -301,7 +310,7 @@ impl Store {
     pub fn list(&self, all: bool) -> Result<Vec<Entry>> {
         let mut entries = Vec::new();
         for id in self.ids()? {
-            match self.load(&id) {
+            match self.load_record(&id) {
                 Ok(task) => {
                     if !all && task.state.terminal() {
                         continue;
@@ -337,12 +346,13 @@ impl Store {
     }
 
     fn events(&self, id: &str) -> Result<Vec<Event>> {
-        bytes(&self.path.join(id).join("events.jsonl"))?
+        bytes(&self.path.join(id).join("events.jsonl"))
+            .map_err(|error| Error::msg(format!("Cannot read task {id} events: {error}")))?
             .split(|b| *b == b'\n')
             .filter(|line| !line.is_empty())
             .map(|line| {
                 serde_json::from_slice(line)
-                    .map_err(|_| Error::validation("Invalid task events.jsonl"))
+                    .map_err(|_| Error::msg(format!("Task {id}: invalid events.jsonl")))
             })
             .collect()
     }
@@ -376,7 +386,9 @@ impl Store {
     fn available(&self, branch: &str) -> Result<()> {
         self.branch_available(branch)?;
         for id in self.ids()? {
-            let task = self.load(&id)?;
+            let task = self.load(&id).map_err(|error| {
+                Error::msg(format!("Cannot check branch reservations: {error}"))
+            })?;
             if !task.state.terminal() && task.branch == branch {
                 return Err(Error::validation(
                     "Task branch is reserved by another non-terminal task",
@@ -409,10 +421,11 @@ impl Store {
         self.branch_available(&branch)?;
         let push_remote_url = push_url(&self.root, &branch)?;
         // Serialize branch reservations as well as individual task updates.
+        self.repository.directory(true)?;
         private_dir(&self.path)?;
         let _creation = lock(&self.path.join(".lock"))?;
         self.available(&branch)?;
-        let directory = self.path.join(&id);
+        let directory = self.path.join(format!(".staging-{}", uuid::Uuid::new_v4()));
         io(fs::DirBuilder::new().mode(0o700).create(&directory))?;
         let _lock = lock(&directory.join(".lock"))?;
         let at = now();
@@ -436,7 +449,10 @@ impl Store {
             reason: "created".into(),
             detail: None,
         };
-        self.save(&task, &event)?;
+        self.save(&directory, &task, &event)?;
+        io(File::open(&directory).and_then(|file| file.sync_all()))?;
+        io(fs::rename(&directory, self.path.join(&task.id)))?;
+        io(File::open(&self.path).and_then(|file| file.sync_all()))?;
         Ok(View {
             recorded_state: task.state,
             task,
@@ -446,8 +462,7 @@ impl Store {
 
     // Caller holds the per-task lock. Append before atomic replacement: an
     // interrupted replacement may leave an extra event, never erase history.
-    fn save(&self, task: &Task, event: &Event) -> Result<()> {
-        let directory = self.path.join(&task.id);
+    fn save(&self, directory: &Path, task: &Task, event: &Event) -> Result<()> {
         let mut line = encode(event)?;
         line.push(b'\n');
         let mut file = open(&directory.join("events.jsonl"), true)?;
@@ -462,14 +477,20 @@ impl Store {
     pub fn transition(&self, prefix: &str, to: TaskState, reason: &str) -> Result<View> {
         let id = self.resolve(prefix)?;
         let directory = self.path.join(&id);
-        if !io(fs::symlink_metadata(&directory))?.is_dir() {
-            return Err(Error::validation("Task directory must not be a symlink"));
+        if !io(fs::symlink_metadata(&directory))
+            .map_err(|error| Error::msg(format!("Cannot read task {id}: {error}")))?
+            .is_dir()
+        {
+            return Err(Error::msg(format!(
+                "Task {id}: directory must not be a symlink"
+            )));
         }
-        let _lock = lock(&directory.join(".lock"))?;
+        let _lock = lock(&directory.join(".lock"))
+            .map_err(|error| Error::msg(format!("Cannot lock task {id}: {error}")))?;
         let mut task = self.load(&id)?;
         let event = transition(&mut task, to, reason)?;
         let mut events = self.events(&id)?;
-        self.save(&task, &event)?;
+        self.save(&directory, &task, &event)?;
         events.push(event);
         Ok(View {
             recorded_state: task.state,
@@ -527,26 +548,7 @@ fn slug(intent: &str, suffix: &str) -> String {
 
 fn push_url(root: &Path, branch: &str) -> Result<String> {
     let failed = || Error::msg("Cannot resolve task push remote URL");
-    let mut remote = "origin".to_owned();
-    // Same precedence as doctor's push-remote probe; never fetch or contact it.
-    for key in [
-        format!("branch.{branch}.pushRemote"),
-        "remote.pushDefault".into(),
-        format!("branch.{branch}.remote"),
-    ] {
-        let result = super::capture(root, &["config", "--get", &key]).map_err(|_| failed())?;
-        if result.status.success() {
-            let value = std::str::from_utf8(&result.stdout)
-                .map_err(|_| failed())?
-                .trim();
-            if !value.is_empty() {
-                remote = value.into();
-                break;
-            }
-        } else if result.status.code() != Some(1) {
-            return Err(failed());
-        }
-    }
+    let remote = git::push_remote(root, branch).map_err(|_| failed())?;
     let result = super::capture(root, &["remote", "get-url", "--push", "--", &remote])
         .map_err(|_| failed())?;
     if !result.status.success() {

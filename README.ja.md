@@ -83,7 +83,7 @@ rabi remove task/auth
 | `rabi task` | ローカルタスクを管理し、タスクの根拠を検査 |
 | `rabi task new` | 意図を記録し、未使用のブランチ名をローカルで予約 |
 | `rabi task list` | 未完了のローカルタスクを一覧表示（`--all` で終了済みも表示） |
-| `rabi task show` | ローカルタスクと追記専用のイベント履歴を表示 |
+| `rabi task show` | ローカルタスクと追記専用のイベント履歴をテキストまたは camelCase JSON で表示 |
 | `rabi task abandon` | 未完了のローカルタスクを中止 |
 | `rabi task risk` | ベースコミットのリスクポリシーでコミット済みの変更を分類 |
 | `rabi task status` | 書き込みなしで GitHub の PR 情報を表示 |

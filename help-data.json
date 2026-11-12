@@ -2444,7 +2444,8 @@
       ],
       "notes": [
         "Intent must be nonempty; - reads stdin. Records only local bookkeeping, without creating a branch or workspace, launching an agent or contacting GitHub.",
-        "Existing local branches, branches checked out in any checkout, and branches reserved by non-terminal tasks are rejected. The push remote URL is captured once, with credentials removed."
+        "Existing local branches, branches checked out in any checkout, and branches reserved by non-terminal tasks are rejected. The push remote URL is captured once, with credentials removed.",
+        "New records are published from .staging-<uuid> only after both files are complete. Unreadable task reservations fail closed with exit 1 and the task ID."
       ]
     },
     "task list": {
@@ -2488,7 +2489,7 @@
       ],
       "notes": [
         "Lists non-terminal tasks by default. Corrupt or unreadable records display blocked with a warning; other tasks remain visible.",
-        "Displayed state is derived read-only: new requires an absent local branch; later non-terminal states require an existing local branch. Disagreement displays blocked(record_mismatch)."
+        "Displayed state is derived read-only: new requires an absent local branch; later non-terminal states except blocked require an existing local branch. Stored blocked states keep their reason. Disagreement displays blocked(record_mismatch)."
       ]
     },
     "task show": {
@@ -2527,7 +2528,8 @@
       ],
       "notes": [
         "ID is a full task_<uuid> id or a unique prefix of at least 6 characters. Records and events are read without rewriting them.",
-        "The displayed state may be blocked(record_mismatch) when the recorded state disagrees with local branch existence. The recorded state is also returned in JSON."
+        "The displayed state may be blocked(record_mismatch) when the recorded state disagrees with local branch existence. The recorded state is also returned in JSON.",
+        "Corrupt or unreadable records/events exit 1 and name the task ID. Command data and stored task records use camelCase fields."
       ]
     },
     "task abandon": {
@@ -2571,7 +2573,8 @@
       ],
       "notes": [
         "ID accepts a full task id or a unique prefix of at least 6 characters. Appends an event and atomically replaces the task record under its lock.",
-        "Merged and abandoned tasks are terminal and cannot be abandoned again. No branch, workspace or GitHub changes."
+        "Merged and abandoned tasks are terminal and cannot be abandoned again. No branch, workspace or GitHub changes.",
+        "Corrupt or unreadable records/events exit 1 and name the task ID before changing the task."
       ]
     }
   },

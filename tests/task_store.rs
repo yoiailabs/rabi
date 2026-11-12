@@ -169,24 +169,44 @@ fn new_list_show_abandon_preserve_git_and_append_events() {
     let id = task["id"].as_str().unwrap();
     assert_eq!(task["schema"], 1);
     assert_eq!(task["state"], json!({"name":"new"}));
-    assert_eq!(task["base_ref"], "origin/main");
-    assert_eq!(
-        task["push_remote_url"],
-        "https://example.invalid/project.git"
-    );
-    assert!(task["workspace_path"].is_null());
-    assert!(task["pr_number"].is_null());
+    assert_eq!(task["baseRef"], "origin/main");
+    assert_eq!(task["pushRemoteUrl"], "https://example.invalid/project.git");
+    assert!(task["workspacePath"].is_null());
+    assert!(task["prNumber"].is_null());
     let list = repo.json(&["task", "list", "--json"]);
     assert_eq!(list["command"], "task list");
     assert_eq!(list["data"]["tasks"][0]["intent"], "Implement something");
     assert_eq!(list["data"]["tasks"][0]["id"], id);
     let path = repo.directory(&task);
+    let stored: Value = serde_json::from_slice(&fs::read(path.join("task.json")).unwrap()).unwrap();
+    assert_eq!(stored, task);
+    for key in [
+        "createdAt",
+        "updatedAt",
+        "baseRef",
+        "pushRemoteUrl",
+        "workspacePath",
+        "prNumber",
+    ] {
+        assert!(stored.get(key).is_some(), "{key}");
+    }
+    assert!(stored
+        .as_object()
+        .unwrap()
+        .keys()
+        .all(|key| !key.contains('_')));
     let original = fs::read(path.join("events.jsonl")).unwrap();
     let before = inventory(&repo.tasks());
     let show = repo.json(&["task", "show", id, "--json"]);
     assert_eq!(show["data"]["task"], task);
     assert_eq!(show["data"]["events"][0]["from"], Value::Null);
     assert_eq!(show["data"]["events"][0]["reason"], "created");
+    assert_eq!(
+        serde_json::from_slice::<Value>(&original).unwrap(),
+        show["data"]["events"][0]
+    );
+    assert_eq!(show["data"]["recordedState"], task["state"]);
+    assert!(show["data"].get("recorded_state").is_none());
     assert_eq!(inventory(&repo.tasks()), before);
     let output = repo.json(&[
         "task",
@@ -484,11 +504,250 @@ fn state_derivation_and_terminal_refusal_table_are_read_only() {
         };
         assert_eq!(show["data"]["task"]["state"], expected);
         assert_eq!(list["data"]["tasks"][0]["state"], expected);
-        assert_eq!(show["data"]["recorded_state"]["name"], state);
+        assert_eq!(show["data"]["recordedState"]["name"], state);
         assert_eq!(inventory(&repo.tasks()), before);
         if ["merged", "abandoned"].contains(&state) {
             repo.error(&["task", "abandon", id, "--json"], 2, "usage");
             assert_eq!(inventory(&repo.tasks()), before);
+        }
+    }
+}
+
+#[test]
+fn blocked_reason_is_preserved_with_or_without_a_branch() {
+    for branch_exists in [false, true] {
+        let repo = Repo::new();
+        let mut task = repo.create("topic");
+        task["state"] = json!({"name":"blocked", "reason":"budget"});
+        fs::write(
+            repo.directory(&task).join("task.json"),
+            serde_json::to_vec(&task).unwrap(),
+        )
+        .unwrap();
+        if branch_exists {
+            repo.git(&["branch", "topic"]);
+        }
+        let before = inventory(&repo.tasks());
+        let show = repo.json(&["task", "show", task["id"].as_str().unwrap(), "--json"]);
+        let list = repo.json(&["task", "list", "--json"]);
+        assert_eq!(show["data"]["task"]["state"], task["state"]);
+        assert_eq!(show["data"]["recordedState"], task["state"]);
+        assert_eq!(list["data"]["tasks"][0]["state"], task["state"]);
+        assert_eq!(show["warnings"], json!([]));
+        assert_eq!(list["warnings"], json!([]));
+        assert_eq!(inventory(&repo.tasks()), before);
+    }
+}
+
+#[test]
+fn corrupt_records_fail_closed_with_operational_errors_naming_the_task() {
+    for case in [
+        "invalid json",
+        "wrong schema",
+        "wrong id",
+        "unreadable",
+        "missing",
+    ] {
+        let repo = Repo::new();
+        let task = repo.create("broken");
+        let path = repo.directory(&task).join("task.json");
+        match case {
+            "invalid json" => fs::write(&path, "{").unwrap(),
+            "missing" => fs::remove_file(&path).unwrap(),
+            "unreadable" => {
+                fs::remove_file(&path).unwrap();
+                fs::create_dir(&path).unwrap();
+            }
+            _ => {
+                let mut record = task.clone();
+                if case == "wrong schema" {
+                    record["schema"] = json!(2);
+                } else {
+                    record["id"] = json!("task_different");
+                }
+                fs::write(&path, serde_json::to_vec(&record).unwrap()).unwrap();
+            }
+        }
+        let before = inventory(&repo.tasks());
+        for args in [
+            vec!["task", "show", task["id"].as_str().unwrap(), "--json"],
+            vec!["task", "abandon", task["id"].as_str().unwrap(), "--json"],
+            vec![
+                "task",
+                "new",
+                "New intent",
+                "--branch",
+                "unrelated",
+                "--json",
+            ],
+        ] {
+            let output = repo.error(&args, 1, "failed");
+            let message = output["error"]["message"].as_str().unwrap();
+            assert!(
+                message.contains(task["id"].as_str().unwrap()),
+                "{case}: {message}"
+            );
+            if args[1] == "new" {
+                assert!(message.contains("Cannot check branch reservations"));
+            }
+            assert_eq!(inventory(&repo.tasks()), before, "{case}: {args:?}");
+        }
+        assert_eq!(
+            repo.json(&["task", "list", "--json"])["data"]["tasks"][0]["state"]["name"],
+            "blocked"
+        );
+    }
+}
+
+#[test]
+fn corrupt_events_are_operational_errors_before_abandonment() {
+    for missing in [false, true] {
+        let repo = Repo::new();
+        let task = repo.create("broken-events");
+        let path = repo.directory(&task).join("events.jsonl");
+        if missing {
+            fs::remove_file(&path).unwrap();
+        } else {
+            fs::write(&path, "{\n").unwrap();
+        }
+        let before = inventory(&repo.tasks());
+        for command in ["show", "abandon"] {
+            let output = repo.error(
+                &["task", command, task["id"].as_str().unwrap(), "--json"],
+                1,
+                "failed",
+            );
+            assert!(output["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(task["id"].as_str().unwrap()));
+            assert_eq!(inventory(&repo.tasks()), before);
+        }
+    }
+}
+
+#[test]
+fn incomplete_staging_directories_are_ignored_and_successful_tasks_are_published() {
+    for phase in ["empty", "lock", "events", "record"] {
+        let repo = Repo::new();
+        let mut task = repo.create("existing");
+        let staging = repo
+            .tasks()
+            .join(format!(".staging-{}", uuid::Uuid::new_v4()));
+        fs::create_dir(&staging).unwrap();
+        if phase != "empty" {
+            fs::write(staging.join(".lock"), "").unwrap();
+        }
+        if ["events", "record"].contains(&phase) {
+            fs::copy(
+                repo.directory(&task).join("events.jsonl"),
+                staging.join("events.jsonl"),
+            )
+            .unwrap();
+        }
+        if phase == "record" {
+            task["branch"] = json!("next");
+            fs::write(
+                staging.join("task.json"),
+                serde_json::to_vec(&task).unwrap(),
+            )
+            .unwrap();
+        }
+        let staged = inventory(&staging);
+        let next = repo.create("next");
+        assert_eq!(
+            repo.json(&["task", "list", "--json"])["data"]["tasks"]
+                .as_array()
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(inventory(&staging), staged);
+        let published: Value =
+            serde_json::from_slice(&fs::read(repo.directory(&next).join("task.json")).unwrap())
+                .unwrap();
+        assert_eq!(published, next);
+        assert_eq!(
+            fs::read_dir(repo.tasks())
+                .unwrap()
+                .filter(|entry| entry
+                    .as_ref()
+                    .unwrap()
+                    .file_name()
+                    .to_str()
+                    .unwrap()
+                    .starts_with(".staging-"))
+                .count(),
+            1
+        );
+    }
+}
+
+#[test]
+fn task_creation_preserves_read_only_handoff_commands() {
+    for initialized in [false, true] {
+        let repo = Repo::new();
+        let linked = repo.root.join("linked");
+        let selector = linked.to_str().unwrap();
+        repo.git(&["worktree", "add", "--detach", selector]);
+        repo.json(&["adopt", selector, "--json"]);
+        if initialized {
+            repo.json(&["handoff", "add", selector, "Keep this note", "--json"]);
+        }
+        let show = repo.json(&["handoff", "show", selector, "--json"]);
+        let path = repo.json(&["handoff", "path", selector, "--json"]);
+        repo.create("task-after-handoff");
+        let namespace = repo.tasks().parent().unwrap().to_path_buf();
+        let manifest: Value =
+            serde_json::from_slice(&fs::read(namespace.join("repository.json")).unwrap()).unwrap();
+        assert_eq!(
+            manifest,
+            json!({"schema":1,"commonDir":repo.repo.join(".git").canonicalize().unwrap()})
+        );
+        let before = inventory(&namespace);
+        assert_eq!(
+            repo.json(&["handoff", "show", selector, "--json"])["data"],
+            show["data"]
+        );
+        assert_eq!(
+            repo.json(&["handoff", "path", selector, "--json"])["data"],
+            path["data"]
+        );
+        assert_eq!(inventory(&namespace), before);
+    }
+}
+
+#[test]
+fn task_and_handoff_validate_the_shared_repository_manifest() {
+    for contents in [
+        "{",
+        r#"{"schema":2,"commonDir":"/different/.git"}"#,
+        r#"{"schema":1,"commonDir":"/different/.git"}"#,
+    ] {
+        let repo = Repo::new();
+        let linked = repo.root.join("linked");
+        let selector = linked.to_str().unwrap();
+        repo.git(&["worktree", "add", "--detach", selector]);
+        repo.json(&["adopt", selector, "--json"]);
+        let task = repo.create("original");
+        let namespace = repo.tasks().parent().unwrap().to_path_buf();
+        fs::write(namespace.join("repository.json"), contents).unwrap();
+        let before = inventory(&namespace);
+        for args in [
+            vec!["task", "list", "--json"],
+            vec!["task", "show", task["id"].as_str().unwrap(), "--json"],
+            vec!["task", "abandon", task["id"].as_str().unwrap(), "--json"],
+            vec!["task", "new", "Unrelated intent", "--json"],
+            vec!["handoff", "show", selector, "--json"],
+            vec!["handoff", "path", selector, "--json"],
+            vec!["handoff", "add", selector, "Cannot append", "--json"],
+        ] {
+            let output = repo.error(&args, 1, "failed");
+            assert!(output["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains("repository"));
+            assert_eq!(inventory(&namespace), before, "{args:?}");
         }
     }
 }
@@ -534,7 +793,7 @@ fn push_remote_precedence_and_capture_table() {
             repo.git(&["config", key, value]);
         }
         let task = repo.create("topic");
-        assert_eq!(task["push_remote_url"], expected);
+        assert_eq!(task["pushRemoteUrl"], expected);
         let stored = fs::read_to_string(repo.directory(&task).join("task.json")).unwrap();
         assert!(!stored.contains("secret"));
         assert!(!stored.contains("token"));
@@ -546,7 +805,7 @@ fn push_remote_precedence_and_capture_table() {
         ]);
         assert_eq!(
             repo.json(&["task", "show", task["id"].as_str().unwrap(), "--json"])["data"]["task"]
-                ["push_remote_url"],
+                ["pushRemoteUrl"],
             expected
         );
     }

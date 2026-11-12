@@ -83,7 +83,7 @@ Read [removal safety and retries](docs/safety.md) and [sync strategies](docs/syn
 | `rabi task` | Manage local tasks and inspect task evidence |
 | `rabi task new` | Record intent and reserve an unused branch name locally |
 | `rabi task list` | List non-terminal local tasks (`--all` includes terminal tasks) |
-| `rabi task show` | Show a local task and its append-only event history |
+| `rabi task show` | Show a local task and its append-only event history in text or camelCase JSON |
 | `rabi task abandon` | Abandon a non-terminal local task |
 | `rabi task risk` | Classify committed changes using the base commit risk policy |
 | `rabi task status` | Read GitHub PR facts without writes |
