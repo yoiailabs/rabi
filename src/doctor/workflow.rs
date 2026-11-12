@@ -173,6 +173,54 @@ fn trigger_line(text: &str) -> (&str, bool) {
     )
 }
 
+// A valid YAML block scalar header: `|` or `>` with optional indentation
+// digit and chomping indicator, in either order.
+fn block_header(value: &str) -> bool {
+    let Some(rest) = value.strip_prefix(['|', '>']) else {
+        return false;
+    };
+    matches!(rest.len(), 0..=2)
+        && rest.chars().filter(|ch| matches!(ch, '+' | '-')).count() <= 1
+        && rest.chars().filter(|ch| matches!(ch, '1'..='9')).count() <= 1
+        && rest.chars().all(|ch| matches!(ch, '+' | '-' | '1'..='9'))
+}
+
+// A quoted scalar or flow collection that does not close on its own line can
+// wrap to column 0 and change how later lines are read, which this line-based
+// scan cannot follow. Report whether any such value exists outside block
+// scalar bodies. Multiline quoted or flow values make triggers uncertain.
+fn wrapped_value(raw: &[&str]) -> bool {
+    let mut block: Option<usize> = None;
+    for &line in raw {
+        let (indent, _) = indentation(line);
+        if let Some(parent) = block {
+            if line.trim().is_empty() || indent > parent {
+                continue;
+            }
+            block = None;
+        }
+        if empty_trigger_line(line) {
+            continue;
+        }
+        let mut content = line.trim();
+        while let Some(rest) = content.strip_prefix("- ") {
+            content = rest.trim_start();
+        }
+        let (code, complete) = trigger_line(content);
+        if !complete {
+            return true;
+        }
+        let value = code
+            .rsplit_once(": ")
+            .map_or(code, |(_, value)| value)
+            .trim();
+        if block_header(value) {
+            block = Some(indent);
+        }
+    }
+    false
+}
+
 fn inline_events(value: &str, result: &mut Triggers) {
     if let Some(inner) = value
         .strip_prefix('[')
@@ -266,7 +314,9 @@ fn triggers(contents: &str) -> Triggers {
     // A root line with an inline value cannot have indented children. An
     // indented line after it means a multiline scalar or flow collection
     // that this scan cannot follow, so it could hide later events.
-    let mut inline_root = false;
+    // Indented content before the first root key is not a valid workflow
+    // mapping either, so start as if a root value were inline.
+    let mut inline_root = true;
     let mut i = 0;
     while i < raw.len() {
         let line = raw[i];
@@ -280,7 +330,9 @@ fn triggers(contents: &str) -> Triggers {
                 inline_root = line.split_once(':').is_some_and(|(_, value)| {
                     let (value, _) = trigger_line(value.trim());
                     let value = value.trim();
-                    !value.is_empty() && !value.starts_with(['|', '>'])
+                    // An anchor or tag alone may precede a block mapping.
+                    let node_property = value.starts_with(['&', '!']) && !value.contains(' ');
+                    !value.is_empty() && !block_header(value) && !node_property
                 });
                 if let Some((key, _)) = line.split_once(':') {
                     let key = key.trim();
@@ -312,7 +364,7 @@ fn triggers(contents: &str) -> Triggers {
         }
         i += 1;
     }
-    result.uncertain |= !seen;
+    result.uncertain |= !seen || wrapped_value(&raw);
     result.pull_request |= result.uncertain;
     result.pull_request_target |= result.uncertain;
     result
@@ -560,6 +612,15 @@ mod tests {
             ("root inline values then jobs", "on:\n  push:\nname: CI # comment\npermissions: {}\njobs:\n  test:\n    runs-on: ubuntu-latest\n", false, false, false),
             ("root block scalar", "on:\n  push:\nrun-name: >-\n  folded\n", false, false, false),
             ("byte order mark", "\u{feff}on:\n  push:\npermissions: {}\n", false, false, false),
+            ("r1 empty key wraps", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        description: \"abc\nx:\n  def\"\n  pull_request_target:\npermissions: {}\n", true, true, true),
+            ("r2 comment inside wrap", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        description: \"abc\nx: # \"\n  pull_request_target:\n", true, true, true),
+            ("r3 block header inside wrap", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        description: \"abc\nx: |\"\n  pull_request_target:\n", true, true, true),
+            ("r6 flow sequence wraps", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        options: [a,\nx:\n  b]\n  pull_request_target:\n", true, true, true),
+            ("r7 indented before root", "  on:\n    pull_request_target:\n  name: \"x\non:\n  push: y\"\n", true, true, true),
+            ("r7b indented before root", "  on:\n    pull_request_target:\n  name: x\non: push\n", true, true, true),
+            ("root anchor mapping", "on:\n  push:\nenv: &e\n  A: b\njobs:\n  t:\n    env: *e\n", false, false, false),
+            ("quoted prose block body", "on:\n  workflow_dispatch:\n    inputs:\n      v:\n        description: |\n          \"starts with a quote\n          [and a bracket\n  push:\n", false, false, false),
+            ("run script block", "on:\n  push:\njobs:\n  t:\n    steps:\n      - run: |\n          echo \"unterminated\n          echo [x\n", false, false, false),
             ("nested prose block", "on:\n  workflow_dispatch:\n    inputs:\n      text:\n        description: |\n          Are * and & and ! allowed (yes)?\n", false, false, false),
         ];
         for (name, contents, pr, target, uncertain) in cases {
@@ -680,12 +741,16 @@ mod tests {
     }
 
     #[test]
-    fn nested_quoted_values_do_not_affect_triggers_table() {
+    fn nested_multiline_quoted_values_make_triggers_uncertain_table() {
+        // A quote left open on its line could wrap to column 0, so the
+        // line-based scan reports uncertainty instead of guessing.
         for (value, uncertain) in [
-            ("'pick a", false),
-            ("\"pick a", false),
-            ("'pick\n          a'", false),
-            ("\"pick\n          a\"", false),
+            ("'pick a'", false),
+            ("\"pick a\"", false),
+            ("'pick a", true),
+            ("\"pick a", true),
+            ("'pick\n          a'", true),
+            ("\"pick\n          a\"", true),
         ] {
             let contents = format!("on:\n  workflow_dispatch:\n    inputs:\n      choice:\n        description: {value}\npermissions: {{}}\n");
             let trigger = triggers(&contents);
