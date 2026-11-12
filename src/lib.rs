@@ -18,6 +18,7 @@ pub mod cli;
 pub mod config;
 pub mod context;
 pub mod error;
+mod execution_env;
 pub mod gc;
 pub mod git;
 pub mod github;

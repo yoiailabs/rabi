@@ -1065,21 +1065,38 @@ pub fn exec_in_worktree(
     name: &str,
     command: &str,
     args: &[&str],
-    env: &[(&str, &str)],
-    redirect_stdout_to_stderr: bool,
+    no_env: bool,
 ) -> Result<i32> {
     if let Some(warning) = metadata::read_problem(&context.git_root) {
         crate::output::warning("metadata_read", format!("Warning: {warning}"));
     }
     let worktree = crate::selectors::resolve(context, name, false, None)?;
-    exec_in_resolved_worktree(
-        context,
-        &worktree,
-        command,
-        args,
-        env,
-        redirect_stdout_to_stderr,
-    )
+    let environment = if no_env {
+        Default::default()
+    } else {
+        let declaration = crate::execution_env::load(&context.git_root)?;
+        if declaration.is_empty() {
+            Default::default()
+        } else if crate::trust::trust_all() || crate::trust::is_trusted_root(&context.git_root)? {
+            declaration.for_workspace(&context.git_root, Path::new(&worktree.path))?
+        } else {
+            crate::output::warning("env_untrusted", "Repository env was skipped because the repository is untrusted. Run `rabi trust add` to enable it or use `--no-env` to silence this warning.");
+            Default::default()
+        }
+    };
+    let path = Path::new(&worktree.path);
+    let owned = workspace_env(context, &worktree.name, path);
+    let pairs = environment
+        .values
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_os_str()))
+        .chain(
+            owned
+                .iter()
+                .map(|(key, value)| (key.as_str(), std::ffi::OsStr::new(value))),
+        )
+        .collect::<Vec<_>>();
+    process::inherit_os(command, args, Some(path), &pairs, false)
 }
 
 fn exec_in_resolved_worktree(
