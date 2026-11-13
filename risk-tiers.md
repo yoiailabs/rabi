@@ -6,7 +6,7 @@ This default includes source code, documentation, policy and gate documents (`ri
 
 Read the full proposed diff against its merge-base and relevant context. Escalate to **high** only when the change:
 
-- Can affect pay-as-you-go cost paid by the repository or project: GitHub Actions minutes, workflows, runners, CI configuration, infrastructure, or paid APIs or services that the project pays for. Launching coding agents (for example Claude Code or Codex) that run on the rabi user's own account is not a cost escalation by itself.
+- Can affect pay-as-you-go cost paid by the repository or project: GitHub Actions minutes, workflows, runners, CI configuration, infrastructure, or paid APIs or services that the project pays for. Running coding agents or provider sessions (for example Claude Code or Codex, via `rabi run` or `rabi task classify`) on the invoking user's own provider account is not a cost escalation by itself.
 - Adds an integration with a new external service, network endpoint, or hosted service dependency. Existing GitHub/git usage is not new.
 - May add personal or confidential information: secrets, tokens, credentials, real names, personal emails, local absolute paths, hostnames, or private repository names.
 - Publishes to or writes to any external service other than GitHub.
