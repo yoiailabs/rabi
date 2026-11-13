@@ -24,7 +24,7 @@ assessed_sha: "<full git HEAD SHA>"
 ```
 
 - Low/medium requires `human_review: "no"`: a maintainer may merge after required CI is green, review passes, every finding has a response, and no Important remains unresolved.
-- High (including unknown risk) requires `human_review: "yes"`: maintainer approval of this exact HEAD SHA is required before merge; automation must not merge it. Changes to risk classification or merge-gate rules are high under [risk-tiers.md](https://github.com/yoiailabs/rabi/blob/main/risk-tiers.md), whether they relax or tighten the gates.
+- High (including unknown risk) requires `human_review: "yes"`: maintainer approval of this exact HEAD SHA is required before merge; automation must not merge it, except `rabi task merge` after that approval as described in risk-tiers.md. Changes to risk classification or merge-gate rules are high under [risk-tiers.md](https://github.com/yoiailabs/rabi/blob/main/risk-tiers.md), whether they relax or tighten the gates.
 - Approval covers one SHA; a new HEAD requires reassessment and renewed approval for high risk.
 
 ## How to revert
