@@ -3,7 +3,7 @@ default-tier = "medium"
 
 # Path tiers are a coarse default; the written assessment under risk-tiers.md
 # decides whether a change is escalated. Floors make `rabi task merge` require
-# a maintainer approval; see risk-tiers.md for delegated changes under a floor.
+# a maintainer approval; see risk-tiers.md for floor changes that are not escalated.
 [[rule]]
 paths = [".github/workflows/**"]
 # Documents the cost floor; also covered by the built-in .github/** floor.

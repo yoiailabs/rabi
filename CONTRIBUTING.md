@@ -120,7 +120,7 @@ This process applies to this repository. Use [REVIEW.md](REVIEW.md) for review o
 
 By default, automation may approve and merge low/medium changes after required CI is green, review passes, every finding has a response, and no Important remains unresolved; a maintainer is informed afterwards. Only the escalation conditions in [risk-tiers.md](risk-tiers.md) require high with `human_review: "yes"` and approval by a maintainer for the exact full HEAD SHA. A failed, incomplete, or uncertain assessment or review is high. Security issues and bugs must be fixed regardless of tier. A new HEAD requires reassessment, updated checks and review, and renewed approval for high.
 
-All merges use `--match-head-commit` with the verified full SHA. Record maintainer approval with `rabi task approve` and merge with `rabi task merge`, under the guards and floor rules in [risk-tiers.md](risk-tiers.md).
+All merges use `--match-head-commit` with the verified full SHA. Approval recording, `rabi task merge`, and floors follow [risk-tiers.md](risk-tiers.md).
 
 ## 📚 Documentation
 

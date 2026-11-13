@@ -25,7 +25,7 @@ assessed_sha: "<full git HEAD SHA>"
 
 - Low/medium requires `human_review: "no"`: automation may approve and merge after required CI is green, review passes, every finding has a response, and no Important remains unresolved. A maintainer is informed afterwards.
 - High requires `human_review: "yes"`: a maintainer must approve this exact full HEAD SHA for the escalation conditions in [risk-tiers.md](https://github.com/yoiailabs/rabi/blob/main/risk-tiers.md), including failed, incomplete, or uncertain assessment or review.
-- Record approval with `rabi task approve` and merge with `rabi task merge`, under the guards in [risk-tiers.md](https://github.com/yoiailabs/rabi/blob/main/risk-tiers.md).
+- Approval recording, `rabi task merge`, and floors follow [risk-tiers.md](https://github.com/yoiailabs/rabi/blob/main/risk-tiers.md).
 - Security issues and bugs must be fixed before merge at every tier. All merges use `gh pr merge --squash --match-head-commit <sha>` with the verified full SHA.
 - Approval covers one SHA; a new HEAD requires reassessment and renewed approval for high risk.
 
