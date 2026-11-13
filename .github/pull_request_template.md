@@ -6,7 +6,7 @@
 
 - Commands and observed results:
 - Reviewed HEAD SHA and review result:
-- Separate fresh read-only security review result, if required:
+- Separate read-only security review result, if performed:
 - Not verified / remaining gaps:
 
 ## Risk
@@ -23,8 +23,9 @@ uncertainty: "<remaining uncertainty or none>"
 assessed_sha: "<full git HEAD SHA>"
 ```
 
-- Low/medium requires `human_review: "no"`: a maintainer may merge after required CI is green, review passes, every finding has a response, and no Important remains unresolved.
-- High (including unknown risk) requires `human_review: "yes"`: maintainer approval of this exact HEAD SHA is required before merge; automation must not merge it, except `rabi task merge` after that approval as described in risk-tiers.md. Changes to risk classification or merge-gate rules are high under [risk-tiers.md](https://github.com/yoiailabs/rabi/blob/main/risk-tiers.md), whether they relax or tighten the gates.
+- Low/medium requires `human_review: "no"`: automation or `rabi task merge` may approve and merge after required CI is green, review passes, every finding has a response, and no Important remains unresolved. A maintainer is informed afterwards.
+- High requires `human_review: "yes"`: a maintainer must approve this exact HEAD SHA for the escalation conditions in [risk-tiers.md](https://github.com/yoiailabs/rabi/blob/main/risk-tiers.md), including failed, incomplete, or uncertain assessment or review. Record approval with `rabi task approve` before using `rabi task merge`.
+- Security issues and bugs must be fixed before merge at every tier. All merges use `gh pr merge --squash --match-head-commit <sha>` with the verified SHA.
 - Approval covers one SHA; a new HEAD requires reassessment and renewed approval for high risk.
 
 ## How to revert

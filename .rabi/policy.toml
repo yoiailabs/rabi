@@ -1,0 +1,18 @@
+schema = 1
+default-tier = "medium"
+
+# Path rules are only a floor; the assessment in risk-tiers.md decides the tier.
+[[rule]]
+paths = [".github/workflows/**"]
+floor = true # GitHub Actions can affect pay-as-you-go cost.
+
+# Auto-merge tiers (low, medium) will be added once [merge] support lands.
+[ci]
+required = [
+  "Rust fmt",
+  "Rust clippy",
+  "Rust test",
+  "Rust test (musl)",
+  "Installer (ubuntu-latest)",
+  "Installer (macos-latest)",
+]
