@@ -1,9 +1,12 @@
 schema = 1
 default-tier = "medium"
 
-# Path rules are only a floor; the assessment in risk-tiers.md decides the tier.
+# For this repository, tool path tiers and floors are advisory hints until merge
+# tooling enforces risk-tiers.md. The written assessment sets the tier and must
+# explain why it is lower than a tool floor when applicable.
 [[rule]]
 paths = [".github/workflows/**"]
+# Documents the cost floor; also covered by the built-in .github/** floor.
 floor = true # GitHub Actions can affect pay-as-you-go cost.
 
 # Auto-merge tiers (low, medium) will be added once [merge] support lands.

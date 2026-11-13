@@ -23,9 +23,10 @@ uncertainty: "<remaining uncertainty or none>"
 assessed_sha: "<full git HEAD SHA>"
 ```
 
-- Low/medium requires `human_review: "no"`: automation or `rabi task merge` may approve and merge after required CI is green, review passes, every finding has a response, and no Important remains unresolved. A maintainer is informed afterwards.
-- High requires `human_review: "yes"`: a maintainer must approve this exact HEAD SHA for the escalation conditions in [risk-tiers.md](https://github.com/yoiailabs/rabi/blob/main/risk-tiers.md), including failed, incomplete, or uncertain assessment or review. Record approval with `rabi task approve` before using `rabi task merge`.
-- Security issues and bugs must be fixed before merge at every tier. All merges use `gh pr merge --squash --match-head-commit <sha>` with the verified SHA.
+- Low/medium requires `human_review: "no"`: automation may approve and merge after required CI is green, review passes, every finding has a response, and no Important remains unresolved. A maintainer is informed afterwards.
+- High requires `human_review: "yes"`: a maintainer must approve this exact full HEAD SHA for the escalation conditions in [risk-tiers.md](https://github.com/yoiailabs/rabi/blob/main/risk-tiers.md), including failed, incomplete, or uncertain assessment or review. Until `rabi task merge` is available, merge after that approval with `gh pr merge --squash --match-head-commit <sha>`.
+- Once `rabi task approve` and a non-dry-run `rabi task merge` are available, they record maintainer approval and enforce these gates. Automation may record or act on maintainer approval only when a maintainer approved that exact full HEAD SHA: never on its own initiative, for a different SHA, or after HEAD changed following approval. Run `rabi task merge` from a build of `main` or a release, never from the change being merged.
+- Security issues and bugs must be fixed before merge at every tier. All merges use `gh pr merge --squash --match-head-commit <sha>` with the verified full SHA.
 - Approval covers one SHA; a new HEAD requires reassessment and renewed approval for high risk.
 
 ## How to revert
