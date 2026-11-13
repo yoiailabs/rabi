@@ -174,6 +174,18 @@ Non-UTF-8 paths, unrecognized statuses, or malformed diff data always classify h
 
 Only committed changes are classified; the working tree and index are not read.
 
+The optional `[classifier]` section selects the written policy and provider for `task classify`:
+
+```toml
+[classifier]
+doc = "risk-tiers.md"
+provider = "codex" # Optional: codex (default) or claude.
+```
+
+`doc` is a literal repository-root-relative path to a regular UTF-8 file in the **base commit**. Absolute paths, empty components, `.` and `..` components, NUL, and symlink traversal do not identify a document. No filesystem expansion or working-tree fallback occurs. Missing or unreadable documents and blank contents produce high with `classifier:no-policy-doc`, without launching a provider. Absent `doc` or policy does the same; an empty policy is accepted only by `task classify` for this fallback. Other malformed policy data still fails validation. Unknown classifier fields and providers are invalid policy data. `--provider` overrides the policy provider.
+
+`task classify` ignores path rule tiers and `default-tier`; it retains floors and high kind, limit, and unknown-data safeguards before requesting the written assessment. Kind tiers below high do not adjust the provider verdict. `task risk` continues to use path tiers as before. Merge uses a matching exact-head classification record only when its policy/document blob IDs match the PR base SHA, retaining the deterministic safeguards; otherwise its existing path classification remains in use and `classification_record` is not evaluated. Records are local trusted Git state; see [safety](safety.md#task-classifier).
+
 The optional `[ci]` section declares required check runs for `task merge` and `task merge --dry-run`. `required` is an array of nonempty check names or `{ name, app }` tables; tables require both fields and reject unknown keys. String entries use `[ci] app`, which defaults to `github-actions`. Names and app slugs cannot be empty or whitespace-only. Check names and app slugs match exactly. A missing or empty `required` array blocks preflight with `no_required_checks`; no checks are inferred from GitHub branch protection. Other keys and types are rejected. `task risk` accepts this section without changing its classification.
 
 Merge preflight keeps using the policy at the PR’s **base SHA**, independently of `--base` (which selects the expected base branch), and requires its content to match `.rabi/policy.toml` at the current base-branch tip obtained through a GitHub GET. Comparison is byte-for-byte; absence at both is equal. If policy content differs, the approval item fails and asks to update the PR. If the tip cannot be determined or its policy cannot be read, approval also fails. This freshness check applies before auto-tier or status approval; all other preflight items are still evaluated. It reads local commit objects when available, otherwise uses read-only GitHub tree/blob endpoints. Neither path fetches or installs Git objects. Local task Git reads ignore replace refs and both default and inherited graft files. GitHub file paths, statuses, renames, additions and deletions drive classification. Local merge-base→head tree diffs supplement file kinds only when both commits and their merge-base are available locally, matching GitHub's PR comparison; their path set must match GitHub's. Policy and committed `.gitattributes` are read at the PR base SHA. Local Git state (objects, config and attribute files) is trusted input, not verified against GitHub; see [safety](safety.md#task-approval-and-merge). Missing local commits or an unavailable merge-base force high with `unknown:kinds`; truncated GitHub files prevent classification.

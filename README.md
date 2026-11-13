@@ -86,6 +86,7 @@ Read [removal safety and retries](docs/safety.md) and [sync strategies](docs/syn
 | `rabi task show` | Show a local task and its append-only event history in text or camelCase JSON |
 | `rabi task abandon` | Abandon a non-terminal local task |
 | `rabi task risk` | Classify committed changes using the base commit risk policy |
+| `rabi task classify` | Assess committed diffs using the written policy and record an exact-head verdict |
 | `rabi task status` | Read GitHub PR facts without writes |
 | `rabi task approve` | Approve the exact PR head with a commit status |
 | `rabi task merge` | Merge after preflight and approval; `--dry-run` evaluates only |

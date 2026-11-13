@@ -42,6 +42,8 @@ pub(crate) struct Policy {
     pub merge: Merge,
     #[serde(default)]
     pub approval: Approval,
+    #[serde(default)]
+    pub classifier: Classifier,
 }
 
 impl Default for Policy {
@@ -55,6 +57,7 @@ impl Default for Policy {
             ci: Ci::default(),
             merge: Merge::default(),
             approval: Approval::default(),
+            classifier: Classifier::default(),
         }
     }
 }
@@ -124,6 +127,13 @@ impl Policy {
         }
         Ok(policy)
     }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct Classifier {
+    pub doc: Option<String>,
+    pub provider: Option<super::classifier_provider::Provider>,
 }
 
 #[derive(Debug, Default, Deserialize)]
