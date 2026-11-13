@@ -110,17 +110,17 @@ cargo test --locked
 
 ### Review process
 
-This process applies to this repository. Use [REVIEW.md](REVIEW.md) for review output and [risk-tiers.md](risk-tiers.md) for merge decisions; these are development practices. Where risk-tiers.md names rabi commands, those commands record approvals and enforce the gates; they do not replace them.
+This process applies to this repository. Use [REVIEW.md](REVIEW.md) for review output and [risk-tiers.md](risk-tiers.md) for merge decisions; these are development practices.
 
 1. Implement and run the required checks above. Classify the full proposed change under [risk-tiers.md](risk-tiers.md), judging behavioral and security impact. Before opening a draft PR against `main`, obtain a read-only review of the full diff against its merge-base, including the task, completion criteria, repository guidance, and actual check results.
 2. Findings use [Important], [Nit], or [Pre-existing], with file:line evidence and bug class grouping. Respond to every finding: fixed, or declined with a reason. Fix the whole bug class. Resolve every Important before merging; a declined Important requires reviewer agreement.
 3. After fixes, rerun affected checks and have the changes reviewed. Verify prior findings and responses as well as any new issues. Review must cover the current HEAD before merge.
-4. Changes that actually affect trust, hooks, delete/remove (including gc), or sync behavior also require a separate read-only security review. Judge this trigger by behavior, not touched paths; when in doubt, obtain it. Address its findings under the same response and Important rules.
+4. For changes to trust, hooks, delete/remove (including gc), or sync behavior, use the focused security review practice in [REVIEW.md](REVIEW.md). This is not a separate merge gate; address findings under the same response and Important rules.
 5. Assess the final committed HEAD and record the risk assessment using the YAML block in [risk-tiers.md](risk-tiers.md). When a PR is requested, open a draft using the four template sections: Summary, Testing, Risk, How to revert. Include commands and observed results, verification gaps, reviewed HEAD SHA, review results, and the risk assessment.
 
-A maintainer may merge low/medium changes after required CI is green, review passes, every finding has a response, and no Important remains unresolved. High-risk changes require maintainer approval for the specific HEAD SHA before merge; automation (including CI and bots) must not merge them, except `rabi task merge` after maintainer approval as described in [risk-tiers.md](risk-tiers.md). Unknown risk is high. Approval covers one SHA: new commits require updated checks, review, risk assessment, and renewed approval for high risk. Follow the current-HEAD checks and guarded squash command in [risk-tiers.md](risk-tiers.md).
+By default, automation may approve and merge low/medium changes after required CI is green, review passes, every finding has a response, and no Important remains unresolved; a maintainer is informed afterwards. Only the escalation conditions in [risk-tiers.md](risk-tiers.md) require high with `human_review: "yes"` and approval by a maintainer for the exact full HEAD SHA. A failed, incomplete, or uncertain assessment or review is high. Security issues and bugs must be fixed regardless of tier. A new HEAD requires reassessment, updated checks and review, and renewed approval for high.
 
-Changes to risk classification or merge-gate rules are high with `human_review: "yes"` under canonical [risk-tiers.md](risk-tiers.md), whether they relax or tighten the gates.
+Until `rabi task merge` is available, after a maintainer approves a high change's exact full HEAD SHA, merge with `gh pr merge --squash --match-head-commit <sha>`. All merges use this command with the verified full SHA. Once `rabi task approve` and a non-dry-run `rabi task merge` are available, they record maintainer approval and enforce these gates. Automation may record or act on maintainer approval only when a maintainer approved that exact full HEAD SHA: never on its own initiative, for a different SHA, or after HEAD changed following approval. Run `rabi task merge` from a build of `main` or a release, never from the change being merged.
 
 ## 📚 Documentation
 
@@ -154,8 +154,8 @@ To release a new version of rabi:
 
 2. **Review and merge the version pull request**
    - Confirm `Cargo.toml` and `Cargo.lock` show the same version
-   - Obtain maintainer approval for the specific HEAD SHA and merge under [risk-tiers.md](risk-tiers.md); release/tag changes are high risk and must not be merged by automation
-   - Squash-merge the reviewed exact HEAD SHA into `main`; record the full merge commit SHA for the draft target
+   - Apply [risk-tiers.md](risk-tiers.md): automation may approve and merge version changes, create tags, and publish GitHub Releases by default, informing a maintainer afterwards; escalate only for the listed conditions
+   - After required CI and review pass, squash-merge the reviewed exact HEAD SHA into `main` with `gh pr merge --squash --match-head-commit <sha>`; record the full merge commit SHA for the draft target
 
 3. **Create a draft, then dispatch the release build**
 

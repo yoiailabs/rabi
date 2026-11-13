@@ -1,8 +1,10 @@
 # Review guide
 
-This guide applies to the rabi repository. Read AGENTS.md, CLAUDE.md, the task and completion criteria, the diff, and check results. Review behavior and root causes, including guidance made inaccurate by the change. Judge merge risk by behavioral and security substance under [risk-tiers.md](risk-tiers.md), not touched paths. A separate security review is required when trust, hooks, delete/remove (including gc), or sync behavior is actually affected; when in doubt, obtain it.
+This guide applies to the rabi repository. Read AGENTS.md, CLAUDE.md, the task and completion criteria, the diff, and check results. Review behavior and root causes, including guidance made inaccurate by the change. Apply the escalation conditions in [risk-tiers.md](risk-tiers.md) to the full change.
 
-Changes to risk classification or merge-gate rules are high with `human_review: "yes"` under canonical [risk-tiers.md](risk-tiers.md), whether they relax or tighten the gates.
+Low/medium changes may be approved and merged automatically after required CI and review pass, informing a maintainer afterwards. High requires approval by a maintainer for the exact HEAD SHA. Failed, incomplete, or uncertain assessment or review is high. Security issues and bugs must be fixed before merge at every tier; auto-approval never skips them.
+
+For changes to trust, hooks, delete/remove (including gc), or sync behavior, use a separate read-only security review as a focused review practice, not a separate merge gate. Resolve its findings under the same rules below.
 
 Prioritize:
 
@@ -28,6 +30,6 @@ Start with actual counts, including unresolved prior Important findings, for exa
 
 Skip `.git/`, `.turbo/`, and `target/`; check generated artifacts through their source and observable output. Keep Cargo.lock, installer, CI/release changes, and new source paths in scope.
 
-Review without modifying the checkout. Cover the full proposed diff against its merge-base and relevant context. After fixes, verify prior findings and responses, and review the resulting changes for new issues. Update existing finding IDs rather than duplicating findings. Every finding needs a response: fixed, or declined with a reason. A declined Important is resolved only when the reviewer accepts the evidence. Before merge, ensure the review covers the current HEAD. See [the process](CONTRIBUTING.md#review-process) and [risk tiers](risk-tiers.md) for security review and merge gates.
+Review without modifying the checkout. Cover the full proposed diff against its merge-base and relevant context. After fixes, verify prior findings and responses, and review the resulting changes for new issues. Update existing finding IDs rather than duplicating findings. Every finding needs a response: fixed, or declined with a reason. A declined Important is resolved only when the reviewer accepts the evidence. Before merge, ensure the review covers the current HEAD. See [the process](CONTRIBUTING.md#review-process) and [approval policy](risk-tiers.md) for merge gates and the required `--match-head-commit` guard.
 
 End with `Verdict: revise` if any Important remains unresolved or evidence is insufficient to judge; otherwise use `Verdict: pass`. Nit and Pre-existing findings alone do not require revision.
