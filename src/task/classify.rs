@@ -57,7 +57,7 @@ fn raise(file: &mut FileRisk, tier: Tier, reason: impl Into<String>) {
     add_reason(&mut file.reasons, reason);
 }
 
-fn classify_path(policy: &Policy, path: &[u8], file: &mut FileRisk) {
+fn classify_path(policy: &Policy, path: &[u8], file: &mut FileRisk, path_tiers: bool) {
     // These ASCII built-ins remain identifiable even when the rest of a path
     // cannot be decoded. Unknown encodings must not remove a built-in floor.
     let builtin = if path.eq_ignore_ascii_case(b".rabi/policy.toml") {
@@ -89,13 +89,13 @@ fn classify_path(policy: &Policy, path: &[u8], file: &mut FileRisk) {
                 if rule.floor {
                     file.floor = true;
                     raise(file, Tier::High, format!("floor:rule:{pattern}"));
-                } else if let Some(tier) = rule.tier {
+                } else if let Some(tier) = rule.tier.filter(|_| path_tiers) {
                     raise(file, tier, format!("rule:{pattern}"));
                 }
             }
         }
     }
-    if !matched {
+    if !matched && path_tiers {
         raise(file, policy.default_tier, "default-tier");
     }
     if let Some(pattern) = builtin {
@@ -117,6 +117,19 @@ fn known_status(status: &str) -> bool {
 }
 
 pub(crate) fn classify(policy: &Policy, entries: &[ChangedEntry]) -> Classification {
+    classify_with_path_tiers(policy, entries, true)
+}
+
+/// Floors, kinds, limits and unknown data, independent of advisory path tiers.
+pub(super) fn safeguards(policy: &Policy, entries: &[ChangedEntry]) -> Classification {
+    classify_with_path_tiers(policy, entries, false)
+}
+
+fn classify_with_path_tiers(
+    policy: &Policy,
+    entries: &[ChangedEntry],
+    path_tiers: bool,
+) -> Classification {
     let mut result = Classification {
         tier: Tier::Low,
         floor: false,
@@ -140,9 +153,9 @@ pub(crate) fn classify(policy: &Policy, entries: &[ChangedEntry]) -> Classificat
             reasons: Vec::new(),
         };
         if let Some(path) = &entry.old_path {
-            classify_path(policy, path, &mut file);
+            classify_path(policy, path, &mut file, path_tiers);
         }
-        classify_path(policy, &entry.path, &mut file);
+        classify_path(policy, &entry.path, &mut file, path_tiers);
         if !known_status(&entry.status) {
             raise(&mut file, Tier::High, "unknown:status");
         }

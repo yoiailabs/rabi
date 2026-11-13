@@ -14,6 +14,7 @@ pub(crate) struct Local {
     pub head: Option<String>,
     pub kinds: Option<Vec<ChangedEntry>>,
     pub policy_matches_base_tip: Option<bool>,
+    pub classification_record: Option<super::assessment::Record>,
 }
 
 #[derive(Debug, Serialize)]
@@ -61,6 +62,15 @@ pub(super) fn classify_files(
     facts: &Snapshot,
     policy: &Policy,
     kinds: Option<&[ChangedEntry]>,
+) -> std::result::Result<Classification, &'static str> {
+    classify_files_inner(facts, policy, kinds, true)
+}
+
+fn classify_files_inner(
+    facts: &Snapshot,
+    policy: &Policy,
+    kinds: Option<&[ChangedEntry]>,
+    path_tiers: bool,
 ) -> std::result::Result<Classification, &'static str> {
     if facts.files_truncated {
         return Err("GitHub file list is truncated");
@@ -123,7 +133,11 @@ pub(super) fn classify_files(
             }
         })
         .collect();
-    let mut classification = classify::classify(policy, &entries);
+    let mut classification = if path_tiers {
+        classify::classify(policy, &entries)
+    } else {
+        classify::safeguards(policy, &entries)
+    };
     if kinds.is_none() {
         classification.tier = Tier::High;
         if !classification
@@ -243,8 +257,29 @@ pub(crate) fn evaluate(
         reason,
         json!({"checks":checks,"checksIncomplete":facts.checks_incomplete}),
     ));
-    let (classification, risk) = match classify_files(facts, policy, local.kinds.as_deref()) {
-        Ok(classification) => {
+    let record = local.classification_record.as_ref();
+    let (classification, risk) = match classify_files_inner(
+        facts,
+        policy,
+        local.kinds.as_deref(),
+        record.is_none(),
+    ) {
+        Ok(mut classification) => {
+            if let Some(record) = record {
+                // Only deterministic escalation survives; advisory rule/default
+                // tiers never change a fresh policy-document verdict.
+                classification.tier = if classification.tier == Tier::High {
+                    Tier::High
+                } else {
+                    record.tier
+                };
+                classification.floor |= record.floor;
+                for reason in &record.reasons {
+                    if !classification.reasons.contains(reason) {
+                        classification.reasons.push(reason.clone());
+                    }
+                }
+            }
             let risk = item(
                 "risk_tier",
                 true,
@@ -327,11 +362,19 @@ pub(crate) fn evaluate(
         "No task review records yet",
         Value::Null,
     ));
-    items.push(pending(
-        "classification_record",
-        "No task classification records yet",
-        Value::Null,
-    ));
+    items.push(match record {
+        Some(record) => item(
+            "classification_record",
+            true,
+            "Classification record matches exact PR head and base policy/document blobs",
+            json!(record),
+        ),
+        None => pending(
+            "classification_record",
+            "No matching task classification record (missing, unreadable, or stale)",
+            Value::Null,
+        ),
+    });
     let requested: Vec<_> = facts
         .reviews
         .iter()
@@ -797,6 +840,7 @@ mod tests {
                     head,
                     kinds,
                     policy_matches_base_tip: Some(true),
+                    classification_record: None,
                 },
                 (name == "explicit base").then_some("release"),
             );
@@ -1003,6 +1047,7 @@ mod tests {
                 head: Some(facts.pr.head_sha.clone()),
                 kinds,
                 policy_matches_base_tip: Some(true),
+                classification_record: None,
             };
             for freshness in [Some(false), None] {
                 local.policy_matches_base_tip = freshness;
@@ -1026,6 +1071,77 @@ mod tests {
             if automatic && !floor {
                 assert_eq!(approval.reason, "auto tier");
             }
+        }
+    }
+
+    #[test]
+    fn matching_record_cannot_lower_deterministic_safeguards() {
+        for case in [
+            "floor",
+            "binary",
+            "symlink",
+            "submodule",
+            "exec-bit",
+            "unknown",
+        ] {
+            let mut facts: Snapshot =
+                serde_json::from_str(include_str!("../../tests/fixtures/task_facts.json")).unwrap();
+            if case == "floor" {
+                facts.files[0].filename = ".github/config".into();
+            }
+            let policy = Policy::parse("schema=1\ndefault-tier='low'\n[merge]\nauto=['low','medium']\n[ci]\nrequired=['Rust test']").unwrap();
+            let entry = ChangedEntry {
+                path: facts.files[0].filename.as_bytes().to_vec(),
+                old_path: None,
+                status: "M".into(),
+                old_mode: 0o100644,
+                new_mode: match case {
+                    "symlink" => 0o120000,
+                    "submodule" => 0o160000,
+                    "exec-bit" => 0o100755,
+                    _ => 0o100644,
+                },
+                added: 2,
+                deleted: 1,
+                binary: case == "binary",
+                unknown: if case == "unknown" {
+                    vec!["unknown:raw".into()]
+                } else {
+                    vec![]
+                },
+            };
+            let record = serde_json::from_value(json!({
+                "schema":1,"headSha":facts.pr.head_sha,"baseSha":facts.pr.base_sha,
+                "mergeBaseSha":facts.pr.base_sha,"policyBlobSha":null,"docBlobSha":null,
+                "tier":"low","floor":false,"reasons":["Completed assessment"],
+                "uncertainty":"none","provider":"claude","createdAt":"2026-01-01T00:00:00Z"
+            }))
+            .unwrap();
+            let evaluation = evaluate(
+                &facts,
+                &policy,
+                &Local {
+                    head: Some(facts.pr.head_sha.clone()),
+                    kinds: Some(vec![entry]),
+                    policy_matches_base_tip: Some(true),
+                    classification_record: Some(record),
+                },
+                None,
+            );
+            assert_eq!(
+                evaluation.classification.as_ref().unwrap().tier,
+                Tier::High,
+                "{case}"
+            );
+            assert!(
+                matches!(evaluation.items[4].result, Outcome::Fail),
+                "{case}"
+            );
+            assert!(
+                matches!(evaluation.items[6].result, Outcome::Pass),
+                "{case}"
+            );
+            assert!(!evaluation.permits_merge(true), "{case}");
         }
     }
 }

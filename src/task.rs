@@ -1,4 +1,6 @@
 //! Task bookkeeping and inspection. Policy/classification have no Git I/O.
+pub(crate) mod assessment;
+mod classifier_provider;
 mod classify;
 mod diff;
 mod policy;
@@ -20,6 +22,10 @@ pub(crate) struct Report {
     policy: PolicySource,
     #[serde(flatten)]
     classification: Classification,
+    #[serde(skip)]
+    entries: Vec<classify::ChangedEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    record: Option<assessment::Record>,
 }
 
 #[derive(serde::Serialize)]
@@ -150,20 +156,7 @@ fn resolves_commit(root: &Path, reference: &str) -> Result<bool> {
 /// Read tree objects directly. A failed <commit>:<path> lookup can stat the
 /// checkout for diagnostics; no path-expression failure is used here.
 fn policy_blob(root: &Path, base_sha: &str) -> Result<Option<Vec<u8>>> {
-    let oid_bytes = match base_sha.len() {
-        40 => 20,
-        64 => 32,
-        _ => return Err(Error::msg("Unsupported Git object ID length")),
-    };
-    let Some((mode, directory)) =
-        tree_entry(root, &format!("{base_sha}^{{tree}}"), b".rabi", oid_bytes)?
-    else {
-        return Ok(None);
-    };
-    if mode != 0o40000 {
-        return Ok(None);
-    }
-    let Some((mode, blob)) = tree_entry(root, &directory, b"policy.toml", oid_bytes)? else {
+    let Some((mode, blob)) = committed_entry(root, base_sha, ".rabi/policy.toml")? else {
         return Ok(None);
     };
     if !matches!(mode, 0o100644 | 0o100755) {
@@ -172,6 +165,36 @@ fn policy_blob(root: &Path, base_sha: &str) -> Result<Option<Vec<u8>>> {
         ));
     }
     read(root, &["cat-file", "blob", &blob]).map(Some)
+}
+
+/// Resolve only literal, root-relative tree components; never consult checkout files.
+fn committed_entry(root: &Path, sha: &str, path: &str) -> Result<Option<(u32, String)>> {
+    let oid_bytes = match sha.len() {
+        40 => 20,
+        64 => 32,
+        _ => return Err(Error::msg("Unsupported Git object ID length")),
+    };
+    let parts: Vec<_> = path.split('/').collect();
+    if parts
+        .iter()
+        .any(|part| part.is_empty() || matches!(*part, "." | "..") || part.contains('\0'))
+    {
+        return Ok(None);
+    }
+    let mut tree = format!("{sha}^{{tree}}");
+    for (index, part) in parts.iter().enumerate() {
+        let Some((mode, oid)) = tree_entry(root, &tree, part.as_bytes(), oid_bytes)? else {
+            return Ok(None);
+        };
+        if index + 1 == parts.len() {
+            return Ok(Some((mode, oid)));
+        }
+        if mode != 0o40000 {
+            return Ok(None);
+        }
+        tree = oid;
+    }
+    Ok(None)
 }
 
 fn tree_entry(
@@ -231,6 +254,14 @@ fn commit(root: &Path, reference: &str) -> Result<String> {
 }
 
 pub(crate) fn inspect(root: &Path, base: Option<&str>) -> Result<Report> {
+    inspect_inner(root, base, false)
+}
+
+fn inspect_for_classifier(root: &Path, base: Option<&str>) -> Result<Report> {
+    inspect_inner(root, base, true)
+}
+
+fn inspect_inner(root: &Path, base: Option<&str>, classifier: bool) -> Result<Report> {
     let base_ref = match base {
         Some(reference) => reference.to_owned(),
         None => default_branch(root)?,
@@ -244,7 +275,11 @@ pub(crate) fn inspect(root: &Path, base: Option<&str>) -> Result<Report> {
     let policy = if let Some(bytes) = blob {
         let contents = std::str::from_utf8(&bytes)
             .map_err(|_| Error::msg("Invalid .rabi/policy.toml: policy must be UTF-8"))?;
-        Policy::parse(contents)?
+        if classifier && contents.trim().is_empty() {
+            Policy::default()
+        } else {
+            Policy::parse(contents)?
+        }
     } else {
         Policy::default()
     };
@@ -274,6 +309,8 @@ pub(crate) fn inspect(root: &Path, base: Option<&str>) -> Result<Report> {
             },
         },
         classification: classify::classify(&policy, &entries),
+        entries,
+        record: None,
     })
 }
 
@@ -319,6 +356,25 @@ impl Report {
             "Reasons: {}",
             visible_text(&self.classification.reasons.join(", "))
         );
+        if let Some(record) = &self.record {
+            outln!(
+                "Policy blob: {}",
+                record.policy_blob_sha.as_deref().unwrap_or("none")
+            );
+            outln!(
+                "Document blob: {}",
+                record.doc_blob_sha.as_deref().unwrap_or("none")
+            );
+            outln!(
+                "Classifier provider: {}",
+                match record.provider {
+                    Some(classifier_provider::Provider::Claude) => "claude",
+                    None => "none",
+                }
+            );
+            outln!("Uncertainty: {}", visible_text(&record.uncertainty));
+            outln!("Recorded: {}", record.created_at);
+        }
         for file in &self.classification.files {
             let path = match &file.old_path {
                 Some(old) => format!("{} → {}", visible_text(old), visible_text(&file.path)),
@@ -408,12 +464,12 @@ pub(crate) fn github_report(
     } else {
         None
     };
-    let kinds = if let Some(merge_base) = merge_base {
+    let kinds = if let Some(merge_base) = &merge_base {
         let attributes = format!("--attr-source={}", facts.pr.base_sha);
         let mut raw_args = vec![attributes.as_str()];
-        raw_args.extend(diff_args("--raw", &merge_base, &facts.pr.head_sha));
+        raw_args.extend(diff_args("--raw", merge_base, &facts.pr.head_sha));
         let mut numstat_args = vec![attributes.as_str()];
-        numstat_args.extend(diff_args("--numstat", &merge_base, &facts.pr.head_sha));
+        numstat_args.extend(diff_args("--numstat", merge_base, &facts.pr.head_sha));
         Some(diff::parse(
             &read(root, &raw_args)?,
             &read(root, &numstat_args)?,
@@ -465,6 +521,15 @@ pub(crate) fn github_report(
         .as_ref()
         .map(|tree| commit(Path::new(&tree.path), "HEAD"))
         .transpose()?;
+    let classification_record = merge_base.as_deref().and_then(|merge_base| {
+        assessment::matching(
+            root,
+            &facts.pr.head_sha,
+            &facts.pr.base_sha,
+            merge_base,
+            &policy,
+        )
+    });
     let report = preflight::evaluate(
         &facts,
         &policy,
@@ -472,6 +537,7 @@ pub(crate) fn github_report(
             head,
             kinds,
             policy_matches_base_tip,
+            classification_record,
         },
         base,
     );

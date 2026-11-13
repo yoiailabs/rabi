@@ -1022,13 +1022,27 @@ fn doctor(args: &[String]) -> Result<i32> {
 }
 
 fn task_risk(args: &[String]) -> Result<i32> {
-    let parsed = args::parse(args, &command_options("task risk"), true)?;
+    task_assess(args, false)
+}
+fn task_classify(args: &[String]) -> Result<i32> {
+    task_assess(args, true)
+}
+fn task_assess(args: &[String], classifier: bool) -> Result<i32> {
+    let command = if classifier {
+        "task classify"
+    } else {
+        "task risk"
+    };
+    let parsed = args::parse(args, &command_options(command), true)?;
     if parsed.positionals.len() > 1 {
-        return Err(Error::validation(
-            "Usage: rabi task risk [SEL] [--base REF]",
-        ));
+        return Err(Error::validation(format!(
+            "Usage: rabi {command} [SEL] [--base REF] [options]"
+        )));
     }
     let base = single_value(&parsed, "base")?;
+    let provider = single_value(&parsed, "provider")?
+        .map(crate::task::assessment::parse_provider)
+        .transpose()?;
     let repository = selected_repository(&parsed)?;
     let cwd = std::env::current_dir().map_err(|error| Error::msg(error.to_string()))?;
     crate::task::check_git(repository.as_deref().unwrap_or(&cwd))?;
@@ -1041,8 +1055,12 @@ fn task_risk(args: &[String]) -> Result<i32> {
             .map(String::as_str)
             .unwrap_or("."),
     )?;
-    worktree::validate_checkout(&context, &tree, "task risk")?;
-    let report = crate::task::inspect(Path::new(&tree.path), base)?;
+    worktree::validate_checkout(&context, &tree, command)?;
+    let report = if classifier {
+        crate::task::assessment::inspect(Path::new(&tree.path), base, provider)?
+    } else {
+        crate::task::inspect(Path::new(&tree.path), base)?
+    };
     if crate::output::json() {
         emit_json(&report)
     } else {
@@ -2116,6 +2134,11 @@ fn command_options(key: &str) -> Vec<Opt> {
         "task show" => vec![repo_flag()],
         "task abandon" => vec![repo_flag(), value_flag("reason", None)],
         "task risk" => vec![repo_flag(), value_flag("base", None)],
+        "task classify" => vec![
+            repo_flag(),
+            value_flag("base", None),
+            value_flag("provider", None),
+        ],
         "task status" => vec![repo_flag()],
         "task merge" => vec![
             repo_flag(),
@@ -2723,6 +2746,12 @@ static COMMANDS: &[Command] = &[
                 name: "abandon",
                 help_key: "task abandon",
                 run: task_abandon,
+                children: &[],
+            },
+            Command {
+                name: "classify",
+                help_key: "task classify",
+                run: task_classify,
                 children: &[],
             },
             Command {

@@ -232,7 +232,10 @@ fn codex_command(
     Ok(command)
 }
 
-fn resolve_binary_in(path: Option<&std::ffi::OsStr>, binaries: &[&str]) -> Option<PathBuf> {
+pub(crate) fn resolve_binary_in(
+    path: Option<&std::ffi::OsStr>,
+    binaries: &[&str],
+) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;
     let directories: Vec<_> = std::env::split_paths(path?).collect();
     for binary in binaries {

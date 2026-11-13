@@ -2176,7 +2176,7 @@
     "task": {
       "name": "task",
       "description": "Manage local tasks, inspect PR facts, approve commits and gate merges",
-      "usage": "rabi task new|list|show|abandon|risk|status|approve|merge [arguments] [options]",
+      "usage": "rabi task new|list|show|abandon|risk|classify|status|approve|merge [arguments] [options]",
       "options": [
         {
           "name": "repo",
@@ -2260,6 +2260,65 @@
         {
           "command": "rabi task risk --base main --json",
           "description": "Classify against the locally committed main policy"
+        }
+      ]
+    },
+    "task classify": {
+      "name": "task classify",
+      "description": "Assess committed changes against the written base policy and record an exact-head verdict",
+      "usage": "rabi task classify [SEL] [--base REF] [--provider claude] [options]",
+      "options": [
+        {
+          "name": "base",
+          "type": "string",
+          "description": "Base commit-ish; defaults to origin/<default branch> (must resolve locally)"
+        },
+        {
+          "name": "provider",
+          "type": "string",
+          "description": "Classifier provider: claude only; overrides the base policy default (claude when absent)"
+        },
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Repository to operate on; uses the shared workspace selector rules",
+          "example": "--repo owner/repo"
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "SEL, --base and -R semantics match task risk. Reads the policy and classifier.doc only from the base commit; working-tree and head documents are ignored. Claude chooses its default model unless classifier.model is set, then that value is passed as --model.",
+        "Floors and high kind, limit or unknown-data safeguards force high without a provider. Path rule/default tiers are ignored. Missing documents and diffs above 400 KiB yield high.",
+        "Invokes one fresh provider in an empty temporary directory, with a 10-minute deadline and GitHub credentials removed. Only tool-less providers are supported: Claude disables all tools. Codex requires an injected model catalog to guarantee no tools and is unsupported. Provider API costs may apply.",
+        "Provider failures, invalid answers and uncertainty yield high with classifier:* reasons and exit 0. Records atomically replace the exact-head JSON file under the Git common directory rabi/classifications.",
+        "Merge preflight consumes records only when the PR head, locally computed PR merge-base and base policy/document blob IDs match. Missing or stale records, or an unavailable local PR merge-base, remain not evaluated.",
+        "Git 2.44 or later is required; protected reads match task risk. Invalid usage exits 2; Git, policy and record I/O errors retain existing codes."
+      ],
+      "examples": [
+        {
+          "command": "rabi task classify --base main --provider claude --json",
+          "description": "Assess the committed diff using the written policy at main"
         }
       ]
     },
@@ -2405,6 +2464,7 @@
         "SEL defaults to current workspace; pr:N selects any PR in the selected repository. Workspace selection uses its recorded PR or exactly one open same-repository PR for its branch.",
         "Dry-run uses read-only GET facts and exits 0 for blocked, incomplete or ready. Policy is read from the PR base SHA.",
         "Real merges refuse failed or unevaluated items with exit 4. --external-review covers only review_record and classification_record; approval must pass. pr:N still leaves the local head comparison unevaluated.",
+        "classification_record passes only for a local record matching the exact PR head, locally computed PR merge-base and base policy/document blob IDs. A match supplies the tier with deterministic safeguards; missing or stale records retain path classification and remain not evaluated.",
         "Approval passes for a non-floor auto tier, or the latest successful rabi/approval status on the exact head from a policy approver. High cannot be auto.",
         "Merge uses the policy method (squash by default) with --match-head-commit, then re-reads facts even after a gh failure. No admin bypass, auto-merge or branch deletion."
       ]
