@@ -153,8 +153,12 @@ pub(crate) fn inspect(
             let provider = provider.or(policy.classifier.provider).unwrap_or_default();
             record.provider = Some(provider);
             Some(
-                classifier_provider::run(provider, &prompt(&doc, diff))
-                    .and_then(|answer| parse(&answer)),
+                classifier_provider::run(
+                    provider,
+                    &prompt(&doc, diff),
+                    policy.classifier.model.as_deref(),
+                )
+                .and_then(|answer| parse(&answer)),
             )
         } else {
             Some(Err("classifier:diff-encoding"))
@@ -214,7 +218,13 @@ fn save(root: &Path, record: &Record) -> Result<()> {
 }
 
 /// An unreadable or stale local record never supplies merge authorization.
-pub(super) fn matching(root: &Path, head: &str, base: &str, policy: &Policy) -> Option<Record> {
+pub(super) fn matching(
+    root: &Path,
+    head: &str,
+    base: &str,
+    merge_base: &str,
+    policy: &Policy,
+) -> Option<Record> {
     if !matches!(head.len(), 40 | 64) || !head.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return None;
     }
@@ -239,6 +249,7 @@ pub(super) fn matching(root: &Path, head: &str, base: &str, policy: &Policy) -> 
     let doc_oid = document_oid(root, base, policy).ok()?;
     if record.schema != 1
         || record.head_sha != head
+        || record.merge_base_sha != merge_base
         || record.policy_blob_sha != policy_oid
         || record.doc_blob_sha != doc_oid
         || record.reasons.is_empty()

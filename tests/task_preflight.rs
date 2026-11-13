@@ -1044,7 +1044,7 @@ fn base_tip_lookup_encodes_the_branch_as_a_path_segment() {
 }
 
 #[test]
-fn classification_records_bind_head_policy_and_document_for_dry_run() {
+fn classification_records_bind_head_merge_base_policy_and_document_for_dry_run() {
     let mut repo = Repo::new();
     let old_base = repo.base.clone();
     repo.git(&["checkout", "main"]);
@@ -1069,7 +1069,7 @@ fn classification_records_bind_head_policy_and_document_for_dry_run() {
     let record = json!({
         "schema":1,"headSha":repo.head,"baseSha":repo.base,"mergeBaseSha":repo.base,
         "policyBlobSha":policy,"docBlobSha":doc,"tier":"low","floor":false,
-        "reasons":["Completed policy assessment"],"uncertainty":"none","provider":"codex",
+        "reasons":["Completed policy assessment"],"uncertainty":"none","provider":"claude",
         "createdAt":"2026-01-01T00:00:00Z"
     });
     let directory = repo.repo.join(".git/rabi/classifications");
@@ -1100,7 +1100,7 @@ fn classification_records_bind_head_policy_and_document_for_dry_run() {
         fs::write(&path, serde_json::to_vec(&current).unwrap()).unwrap();
         check("pass", tier, if tier == "high" { "fail" } else { "pass" });
     }
-    for key in ["headSha", "policyBlobSha", "docBlobSha"] {
+    for key in ["headSha", "mergeBaseSha", "policyBlobSha", "docBlobSha"] {
         let mut stale = record.clone();
         stale[key] = json!("0000000000000000000000000000000000000000");
         fs::write(&path, serde_json::to_vec(&stale).unwrap()).unwrap();
@@ -1122,5 +1122,65 @@ fn classification_records_bind_head_policy_and_document_for_dry_run() {
     repo.serve(&repo.responses());
     let report = repo.json(&["task", "merge", "--dry-run", "--json"]);
     assert_eq!(report["data"]["items"][6]["result"], "not_evaluated");
+    repo.assert_get_only();
+}
+
+#[test]
+fn classification_record_must_cover_the_full_pr_range_with_a_local_merge_base() {
+    let mut repo = Repo::new();
+    let old_base = repo.base.clone();
+    repo.git(&["checkout", "main"]);
+    repo.write("policy.md", "Classify behavior-neutral edits as low.\n");
+    repo.write(".rabi/policy.toml", "schema=1\ndefault-tier='high'\n[classifier]\ndoc='policy.md'\n[ci]\nrequired=['Rust test']\n[merge]\nauto=['low']\n");
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-m", "classifier policy"]);
+    repo.base = repo.git(&["rev-parse", "HEAD"]);
+    repo.git(&["rebase", "--onto", &repo.base, &old_base, "topic"]);
+    let first_commit = repo.git(&["rev-parse", "HEAD"]);
+    repo.write("docs/0.md", "second change\n");
+    repo.git(&["add", "."]);
+    repo.git(&["commit", "-m", "second topic commit"]);
+    repo.head = repo.git(&["rev-parse", "HEAD"]);
+    repo.serve(&repo.responses());
+    test_support::write_executable(
+        repo.root.join("bin/claude"),
+        "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' '{\"tier\":\"low\",\"reasons\":[\"Completed policy assessment\"],\"uncertainty\":\"none\"}'\n",
+    )
+    .unwrap();
+
+    let classify = |base| {
+        repo.json(&[
+            "task",
+            "classify",
+            "--base",
+            base,
+            "--provider",
+            "claude",
+            "--json",
+        ])
+    };
+    let record_result = || {
+        let report = repo.json(&["task", "merge", "--dry-run", "--json"]);
+        report["data"]["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|item| item["id"] == "classification_record")
+            .unwrap()["result"]
+            .clone()
+    };
+    let partial = classify("HEAD^");
+    assert_eq!(partial["data"]["record"]["tier"], "low");
+    assert_eq!(partial["data"]["record"]["mergeBaseSha"], first_commit);
+    assert_eq!(record_result(), "not_evaluated");
+
+    let complete = classify("main");
+    assert_eq!(complete["data"]["record"]["mergeBaseSha"], repo.base);
+    assert_eq!(record_result(), "pass");
+
+    // Both endpoint objects and policy blobs remain local, but a shallow head
+    // hides its parent links, so the PR merge-base can no longer be verified.
+    fs::write(repo.repo.join(".git/shallow"), format!("{}\n", repo.head)).unwrap();
+    assert_eq!(record_result(), "not_evaluated");
     repo.assert_get_only();
 }

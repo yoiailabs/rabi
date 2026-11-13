@@ -368,7 +368,6 @@ impl Report {
             outln!(
                 "Classifier provider: {}",
                 match record.provider {
-                    Some(classifier_provider::Provider::Codex) => "codex",
                     Some(classifier_provider::Provider::Claude) => "claude",
                     None => "none",
                 }
@@ -465,12 +464,12 @@ pub(crate) fn github_report(
     } else {
         None
     };
-    let kinds = if let Some(merge_base) = merge_base {
+    let kinds = if let Some(merge_base) = &merge_base {
         let attributes = format!("--attr-source={}", facts.pr.base_sha);
         let mut raw_args = vec![attributes.as_str()];
-        raw_args.extend(diff_args("--raw", &merge_base, &facts.pr.head_sha));
+        raw_args.extend(diff_args("--raw", merge_base, &facts.pr.head_sha));
         let mut numstat_args = vec![attributes.as_str()];
-        numstat_args.extend(diff_args("--numstat", &merge_base, &facts.pr.head_sha));
+        numstat_args.extend(diff_args("--numstat", merge_base, &facts.pr.head_sha));
         Some(diff::parse(
             &read(root, &raw_args)?,
             &read(root, &numstat_args)?,
@@ -522,8 +521,15 @@ pub(crate) fn github_report(
         .as_ref()
         .map(|tree| commit(Path::new(&tree.path), "HEAD"))
         .transpose()?;
-    let classification_record =
-        assessment::matching(root, &facts.pr.head_sha, &facts.pr.base_sha, &policy);
+    let classification_record = merge_base.as_deref().and_then(|merge_base| {
+        assessment::matching(
+            root,
+            &facts.pr.head_sha,
+            &facts.pr.base_sha,
+            merge_base,
+            &policy,
+        )
+    });
     let report = preflight::evaluate(
         &facts,
         &policy,

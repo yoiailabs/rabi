@@ -1114,7 +1114,7 @@ mod tests {
                 "schema":1,"headSha":facts.pr.head_sha,"baseSha":facts.pr.base_sha,
                 "mergeBaseSha":facts.pr.base_sha,"policyBlobSha":null,"docBlobSha":null,
                 "tier":"low","floor":false,"reasons":["Completed assessment"],
-                "uncertainty":"none","provider":"codex","createdAt":"2026-01-01T00:00:00Z"
+                "uncertainty":"none","provider":"claude","createdAt":"2026-01-01T00:00:00Z"
             }))
             .unwrap();
             let evaluation = evaluate(

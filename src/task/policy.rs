@@ -133,6 +133,7 @@ impl Policy {
 #[serde(default, deny_unknown_fields)]
 pub(crate) struct Classifier {
     pub doc: Option<String>,
+    pub model: Option<String>,
     pub provider: Option<super::classifier_provider::Provider>,
 }
 

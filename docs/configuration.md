@@ -174,17 +174,18 @@ Non-UTF-8 paths, unrecognized statuses, or malformed diff data always classify h
 
 Only committed changes are classified; the working tree and index are not read.
 
-The optional `[classifier]` section selects the written policy and provider for `task classify`:
+The optional `[classifier]` section selects the written policy, provider, and optional model for `task classify`:
 
 ```toml
 [classifier]
 doc = "risk-tiers.md"
-provider = "codex" # Optional: codex (default) or claude.
+provider = "claude" # Optional: claude is the default and only supported provider.
+# model = "your-model" # Optional: omit to use the provider CLI default.
 ```
 
-`doc` is a literal repository-root-relative path to a regular UTF-8 file in the **base commit**. Absolute paths, empty components, `.` and `..` components, NUL, and symlink traversal do not identify a document. No filesystem expansion or working-tree fallback occurs. Missing or unreadable documents and blank contents produce high with `classifier:no-policy-doc`, without launching a provider. Absent `doc` or policy does the same; an empty policy is accepted only by `task classify` for this fallback. Other malformed policy data still fails validation. Unknown classifier fields and providers are invalid policy data. `--provider` overrides the policy provider.
+`doc` is a literal repository-root-relative path to a regular UTF-8 file in the **base commit**. Absolute paths, empty components, `.` and `..` components, NUL, and symlink traversal do not identify a document. No filesystem expansion or working-tree fallback occurs. Missing or unreadable documents and blank contents produce high with `classifier:no-policy-doc`, without launching a provider. Absent `doc` or policy does the same; an empty policy is accepted only by `task classify` for this fallback. Other malformed policy data still fails validation. Unknown classifier fields and providers (including `codex`) are invalid policy data and fail policy parsing. `--provider` overrides the policy provider; unsupported flag values exit 2. Only tool-less providers are supported. Claude disables all tools with `--tools ""`; Codex cannot currently guarantee a tool-less invocation without an injected model catalog and is unsupported. When `model` is absent, rabi leaves model selection to the CLI. When set, this string is passed verbatim as one `--model` argument to the selected provider; rabi does not validate model names or supply a model catalog.
 
-`task classify` ignores path rule tiers and `default-tier`; it retains floors and high kind, limit, and unknown-data safeguards before requesting the written assessment. Kind tiers below high do not adjust the provider verdict. `task risk` continues to use path tiers as before. Merge uses a matching exact-head classification record only when its policy/document blob IDs match the PR base SHA, retaining the deterministic safeguards; otherwise its existing path classification remains in use and `classification_record` is not evaluated. Records are local trusted Git state; see [safety](safety.md#task-classifier).
+`task classify` ignores path rule tiers and `default-tier`; it retains floors and high kind, limit, and unknown-data safeguards before requesting the written assessment. Kind tiers below high do not adjust the provider verdict. `task risk` continues to use path tiers as before. Merge uses a matching exact-head classification record only when its merge-base equals the locally computed PR merge-base and its policy/document blob IDs match the PR base SHA, retaining the deterministic safeguards; otherwise its existing path classification remains in use and `classification_record` is not evaluated. Records are local trusted Git state; see [safety](safety.md#task-classifier).
 
 The optional `[ci]` section declares required check runs for `task merge` and `task merge --dry-run`. `required` is an array of nonempty check names or `{ name, app }` tables; tables require both fields and reject unknown keys. String entries use `[ci] app`, which defaults to `github-actions`. Names and app slugs cannot be empty or whitespace-only. Check names and app slugs match exactly. A missing or empty `required` array blocks preflight with `no_required_checks`; no checks are inferred from GitHub branch protection. Other keys and types are rejected. `task risk` accepts this section without changing its classification.
 
