@@ -1,15 +1,14 @@
 schema = 1
 default-tier = "medium"
 
-# For this repository, tool path tiers and floors are advisory hints until merge
-# tooling enforces risk-tiers.md. The written assessment sets the tier and must
-# explain why it is lower than a tool floor when applicable.
+# Path tiers are a coarse default; the written assessment under risk-tiers.md
+# decides whether a change is escalated. Floors make `rabi task merge` require
+# a maintainer approval; see risk-tiers.md for floor changes that are not escalated.
 [[rule]]
 paths = [".github/workflows/**"]
 # Documents the cost floor; also covered by the built-in .github/** floor.
 floor = true # GitHub Actions can affect pay-as-you-go cost.
 
-# Auto-merge tiers (low, medium) will be added once [merge] support lands.
 [ci]
 required = [
   "Rust fmt",
@@ -19,3 +18,12 @@ required = [
   "Installer (ubuntu-latest)",
   "Installer (macos-latest)",
 ]
+
+# Tiers `rabi task merge` may merge without a maintainer approval, after the
+# written assessment finds no escalation condition in risk-tiers.md.
+[merge]
+auto = ["low", "medium"]
+method = "squash"
+
+[approval]
+approvers = ["aku11i"]

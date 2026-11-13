@@ -33,12 +33,10 @@ uncertainty: "<remaining uncertainty or none>"
 assessed_sha: "<full git HEAD SHA>"
 ```
 
-For this repository, tool path tiers and floors (including the built-in `.github/**`, `.rabi/policy.toml`, and `.rabi.toml` floors) are advisory hints until merge tooling enforces this policy. The written assessment sets the tier and must explain in `reason` why it is lower than a tool floor when applicable.
+`rabi task merge` merges `.rabi/policy.toml` `merge.auto` tiers without approval and requires a recorded maintainer approval for floors (the built-in `.github/**`, `.rabi/policy.toml`, and `.rabi.toml` floors, plus any listed in the policy). Path tiers are a coarse default; the written assessment decides whether a change is escalated. Until rabi records its own review and assessment, run `rabi task merge --external-review` only after the [REVIEW.md](REVIEW.md) review passes and the written assessment finds no escalation condition, or after a maintainer approved an escalated change. A change under a floor that meets no escalation condition (for example, the PR template or `.rabi/policy.toml`) does not need maintainer approval; merge it with `gh pr merge --squash --match-head-commit <sha>` after the same gates, and say in the assessment why the floor does not escalate it.
 
 An assessment of uncommitted changes is provisional. Assess the final committed HEAD; a new HEAD requires reassessment and updated CI and review. Approval covers one full HEAD SHA, so high changes require renewed approval for a new HEAD.
 
 ## Merging escalated changes
 
-A maintainer approves the exact full HEAD SHA after the gates pass. Until `rabi task merge` is available, merge after that approval with `gh pr merge --squash --match-head-commit <sha>`. All merges, including low and medium, use this command with the verified full SHA.
-
-Once `rabi task approve` and a non-dry-run `rabi task merge` are available, they record maintainer approval and enforce these gates. Automation may record or act on maintainer approval only when a maintainer approved that exact full HEAD SHA: never on its own initiative, for a different SHA, or after HEAD changed following approval. Run `rabi task merge` from a build of `main` or a release, never from the change being merged.
+A maintainer approves the exact full HEAD SHA after the gates pass and records it with `rabi task approve`, run by an approver outside rabi-launched agents. Automation must not record approval: it must not unset `RABI_AGENT`, run `rabi task approve`, or post a `rabi/approval` status itself. Automation may only act on an approval already recorded for the exact current HEAD SHA, by running `rabi task merge --external-review` from a build of `main` or a release, never from the change being merged. All merges, including low and medium, use `--match-head-commit` with the verified full SHA.

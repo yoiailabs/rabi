@@ -120,7 +120,7 @@ This process applies to this repository. Use [REVIEW.md](REVIEW.md) for review o
 
 By default, automation may approve and merge low/medium changes after required CI is green, review passes, every finding has a response, and no Important remains unresolved; a maintainer is informed afterwards. Only the escalation conditions in [risk-tiers.md](risk-tiers.md) require high with `human_review: "yes"` and approval by a maintainer for the exact full HEAD SHA. A failed, incomplete, or uncertain assessment or review is high. Security issues and bugs must be fixed regardless of tier. A new HEAD requires reassessment, updated checks and review, and renewed approval for high.
 
-Until `rabi task merge` is available, after a maintainer approves a high change's exact full HEAD SHA, merge with `gh pr merge --squash --match-head-commit <sha>`. All merges use this command with the verified full SHA. Once `rabi task approve` and a non-dry-run `rabi task merge` are available, they record maintainer approval and enforce these gates. Automation may record or act on maintainer approval only when a maintainer approved that exact full HEAD SHA: never on its own initiative, for a different SHA, or after HEAD changed following approval. Run `rabi task merge` from a build of `main` or a release, never from the change being merged.
+All merges use `--match-head-commit` with the verified full SHA. Approval recording, `rabi task merge`, and floors follow [risk-tiers.md](risk-tiers.md).
 
 ## 📚 Documentation
 
