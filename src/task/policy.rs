@@ -38,6 +38,10 @@ pub(crate) struct Policy {
     pub kinds: Kinds,
     #[serde(default)]
     pub ci: Ci,
+    #[serde(default)]
+    pub merge: Merge,
+    #[serde(default)]
+    pub approval: Approval,
 }
 
 impl Default for Policy {
@@ -49,6 +53,8 @@ impl Default for Policy {
             limits: Limits::default(),
             kinds: Kinds::default(),
             ci: Ci::default(),
+            merge: Merge::default(),
+            approval: Approval::default(),
         }
     }
 }
@@ -101,8 +107,55 @@ impl Policy {
                 "Invalid risk policy ci: names and apps must not be empty",
             ));
         }
+        if policy.merge.auto.contains(&Tier::High) {
+            return Err(Error::msg(
+                "Invalid risk policy merge.auto: high cannot auto-merge",
+            ));
+        }
+        if policy
+            .approval
+            .approvers
+            .iter()
+            .any(|login| login.trim().is_empty())
+        {
+            return Err(Error::msg(
+                "Invalid risk policy approval.approvers: logins must not be empty",
+            ));
+        }
         Ok(policy)
     }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct Merge {
+    pub auto: Vec<Tier>,
+    pub method: MergeMethod,
+}
+
+#[derive(Debug, Clone, Copy, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum MergeMethod {
+    #[default]
+    Squash,
+    Merge,
+    Rebase,
+}
+
+impl MergeMethod {
+    pub fn flag(self) -> &'static str {
+        match self {
+            Self::Squash => "--squash",
+            Self::Merge => "--merge",
+            Self::Rebase => "--rebase",
+        }
+    }
+}
+
+#[derive(Debug, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub(crate) struct Approval {
+    pub approvers: Vec<String>,
 }
 
 fn default_app() -> String {
@@ -387,5 +440,42 @@ mod ci_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod merge_tests {
+    use super::*;
+    #[test]
+    fn merge_policy_table() {
+        for (text, valid) in [
+            ("", true),
+            ("[merge]", true),
+            ("[approval]", true),
+            ("[merge]\nauto=['low','medium']\nmethod='merge'", true),
+            (
+                "[merge]\nauto=[]\nmethod='rebase'\n[approval]\napprovers=['maintainer']",
+                true,
+            ),
+            ("[merge]\nmethod='squash'", true),
+            ("[merge]\nauto=['high']", false),
+            ("[merge]\nauto=['unknown']", false),
+            ("[merge]\nauto='low'", false),
+            ("[merge]\nauto=[1]", false),
+            ("[merge]\nmethod='auto'", false),
+            ("[merge]\nmethod=1", false),
+            ("[merge]\nunknown=true", false),
+            ("[approval]\nunknown=true", false),
+            ("[approval]\napprovers='maintainer'", false),
+            ("[approval]\napprovers=[1]", false),
+            ("[approval]\napprovers=[' ']", false),
+        ] {
+            let parsed = Policy::parse(&format!("schema=1\n{text}"));
+            assert_eq!(parsed.is_ok(), valid, "{text}: {parsed:?}");
+        }
+        let policy = Policy::default();
+        assert!(policy.merge.auto.is_empty());
+        assert!(policy.approval.approvers.is_empty());
+        assert_eq!(policy.merge.method.flag(), "--squash");
     }
 }

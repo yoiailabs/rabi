@@ -5,16 +5,21 @@
 ### Added
 
 - Local `rabi task new|list|show|abandon` bookkeeping stores private task records and append-only transition events outside the repository. Branch reservations, ID prefixes, read-only branch/state mismatch reporting and credential-free push URLs require no GitHub calls, agents or workspace creation. Records use camelCase fields, are published from complete staged directories, and share repository identity validation with handoff memory; unreadable records fail closed with exit 1 and name the task.
-
-- Read-only `rabi task status [SEL]` and `rabi task merge --dry-run [SEL]` collect paginated GitHub facts through GET APIs and evaluate three-valued merge preflight. Repository risk policies accept `[ci] required` check names with app issuers. Missing/failed checks, inconsistent heads, truncated files, forks, changes requested and unknown mergeability block evaluation; approvals and task records remain not evaluated. No merge or other writes are available; `task merge` requires `--dry-run`.
+- `rabi task approve SEL --sha <40 hex> [--note TEXT]` posts an exact-head `rabi/approval` status. `rabi task merge [SEL]` gates a head-guarded merge using the same evaluation as `--dry-run`; `--external-review` covers the two missing task record items. Base-commit policies support `[merge] auto` (low/medium only), `[merge] method` (default squash), and `[approval] approvers`. Every launched provider receives `RABI_AGENT=1`, including resume and `--no-handoff`; approve refuses any nonempty marker as a tripwire.
+- Read-only `rabi task status [SEL]` and `rabi task merge --dry-run [SEL]` collect paginated GitHub facts through GET APIs and evaluate three-valued merge preflight. Repository risk policies accept `[ci] required` check names with app issuers. Missing/failed checks, inconsistent heads, truncated files, forks, changes requested and unknown mergeability block evaluation; task records remain not evaluated.
 - Add `rabi doctor [-R REPO] [--json]` for read-only GitHub diagnostics and workflow file listings for manual review. Doctor does not parse workflow YAML and reports unavailable data as informational findings.
 
 - `rabi task risk [SEL]` classifies committed changes locally using `.rabi/policy.toml` from the base commit, with path rules, built-in human-review floors, kind tiers, limits, and text/JSON output.
 
 - Repository `.rabi.toml` supports trusted `[env]` declarations for `run` and `exec`: ordered `path-prepend`, validated `set` variables, and limited HOME/workspace/repository expansion. Declarations always come from the primary checkout, including resume. Loading validates syntax; expansion happens only during application, with clear errors for referenced non-UTF-8 paths. `--no-env` bypasses environment-value validation while retaining TOML/schema parsing; untrusted exec warns and continues without env. Run resolves provider binaries before applying PATH, skips workspace PATH entries and workspace-token set values with `env_workspace_path_skipped`, and reports only retained entries. Exec retains workspace declarations. Reserved variables protect rabi state/configuration and Git repository selection. `trust add` shows escaped `KEY=value` assignments and PATH entries for review; never commit secrets in `[env]`. Hooks keep their existing environment. (#930)
 
+### Fixed
+
+- Task Git reads ignore replace refs and default/inherited grafts. Merge preflight refuses approval when the current base-branch policy differs from the PR base policy or cannot be verified, including auto tiers. Facts expose `baseTipSha`; approval documentation clarifies that statuses bind to commits, not PRs or bases.
+
 ### Changed (Breaking)
 
+- `task merge` now attempts a guarded merge unless `--dry-run` is supplied. Approval is evaluated instead of remaining N/A; real merge preflight refusals exit 4.
 - Older rabi binaries reject `.rabi.toml` containing `[env]` as an unknown key. Upgrade binaries before adding the declaration.
 
 ## v7.2.0 (2026-10-27)

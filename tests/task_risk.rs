@@ -792,3 +792,49 @@ fn a_policy_that_is_not_a_regular_file_fails() {
         .unwrap()
         .contains("must be a regular file"));
 }
+
+#[test]
+fn task_reads_ignore_default_and_inherited_grafts() {
+    for inherited in [false, true] {
+        let repo = Repo::new(None);
+        repo.write("docs/change.md", "change\n");
+        repo.commit();
+        let before = repo.json(&["task", "risk", "--json"]);
+        let base = repo.git(&["rev-parse", "origin/main"]);
+        let head = repo.git(&["rev-parse", "HEAD"]);
+        let path = if inherited {
+            repo.root.join("grafts")
+        } else {
+            repo.repo.join(".git/info/grafts")
+        };
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(&path, format!("{head}\n")).unwrap();
+        let mut ordinary = repo.command(
+            "git",
+            &["merge-base", "--is-ancestor", &base, &head],
+            &repo.repo,
+        );
+        // Replacement suppression alone still honors legacy grafts.
+        ordinary.env("GIT_NO_REPLACE_OBJECTS", "1");
+        if inherited {
+            ordinary.env("GIT_GRAFT_FILE", &path);
+        }
+        assert_eq!(ordinary.output().unwrap().status.code(), Some(1));
+        let mut protected = repo.command(
+            env!("CARGO_BIN_EXE_rabi"),
+            &["task", "risk", "--json"],
+            &repo.repo,
+        );
+        if inherited {
+            protected.env("GIT_GRAFT_FILE", &path);
+        }
+        let output = protected.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let after: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+        assert_eq!(after["data"], before["data"], "inherited={inherited}");
+    }
+}

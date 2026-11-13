@@ -80,7 +80,7 @@ with (root/'argv.jsonl').open('a') as f: f.write(json.dumps(args)+'\n')
 (root/'input').write_text(sys.stdin.read())
 (root/'cwd').write_text(os.getcwd())
 if os.environ.get('FAKE_CAPTURE_ENV'):
-    (root/'env.json').write_text(json.dumps({k:os.environ[k] for k in ['DECLARED_VALUE','EMPTY_VALUE','PRIMARY_PATH','WORKSPACE_PATH','HOME_PATH','PATH','RABI_REPO_PATH','RABI_WORKSPACE_PATH'] if k in os.environ}))
+    (root/'env.json').write_text(json.dumps({k:os.environ[k] for k in ['RABI_AGENT','DECLARED_VALUE','EMPTY_VALUE','PRIMARY_PATH','WORKSPACE_PATH','HOME_PATH','PATH','RABI_REPO_PATH','RABI_WORKSPACE_PATH'] if k in os.environ}))
 sid = args[args.index('resume')+1] if 'resume' in args else str(uuid.uuid4())
 sid = os.environ.get('FAKE_OTHER_ID', sid)
 if os.environ.get('FAKE_BLOCK'):
@@ -2051,7 +2051,7 @@ with (root/'argv.jsonl').open('a') as f: f.write(json.dumps(args)+'\n')
 (root/'input').write_bytes(sys.stdin.buffer.read())
 (root/'cwd').write_text(os.getcwd())
 if os.environ.get('FAKE_CAPTURE_ENV'):
-    (root/'env.json').write_text(json.dumps({k:os.environ[k] for k in ['DECLARED_VALUE','EMPTY_VALUE','PRIMARY_PATH','WORKSPACE_PATH','HOME_PATH','PATH','RABI_REPO_PATH','RABI_WORKSPACE_PATH'] if k in os.environ}))
+    (root/'env.json').write_text(json.dumps({k:os.environ[k] for k in ['RABI_AGENT','DECLARED_VALUE','EMPTY_VALUE','PRIMARY_PATH','WORKSPACE_PATH','HOME_PATH','PATH','RABI_REPO_PATH','RABI_WORKSPACE_PATH'] if k in os.environ}))
 (root/'binary').write_text(pathlib.Path(sys.argv[0]).name)
 workspace = args[args.index('--workspace')+1]
 sid = args[args.index('--resume')+1] if '--resume' in args else str(uuid.uuid4())
@@ -2668,7 +2668,7 @@ with (root/'argv.jsonl').open('a') as f: f.write(json.dumps(args)+'\n')
 (root/'input').write_bytes(sys.stdin.buffer.read())
 (root/'cwd').write_text(os.getcwd())
 if os.environ.get('FAKE_CAPTURE_ENV'):
-    (root/'env.json').write_text(json.dumps({k:os.environ[k] for k in ['DECLARED_VALUE','EMPTY_VALUE','PRIMARY_PATH','WORKSPACE_PATH','HOME_PATH','PATH','RABI_REPO_PATH','RABI_WORKSPACE_PATH'] if k in os.environ}))
+    (root/'env.json').write_text(json.dumps({k:os.environ[k] for k in ['RABI_AGENT','DECLARED_VALUE','EMPTY_VALUE','PRIMARY_PATH','WORKSPACE_PATH','HOME_PATH','PATH','RABI_REPO_PATH','RABI_WORKSPACE_PATH'] if k in os.environ}))
 sid = args[args.index('--resume')+1] if '--resume' in args else args[args.index('--session-id')+1]
 sid = os.environ.get('CLAUDE_OTHER_ID', sid)
 if os.environ.get('CLAUDE_UNKNOWN_ID'):
@@ -5705,5 +5705,47 @@ fn repository_env_diagnostics_escape_control_characters_and_keep_json_values() {
             !stderr.contains('\u{1b}') && !stderr.contains('\u{202e}'),
             "{stderr:?}"
         );
+    }
+}
+
+#[test]
+fn agent_marker_all_providers_fresh_and_resume_with_and_without_handoff() {
+    for provider in ["codex", "cursor", "claude"] {
+        for handoff in [true, false] {
+            let f = Fixture::new();
+            match provider {
+                "cursor" => f.fake_cursor(),
+                "claude" => f.fake_claude(),
+                _ => (),
+            }
+            f.record_workspace();
+            f.declared_env("marker fixture");
+            for resume in [false, true] {
+                let mut args = vec!["run", "--json"];
+                if !resume {
+                    args.extend(["--fresh", "--provider", provider, "--skill", "x"]);
+                }
+                if !handoff {
+                    args.push("--no-handoff");
+                }
+                let output = f
+                    .command(&args)
+                    .env("RABI_AGENT", "inherited-other-value")
+                    .env("FAKE_CAPTURE_ENV", "1")
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{provider} handoff={handoff} resume={resume}: {} {}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+                assert_eq!(
+                    f.captured_env()["RABI_AGENT"],
+                    "1",
+                    "{provider} handoff={handoff} resume={resume}"
+                );
+            }
+        }
     }
 }

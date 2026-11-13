@@ -1,6 +1,7 @@
 {
   "repository": "example/project",
   "defaultBranch": "main",
+  "baseTipSha": "1111111111111111111111111111111111111111",
   "pr": {
     "number": 7,
     "state": "open",
@@ -15,13 +16,39 @@
     "mergeableState": "clean",
     "changedFiles": 1,
     "additions": 2,
-    "deletions": 1
+    "deletions": 1,
+    "merged": false
   },
-  "files": [{"filename":"docs/guide.md","previousFilename":null,"status":"modified","additions":2,"deletions":1}],
+  "files": [
+    {
+      "filename": "docs/guide.md",
+      "previousFilename": null,
+      "status": "modified",
+      "additions": 2,
+      "deletions": 1
+    }
+  ],
   "filesTruncated": false,
-  "checkRuns": [{"id":10,"name":"Rust test","status":"completed","conclusion":"success","app":"github-actions","startedAt":"2026-01-01T00:00:00Z","completedAt":"2026-01-01T00:01:00Z"}],
+  "checkRuns": [
+    {
+      "id": 10,
+      "name": "Rust test",
+      "status": "completed",
+      "conclusion": "success",
+      "app": "github-actions",
+      "startedAt": "2026-01-01T00:00:00Z",
+      "completedAt": "2026-01-01T00:01:00Z"
+    }
+  ],
   "checksIncomplete": false,
-  "statuses": [],
+  "statuses": [
+    {
+      "sha": "2222222222222222222222222222222222222222",
+      "context": "rabi/approval",
+      "state": "success",
+      "creator": "maintainer"
+    }
+  ],
   "reviews": [],
   "reviewDecision": null,
   "inconsistent": false,

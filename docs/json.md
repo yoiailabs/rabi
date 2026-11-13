@@ -235,19 +235,20 @@ Only committed changes are classified; the working tree and index are not read. 
 
 ## Task status and merge preflight
 
-Both commands use the common schema 2 envelope. A completed evaluation has `ok: true`, `error: null`, and exit 0 for every verdict. Data field names use camelCase; item IDs and the `not_evaluated` enum are stable identifiers.
+Task commands use the common schema 2 envelope. A completed dry-run evaluation has `ok: true`, `error: null`, and exit 0 for every verdict. Data field names use camelCase; item IDs and the `not_evaluated` enum are stable identifiers.
 
 `task status` (`command: "task status"`) returns a facts snapshot:
 
 | Field | Meaning |
 |---|---|
 | `repository`, `defaultBranch` | Selected owner/repository and GitHub default branch |
-| `pr` | `{number, state, draft, baseRef, baseSha, headRef, headSha, headRepository, sameRepository, mergeable, mergeableState, changedFiles, additions, deletions}` |
+| `baseTipSha` | Current PR base-branch tip from the encoded Git ref GET; null if lookup fails or returns invalid ref/commit data |
+| `pr` | `{number, state, draft, baseRef, baseSha, headRef, headSha, headRepository, sameRepository, merged, mergeCommitSha, mergeable, mergeableState, changedFiles, additions, deletions}` |
 | `files` | Every fetched `{filename, previousFilename, status, additions, deletions}`; previousFilename is null unless supplied |
 | `filesTruncated` | Count differs from changedFiles, or at least 3000 files fetched |
 | `checkRuns` | `{id, name, status, conclusion, app, startedAt, completedAt}` on the initial head SHA; app is its slug, missing fields are null |
 | `checksIncomplete` | Collected check runs differ from `total_count`, or any page has a missing/changing total; fails required_checks |
-| `statuses` | `{context, state, creator}` on that SHA; creator is login or null; separate from checks |
+| `statuses` | `{sha, context, state, creator}` on that SHA; creator is login or null; separate from checks |
 | `reviews` | Effective `{reviewer, state, id}` per reviewer, in reviewer order: latest APPROVED, CHANGES_REQUESTED or DISMISSED; COMMENTED/PENDING do not change state |
 | `reviewDecision` | Null for REST snapshots; evaluator also accepts an aggregate decision |
 | `inconsistent`, `finalHeadSha` | Whether the final PR head differs from the initial head, and that final SHA |
@@ -262,9 +263,15 @@ PR `state` and file statuses retain REST values such as `open` and `renamed`. `h
 | `verdict` | `blocked` if any fail; otherwise `incomplete` if any not_evaluated; otherwise `ready` |
 | `classification` | Existing risk `{tier, floor, reasons, files, totals}`, or null if classification could not complete |
 
-Item order is `pr_open`, `head_consistent`, `required_checks`, `risk_tier`, `approval`, `review_record`, `classification_record`, `no_changes_requested`, `mergeable`. Result is `pass`, `fail` or `not_evaluated`. Missing/empty CI requirements give reason `no_required_checks`. `required_checks.detail.checksIncomplete` mirrors the snapshot flag; incomplete checks fail even when collected required runs succeed. `required_checks.detail.checks` contains `{name, app, pass, observed, ignoredCheckRuns, ignoredStatuses}` for each policy requirement. Observed is `missing` or `status:conclusion` (`none` for null); ignored arrays preserve the facts objects. `risk_tier.detail` contains `{tier, floor, reasons}` when computed, and `approval.detail` contains `{tier, floor}` or null. Other details identify expected base, compared SHAs, changes-requested reviews, or mergeability. Approvals and record items are always not_evaluated, so no evaluation is ready yet. Reasons are explanations rather than error codes.
+Item order is `pr_open`, `head_consistent`, `required_checks`, `risk_tier`, `approval`, `review_record`, `classification_record`, `no_changes_requested`, `mergeable`. Result is `pass`, `fail` or `not_evaluated`. Missing/empty CI requirements give reason `no_required_checks`. `required_checks.detail.checksIncomplete` mirrors the snapshot flag; incomplete checks fail even when collected required runs succeed. `required_checks.detail.checks` contains `{name, app, pass, observed, ignoredCheckRuns, ignoredStatuses}` for each policy requirement. Observed is `missing` or `status:conclusion` (`none` for null); ignored arrays preserve the facts objects. `risk_tier.detail` contains `{tier, floor, reasons}` when computed, and `approval.detail` contains `{tier, floor}` or null. Other details identify expected base, compared SHAs, changes-requested reviews, or mergeability. Approval first requires byte-identical policy content at the PR base SHA and `baseTipSha` (absence at both is equal). Changed policy, an unavailable tip, or unreadable tip policy fails this item while the remaining items are evaluated. The PR base policy remains in use. Once fresh, approval passes for an auto tier without floor, or the latest successful `rabi/approval` status from a policy approver on the exact head SHA. Otherwise it fails. The two record items remain not_evaluated, so no evaluation is ready yet. Reasons are explanations rather than error codes.
 
-For example, passing facts yield `pr_open: pass`, `required_checks: pass`, `risk_tier: pass`, `no_changes_requested: pass`, `mergeable: pass`, and verdict `incomplete` because approval/records remain not_evaluated. With `pr:N`, `head_consistent` is also not_evaluated when stable; an inconsistent head fails it. Errors use the common envelope and existing [exit codes](exit-codes.md); evaluation failures remain successful envelopes.
+For example, passing facts yield `pr_open: pass`, `required_checks: pass`, `risk_tier: pass`, `no_changes_requested: pass`, `mergeable: pass`, and verdict `incomplete` because records remain not_evaluated (approval must pass). With `pr:N`, `head_consistent` is also not_evaluated when stable; an inconsistent head fails it. Errors use the common envelope and existing [exit codes](exit-codes.md); dry-run evaluation failures remain successful envelopes.
+
+`task approve` (`command: "task approve"`) returns `data: {repository, number, sha, state, context, description, tier}` after a successful POST. `sha` is the lowercase full head SHA; `state` is `success`, `context` is `rabi/approval`, and `description` contains the tier and optional note, truncated to 140 characters. Refusals have `ok: false`, `error.code: "usage"`, null data, and exit 2 without writing.
+
+Real `task merge` uses the same command name as dry-run. A preflight refusal has `ok: false`, `error.code: "refused"`, exit 4, and the unchanged evaluation `{items, verdict, classification}` in `data`. `--external-review` does not alter the evaluation or verdict; it permits only the two record items to remain not_evaluated. Other N/A items still refuse.
+
+After a merge invocation, `data` is `{preflight, merged, mergeCommitSha, mergedHeadSha, facts}`. `preflight` is the original evaluation; `facts` is the reread status snapshot. `merged` is GitHub's merged flag; `mergeCommitSha` is the reported merge commit or null. `mergedHeadSha` is the reread PR head SHA when merged, otherwise null. A gh failure or an unmerged reread retains this data with `ok: false`, `error.code: "failed"` and exit 1. If rereading itself fails, the original evaluation remains in `data` and the collection error is reported; merge outcome is unknown. Snapshot `pr.merged` and `pr.mergeCommitSha` are taken from the final PR read, as is `pr.state`.
 
 ## Doctor report
 

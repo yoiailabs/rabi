@@ -39,7 +39,19 @@ struct PolicySource {
 fn capture(root: &Path, args: &[&str]) -> Result<std::process::Output> {
     let mut options = vec!["--no-lazy-fetch"];
     options.extend_from_slice(args);
-    crate::process::raw_bytes("git", &options, Some(root), &[("LC_ALL", "C")], None)
+    // GIT_NO_REPLACE_OBJECTS does not disable legacy info/grafts. A path
+    // beneath the null device cannot exist, and overrides inherited graft files.
+    crate::process::raw_bytes(
+        "git",
+        &options,
+        Some(root),
+        &[
+            ("LC_ALL", "C"),
+            ("GIT_NO_REPLACE_OBJECTS", "1"),
+            ("GIT_GRAFT_FILE", "/dev/null/rabi-grafts"),
+        ],
+        None,
+    )
 }
 
 fn git_error(args: &[&str], stderr: &[u8]) -> Error {
@@ -323,12 +335,19 @@ impl Report {
     }
 }
 
+pub(crate) enum GithubAction<'a> {
+    Status,
+    DryRun,
+    Merge { external_review: bool },
+    Approve { sha: &'a str, note: Option<&'a str> },
+}
+
 /// GitHub inspection shares risk's status-free selectors and protected object reads.
 pub(crate) fn github_report(
     context: &crate::context::Context,
     selector: &str,
     base: Option<&str>,
-    merge: bool,
+    action: GithubAction<'_>,
 ) -> Result<()> {
     let client = crate::github::facts::Client::new(&context.git_root)?;
     let (number, workspace) = if let Some(number) = selector.strip_prefix("pr:") {
@@ -348,13 +367,23 @@ pub(crate) fn github_report(
         (number, Some(tree))
     };
     let facts = client.snapshot(number)?;
-    if !merge {
+    if matches!(action, GithubAction::Status) {
         if crate::output::json() {
             crate::output::data(&facts)?;
         } else {
             facts.print();
         }
         return Ok(());
+    }
+    if let GithubAction::Approve { sha, .. } = action {
+        if facts.pr.state != "open"
+            || facts.inconsistent
+            || sha != facts.pr.head_sha.to_ascii_lowercase()
+        {
+            return Err(Error::validation(
+                "Approval requires an open PR and --sha equal to its current head SHA",
+            ));
+        }
     }
     let root = &context.git_root;
     let base_local = resolves_commit(root, &facts.pr.base_sha)?;
@@ -363,9 +392,9 @@ pub(crate) fn github_report(
     } else {
         client.policy(&facts.pr.base_sha)?
     };
-    let policy = match blob {
+    let policy = match &blob {
         Some(bytes) => Policy::parse(
-            std::str::from_utf8(&bytes)
+            std::str::from_utf8(bytes)
                 .map_err(|_| Error::msg("Invalid .rabi/policy.toml: policy must be UTF-8"))?,
         )?,
         None => Policy::default(),
@@ -392,15 +421,108 @@ pub(crate) fn github_report(
     } else {
         None
     };
+    if let GithubAction::Approve { sha, note } = action {
+        let risk =
+            preflight::classify_files(&facts, &policy, kinds.as_deref()).map_err(Error::msg)?;
+        let description: String = format!(
+            "rabi approval: {}{}",
+            risk.tier,
+            note.map_or(String::new(), |text| format!(": {text}"))
+        )
+        .chars()
+        .take(140)
+        .collect();
+        client.approve(sha, &description)?;
+        if crate::output::json() {
+            crate::output::data(&serde_json::json!({
+                "repository": facts.repository, "number": number, "sha": sha,
+                "state": "success", "context": "rabi/approval", "description": description,
+                "tier": risk.tier,
+            }))?;
+        } else {
+            crate::output::outln!(
+                "Approved {}: rabi/approval success ({})",
+                sha,
+                crate::output::visible_text(&description)
+            );
+        }
+        return Ok(());
+    }
+    let policy_matches_base_tip = facts.base_tip_sha.as_deref().and_then(|tip| {
+        if tip == facts.pr.base_sha {
+            return Some(true);
+        }
+        let tip_blob = resolves_commit(root, tip).and_then(|local| {
+            if local {
+                policy_blob(root, tip)
+            } else {
+                client.policy(tip)
+            }
+        });
+        tip_blob.ok().map(|tip_blob| tip_blob == blob)
+    });
     let head = workspace
         .as_ref()
         .map(|tree| commit(Path::new(&tree.path), "HEAD"))
         .transpose()?;
-    let report = preflight::evaluate(&facts, &policy, &preflight::Local { head, kinds }, base);
+    let report = preflight::evaluate(
+        &facts,
+        &policy,
+        &preflight::Local {
+            head,
+            kinds,
+            policy_matches_base_tip,
+        },
+        base,
+    );
     if crate::output::json() {
         crate::output::data(&report)?;
     } else {
         report.print();
+    }
+    if let GithubAction::Merge { external_review } = action {
+        if !report.permits_merge(external_review) {
+            return Err(Error::status(crate::error::REFUSED,
+                "Merge preflight blocked or incomplete; --external-review covers only review_record and classification_record"));
+        }
+        let result = client.merge(number, policy.merge.method.flag(), &facts.pr.head_sha);
+        // Re-read even after a failed gh invocation: it may have merged remotely
+        // before reporting an error. Never retry the write automatically.
+        let updated = match client.snapshot(number) {
+            Ok(updated) => updated,
+            Err(reread) => {
+                let invocation = match &result {
+                    Ok(()) => "ok".to_string(),
+                    Err(error) => format!("failed: {error}"),
+                };
+                return Err(Error::msg(format!(
+                    "Merge outcome unknown: gh pr merge {invocation}; re-reading the PR failed: {reread}"
+                )));
+            }
+        };
+        let merged = updated.pr.merged;
+        let merged_head = merged.then_some(updated.pr.head_sha.as_str());
+        if crate::output::json() {
+            crate::output::data(&serde_json::json!({
+                "preflight": report, "merged": merged,
+                "mergeCommitSha": updated.pr.merge_commit_sha,
+                "mergedHeadSha": merged_head, "facts": updated,
+            }))?;
+        } else {
+            updated.print();
+            crate::output::outln!(
+                "Merged: {} Merge commit: {} Merged head: {}",
+                merged,
+                updated.pr.merge_commit_sha.as_deref().unwrap_or("unknown"),
+                merged_head.unwrap_or("none")
+            );
+        }
+        result?;
+        if !merged {
+            return Err(Error::msg(
+                "GitHub did not report the PR as merged after gh pr merge",
+            ));
+        }
     }
     Ok(())
 }

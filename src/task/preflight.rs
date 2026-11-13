@@ -13,6 +13,7 @@ use crate::github::facts::Snapshot;
 pub(crate) struct Local {
     pub head: Option<String>,
     pub kinds: Option<Vec<ChangedEntry>>,
+    pub policy_matches_base_tip: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -56,7 +57,7 @@ fn pending(id: &'static str, reason: &str, detail: Value) -> Item {
     }
 }
 
-fn classify_files(
+pub(super) fn classify_files(
     facts: &Snapshot,
     policy: &Policy,
     kinds: Option<&[ChangedEntry]>,
@@ -255,9 +256,67 @@ pub(crate) fn evaluate(
         Err(reason) => (None, item("risk_tier", false, reason, Value::Null)),
     };
     items.push(risk);
-    items.push(pending(
+    let automatic = classification
+        .as_ref()
+        .is_some_and(|risk| !risk.floor && policy.merge.auto.contains(&risk.tier));
+    // Statuses are collected for this SHA, newest first. Never search past a
+    // newer failure, pending status, or unapproved issuer for an older success.
+    let latest = facts
+        .statuses
+        .iter()
+        .find(|status| status.context == "rabi/approval");
+    let (approved, reason) = if local.policy_matches_base_tip.is_none() {
+        (
+            false,
+            "Cannot determine base branch tip or read its policy; retry or update the PR",
+        )
+    } else if local.policy_matches_base_tip == Some(false) {
+        (
+            false,
+            "Policy changed on base branch since PR base; update the PR",
+        )
+    } else if automatic {
+        (true, "auto tier")
+    } else if classification.is_none() {
+        (false, "Risk classification unavailable")
+    } else if policy.approval.approvers.is_empty() {
+        (false, "No approval.approvers configured")
+    } else if facts.inconsistent {
+        (
+            false,
+            "PR head moved; approval must match the current head SHA",
+        )
+    } else {
+        match latest {
+            None => (false, "No rabi/approval status on the current head SHA"),
+            Some(status) if status.sha != pr.head_sha => (false, "Approval is for an older SHA"),
+            Some(status) if status.state != "success" => {
+                (false, "Latest rabi/approval status is not success")
+            }
+            Some(status)
+                if !status.creator.as_ref().is_some_and(|creator| {
+                    policy
+                        .approval
+                        .approvers
+                        .iter()
+                        .any(|login| login.eq_ignore_ascii_case(creator))
+                }) =>
+            {
+                (
+                    false,
+                    "Latest rabi/approval creator is not an allowed approver",
+                )
+            }
+            Some(_) => (
+                true,
+                "Latest rabi/approval status approves this exact head SHA",
+            ),
+        }
+    };
+    items.push(item(
         "approval",
-        "approvals not implemented",
+        approved,
+        reason,
         classification.as_ref().map_or(
             Value::Null,
             |risk| json!({"tier":risk.tier,"floor":risk.floor}),
@@ -335,6 +394,16 @@ pub(crate) fn evaluate(
 }
 
 impl Evaluation {
+    pub fn permits_merge(&self, external_review: bool) -> bool {
+        self.items.iter().all(|item| match item.result {
+            Outcome::Pass => true,
+            Outcome::Fail => false,
+            Outcome::NotEvaluated => {
+                external_review && matches!(item.id, "review_record" | "classification_record")
+            }
+        })
+    }
+
     pub fn print(&self) {
         use crate::output::{outln, visible_text};
         for item in &self.items {
@@ -678,15 +747,18 @@ mod tests {
             }
             if name == "wrong app and status" {
                 fixture["checkRuns"][0]["app"] = json!("another-app");
-                fixture["statuses"] =
-                    json!([{"context":"Rust test","state":"success","creator":"issuer-1"}]);
+                fixture["statuses"].as_array_mut().unwrap().push(
+                    json!({"sha":"2222222222222222222222222222222222222222","context":"Rust test","state":"success","creator":"issuer-1"}));
             }
             let facts: Snapshot = serde_json::from_value(fixture).unwrap();
-            let policy = Policy::parse(match name {
+            let policy_text = match name {
                 "empty required" => "schema=1\n[ci]\nrequired=[]",
                 "missing ci" => "schema=1",
                 _ => POLICY,
-            })
+            };
+            let policy = Policy::parse(&format!(
+                "{policy_text}\n[approval]\napprovers=['maintainer']"
+            ))
             .unwrap();
             let kinds = available.then(|| {
                 facts
@@ -721,7 +793,11 @@ mod tests {
             let report = evaluate(
                 &facts,
                 &policy,
-                &Local { head, kinds },
+                &Local {
+                    head,
+                    kinds,
+                    policy_matches_base_tip: Some(true),
+                },
                 (name == "explicit base").then_some("release"),
             );
             assert_eq!(report.verdict, verdict, "{name}");
@@ -738,9 +814,11 @@ mod tests {
             ];
             for (item, id) in report.items.iter().zip(ids) {
                 assert_eq!(item.id, id, "{name}");
-                let expected = if id == failed {
+                let expected = if id == failed
+                    || (id == "approval" && (report.classification.is_none() || facts.inconsistent))
+                {
                     "fail"
-                } else if matches!(id, "approval" | "review_record" | "classification_record")
+                } else if matches!(id, "review_record" | "classification_record")
                     || (name == "pr selector" && id == "head_consistent")
                 {
                     "not_evaluated"
@@ -790,6 +868,163 @@ mod tests {
                     .reason
                     .contains("GitHub has not computed mergeability"));
                 assert!(report.items[8].reason.contains("rerun later"));
+            }
+        }
+    }
+    #[test]
+    fn approval_table() {
+        for (name, tier, automatic, floor, approvers, statuses, pass) in [
+            ("auto tier", "low", true, false, false, vec![], true),
+            ("auto medium", "medium", true, false, false, vec![], true),
+            (
+                "high approved",
+                "high",
+                false,
+                false,
+                true,
+                vec![("success", "maintainer", false)],
+                true,
+            ),
+            (
+                "wrong issuer",
+                "high",
+                false,
+                false,
+                true,
+                vec![("success", "other", false)],
+                false,
+            ),
+            (
+                "old SHA",
+                "high",
+                false,
+                false,
+                true,
+                vec![("success", "maintainer", true)],
+                false,
+            ),
+            (
+                "newer failure",
+                "high",
+                false,
+                false,
+                true,
+                vec![
+                    ("failure", "maintainer", false),
+                    ("success", "maintainer", false),
+                ],
+                false,
+            ),
+            (
+                "newer pending",
+                "high",
+                false,
+                false,
+                true,
+                vec![
+                    ("pending", "maintainer", false),
+                    ("success", "maintainer", false),
+                ],
+                false,
+            ),
+            (
+                "newer other issuer",
+                "high",
+                false,
+                false,
+                true,
+                vec![
+                    ("success", "other", false),
+                    ("success", "maintainer", false),
+                ],
+                false,
+            ),
+            (
+                "empty approvers",
+                "high",
+                false,
+                false,
+                false,
+                vec![("success", "maintainer", false)],
+                false,
+            ),
+            ("missing status", "high", false, false, true, vec![], false),
+            (
+                "floor in auto tier",
+                "low",
+                true,
+                true,
+                false,
+                vec![],
+                false,
+            ),
+        ] {
+            let mut facts: Snapshot =
+                serde_json::from_str(include_str!("../../tests/fixtures/task_facts.json")).unwrap();
+            if floor {
+                facts.files[0].filename = ".rabi.toml".into();
+            }
+            facts.statuses = statuses
+                .into_iter()
+                .map(|(state, creator, old)| crate::github::facts::CommitStatus {
+                    sha: if old {
+                        facts.pr.base_sha.clone()
+                    } else {
+                        facts.pr.head_sha.clone()
+                    },
+                    context: "rabi/approval".into(),
+                    state: state.into(),
+                    creator: Some(creator.into()),
+                })
+                .collect();
+            let mut policy = Policy::parse(&format!(
+                "schema=1\ndefault-tier='{tier}'\n[merge]\nauto={}\n[approval]\napprovers={}",
+                if automatic { "['low','medium']" } else { "[]" },
+                if approvers { "['maintainer']" } else { "[]" }
+            ))
+            .unwrap();
+            // Floors currently force high; keep the explicit !floor guard tested
+            // even if an in-memory policy contains that tier in auto.
+            if floor {
+                policy.merge.auto.push(Tier::High);
+            }
+            let kinds = Some(vec![ChangedEntry {
+                path: facts.files[0].filename.as_bytes().to_vec(),
+                old_path: None,
+                status: "M".into(),
+                old_mode: 0o100644,
+                new_mode: 0o100644,
+                added: 2,
+                deleted: 1,
+                binary: false,
+                unknown: vec![],
+            }]);
+            let mut local = Local {
+                head: Some(facts.pr.head_sha.clone()),
+                kinds,
+                policy_matches_base_tip: Some(true),
+            };
+            for freshness in [Some(false), None] {
+                local.policy_matches_base_tip = freshness;
+                let stale = evaluate(&facts, &policy, &local, None);
+                assert!(
+                    matches!(stale.items[4].result, Outcome::Fail),
+                    "{name}: {freshness:?}"
+                );
+                assert!(stale.items[4].reason.contains("base branch"));
+            }
+            local.policy_matches_base_tip = Some(true);
+            let report = evaluate(&facts, &policy, &local, None);
+            let approval = &report.items[4];
+            assert_eq!(
+                matches!(approval.result, Outcome::Pass),
+                pass,
+                "{name}: {}",
+                approval.reason
+            );
+            assert!(!matches!(approval.result, Outcome::NotEvaluated), "{name}");
+            if automatic && !floor {
+                assert_eq!(approval.reason, "auto tier");
             }
         }
     }

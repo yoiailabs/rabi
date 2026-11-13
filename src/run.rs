@@ -503,7 +503,7 @@ pub(crate) fn execute(
             session,
             memory.as_ref().map(|m| m.path.as_path()),
         )?;
-        command.envs(&environment.values);
+        command.envs(&environment.values).env("RABI_AGENT", "1");
         environment.warn_skipped();
         if !environment.values.is_empty() && !crate::output::json() {
             crate::output::stderr(format_args!(
