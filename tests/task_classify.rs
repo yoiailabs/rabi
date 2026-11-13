@@ -551,7 +551,7 @@ fn successful_provider_exit_still_kills_descendants() {
 }
 
 #[test]
-fn configured_model_is_passed_verbatim_to_claude() {
+fn configured_model_is_passed_as_one_argument_to_claude() {
     let model = "fixture-model --literal";
     let policy = format!("{POLICY}model='{model}'\n");
     let repo = Repo::new(Some(&policy), Some(DOCUMENT));
@@ -569,10 +569,14 @@ fn configured_model_is_passed_verbatim_to_claude() {
     assert_eq!(repo.classify(provider)["tier"], "low");
     let args = fs::read(repo.root.join("argv")).unwrap();
     let args: Vec<_> = args.split(|byte| *byte == 0).collect();
-    assert_eq!(args.iter().filter(|arg| **arg == b"--model").count(), 1);
-    assert!(args
-        .windows(2)
-        .any(|pair| pair == [b"--model".as_slice(), model.as_bytes()]));
+    let expected = format!("--model={model}");
+    assert_eq!(
+        args.iter()
+            .copied()
+            .filter(|arg| arg.starts_with(b"--model"))
+            .collect::<Vec<_>>(),
+        vec![expected.as_bytes()]
+    );
 }
 
 #[test]

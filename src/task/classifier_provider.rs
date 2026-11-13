@@ -129,7 +129,7 @@ fn command(provider: Provider, binary: &Path, temporary: &Path, model: Option<&s
         }
     }
     if let Some(model) = model {
-        command.arg("--model").arg(model);
+        command.arg(format!("--model={model}"));
     }
     let cwd = temporary.join("workspace");
     command

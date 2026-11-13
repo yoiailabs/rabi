@@ -125,6 +125,16 @@ impl Policy {
                 "Invalid risk policy approval.approvers: logins must not be empty",
             ));
         }
+        if policy
+            .classifier
+            .model
+            .as_deref()
+            .is_some_and(|model| model.trim().is_empty() || model.starts_with('-'))
+        {
+            return Err(Error::msg(
+                "Invalid risk policy classifier.model: must be non-empty and must not start with '-'",
+            ));
+        }
         Ok(policy)
     }
 }
@@ -354,6 +364,8 @@ mod tests {
     fn invalid_policy_table() {
         for (text, key) in [
             ("schema = 2", "schema"),
+            ("schema = 1\n[classifier]\nmodel = '-x'", "classifier.model"),
+            ("schema = 1\n[classifier]\nmodel = ' '", "classifier.model"),
             ("default-tier = 'low'", "schema"),
             ("schema = 1\nunknown = true", "unknown"),
             ("schema = 1\ndefault-tier = 'safe'", "default-tier"),
