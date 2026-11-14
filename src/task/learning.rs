@@ -62,13 +62,13 @@ fn since_at(value: &str, now: DateTime<Utc>) -> Result<DateTime<Utc>> {
     now.checked_sub_signed(duration).ok_or_else(invalid)
 }
 
-fn timestamp(value: &str, id: &str) -> Result<DateTime<Utc>> {
+pub(super) fn timestamp(value: &str, id: &str) -> Result<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(value)
         .map(|date| date.with_timezone(&Utc))
         .map_err(|_| Error::msg(format!("Task {id}: invalid recorded timestamp")))
 }
 
-fn included(at: DateTime<Utc>, since: &Option<DateTime<Utc>>) -> bool {
+pub(super) fn included(at: DateTime<Utc>, since: &Option<DateTime<Utc>>) -> bool {
     since.is_none_or(|since| at >= since)
 }
 

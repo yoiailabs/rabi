@@ -144,6 +144,8 @@ pub(crate) struct Task {
     pub issue: Option<super::intake::IssueSource>,
     #[serde(default)]
     pub advance: super::advance::Progress,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub proposal: Option<super::tune::Proposal>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -163,6 +165,8 @@ pub(crate) struct Event {
     pub(super) review: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) classification: Option<serde_json::Value>,
+    #[serde(default, rename = "override", skip_serializing_if = "Option::is_none")]
+    pub(super) override_record: Option<super::tune::Override>,
 }
 
 #[derive(Serialize)]
@@ -453,7 +457,7 @@ impl Store {
     }
 
     pub fn create(&self, intent: String, branch: Option<&str>, base: Option<&str>) -> Result<View> {
-        self.create_inner(intent, branch, base, None)?
+        self.create_inner(intent, branch, base, None, None)?
             .ok_or_else(|| Error::msg("Unexpected duplicate local task"))
     }
 
@@ -464,7 +468,17 @@ impl Store {
         base: Option<&str>,
         issue: super::intake::IssueSource,
     ) -> Result<Option<View>> {
-        self.create_inner(intent, branch, base, Some(issue))
+        self.create_inner(intent, branch, base, Some(issue), None)
+    }
+
+    /// Reserve all executor locks before this task becomes discoverable. The
+    /// guards remain bound to their inodes across the staging-directory rename.
+    pub(super) fn create_tune(&self, intent: String, base: &str) -> Result<(View, Vec<File>)> {
+        let mut guards = Vec::new();
+        let view = self
+            .create_inner(intent, None, Some(base), None, Some(&mut guards))?
+            .ok_or_else(|| Error::msg("Unexpected duplicate tuning task"))?;
+        Ok((view, guards))
     }
 
     fn create_inner(
@@ -473,6 +487,7 @@ impl Store {
         branch: Option<&str>,
         base: Option<&str>,
         issue: Option<super::intake::IssueSource>,
+        guards: Option<&mut Vec<File>>,
     ) -> Result<Option<View>> {
         if intent.trim().is_empty() {
             return Err(Error::validation("Task intent must not be empty"));
@@ -522,8 +537,16 @@ impl Store {
             pr_number: None,
             issue,
             advance: Default::default(),
+            proposal: None,
         };
-        let published = self.publish(&directory, task).map(Some);
+        let published = (|| {
+            if let Some(guards) = guards {
+                for name in [".advance.lock", ".implement.lock", ".publish.lock"] {
+                    guards.push(lock(&directory.join(name))?);
+                }
+            }
+            self.publish(&directory, task).map(Some)
+        })();
         if published.is_err() {
             // Best effort: a crash can still leave an ignored staging directory.
             let _ = fs::remove_dir_all(&directory);
@@ -545,6 +568,7 @@ impl Store {
             precheck: None,
             review: None,
             classification: None,
+            override_record: None,
         };
         self.save(directory, &task, &event)?;
         io(File::open(directory).and_then(|file| file.sync_all()))?;
@@ -669,6 +693,7 @@ impl Store {
                 precheck: None,
                 review: None,
                 classification: None,
+                override_record: None,
             }
         } else {
             transition(&mut task, to, reason)?
@@ -720,6 +745,7 @@ impl Store {
                     precheck: None,
                     review: None,
                     classification: None,
+                    override_record: None,
                 },
                 _ => {
                     return Err(Error::status(
@@ -739,6 +765,7 @@ impl Store {
                 precheck: None,
                 review: None,
                 classification: None,
+                override_record: None,
             }
         };
         event.agent = Some(data);
@@ -784,6 +811,7 @@ impl Store {
                 precheck: None,
                 review: None,
                 classification: None,
+                override_record: None,
             }
         } else {
             transition(&mut task, to, reason)?
@@ -792,6 +820,47 @@ impl Store {
         task.advance = original.advance.clone();
         task.pr_number = pr_number.or(task.pr_number);
         task.updated_at = event.at.clone();
+        self.save(&directory, &task, &event)
+    }
+
+    /// Observations append under the task lock without rewriting any task state.
+    pub(super) fn record_override(&self, id: &str, data: super::tune::Override) -> Result<Event> {
+        let directory = self.path.join(id);
+        let _lock = lock(&directory.join(".lock"))?;
+        let task = self.load(id)?;
+        self.events(id)?;
+        let event = Event {
+            at: now(),
+            from: Some(task.state),
+            to: task.state,
+            reason: "override".into(),
+            detail: None,
+            agent: None,
+            precheck: None,
+            review: None,
+            classification: None,
+            override_record: Some(data),
+        };
+        let mut line = encode(&event)?;
+        line.push(b'\n');
+        let mut file = open(&directory.join("events.jsonl"), true)?;
+        io(file.write_all(&line))?;
+        io(file.sync_all())?;
+        Ok(event)
+    }
+
+    pub(super) fn tune_workspace(
+        &self,
+        id: &str,
+        workspace: &Path,
+        proposal: super::tune::Proposal,
+    ) -> Result<()> {
+        let directory = self.path.join(id);
+        let _lock = lock(&directory.join(".lock"))?;
+        let mut task = self.load(id)?;
+        let event = transition(&mut task, TaskState::Implementing, "tune_proposed")?;
+        task.workspace_path = Some(workspace.to_path_buf());
+        task.proposal = Some(proposal);
         self.save(&directory, &task, &event)
     }
 
@@ -855,6 +924,7 @@ fn transition(task: &mut Task, to: TaskState, reason: &str) -> Result<Event> {
         precheck: None,
         review: None,
         classification: None,
+        override_record: None,
     };
     task.state = to;
     task.updated_at = event.at.clone();
@@ -1049,6 +1119,7 @@ mod tests {
                     pr_number: None,
                     issue: None,
                     advance: Default::default(),
+                    proposal: None,
                 };
                 let result = transition(&mut task, to, "test transition");
                 assert_eq!(result.is_ok(), allowed, "{from:?} -> {to:?}");

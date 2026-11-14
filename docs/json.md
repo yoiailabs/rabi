@@ -360,9 +360,45 @@ Classification decision events now optionally include `classification: {tier, fl
 
 ## Task events
 
-`rabi task events [SEL] [--since DUR|DATE] --json` (also `--output json` or `RABI_OUTPUT=json`) emits one compact JSON object per event line on success. Each object is `{taskId, at, from, to, reason}` with the stored optional `detail`, `agent`, `precheck`, `review` and `classification` fields. There is no success envelope; an empty result emits no bytes. SEL is a full task ID or unique prefix of at least six characters; omit it for all tasks, including terminal tasks. Rows sort by task ID, then retain append order rather than sorting by timestamp. The inclusive cutoff syntax matches report.
+`rabi task events [SEL] [--since DUR|DATE] --json` (also `--output json` or `RABI_OUTPUT=json`) emits one compact JSON object per event line on success. Each object is `{taskId, at, from, to, reason}` with the stored optional `detail`, `agent`, `precheck`, `review`, `classification` and `override` fields. There is no success envelope; an empty result emits no bytes. SEL is a full task ID or unique prefix of at least six characters; omit it for all tasks, including terminal tasks. Rows sort by task ID, then retain append order rather than sorting by timestamp. The inclusive cutoff syntax matches report.
 
 All selected records/events are read and timestamps validated before output, so a read/validation error emits the ordinary schema 2 error envelope (`command: "task events"`) before any event rows. Invalid arguments use 2 and absent tasks use 3. Corrupt/unreadable records/events use 1 and identify the task. `task show ID --json` remains a complete-history envelope with no `--events` flag. Text escapes terminal control characters; JSON retains stored text as JSON strings. Events can include user-supplied reasons and diagnostics: review exports before sharing.
+
+## Task override and tune
+
+Both commands use the schema 2 envelope (`command: "task override"` or
+`"task tune"`). Override requires the authenticated login in the base policy's `[approval] approvers`
+and returns the appended event directly in `data`, with `reason: "override"`, unchanged
+`from`/`to` task state, and `override: {id, tier, classifiedTier, sha, note}`.
+The event's `at` is the observation timestamp. `id` identifies the override;
+`sha` is a full lowercase 40-hex commit ID, `tier` is the maintainer's treated
+tier and `classifiedTier` records the classification. Notes are sanitized before
+storage. `task show` and `task events` include the observation; older events
+omit `override`. Recording it never updates approvals or merges.
+
+Tune returns `data: {plan, proposal, diff, taskId, prNumber}`. `plan` reflects
+`--dry-run`. `proposal` is null when there is nothing to propose, otherwise
+`{edits:[{path, find, replace, rationale, evidence:[string]}], summary}`.
+Applied tuning tasks retain an optional `proposal` with that shape in their
+schema-1 task record so publication retries preserve rationale and evidence;
+ordinary tasks omit it.
+`diff` is the would-be unified diff with three context lines per hunk;
+`taskId` and `prNumber` are null until a task and
+PR exist. The allowed paths are the base `[classifier] doc` and `AGENTS.md`.
+Evidence references use override IDs, `task_<uuid>:event:N` (one-based append
+position), `classification:<sha>`, `finding:<path>:<bodyHash>`, or `pr:N`.
+They identify only collected source evidence; unrecognized
+references are rejected. A valid dry run returns the proposal and diff without
+creating tasks, workspaces, commits or publication. A full run returns the normal
+task ID and draft PR number after `task publish`; the body lists each edit's
+sanitized path, rationale and evidence as readable Markdown, capped at 24 KiB.
+Tune never reviews, classifies,
+approves or merges.
+
+No evidence succeeds with exit 0 and a null proposal. Invalid proposals receive
+one retry, then an operational error. Invocation, selection, trust, publication
+and partial-failure codes retain the ordinary task contracts. See
+[commands](commands.md#task-override-and-tune) and [safety](safety.md#task-overrides-and-tuning).
 
 ## Task batch advance
 

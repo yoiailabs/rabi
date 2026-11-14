@@ -1886,7 +1886,7 @@
     "task": {
       "name": "task",
       "description": "Manage tasks and external issue intake, inspect PR facts and gate merges",
-      "usage": "rabi task new|intake|list|show|report|events|abandon|implement|publish|advance|review|risk|classify|status|approve|merge [arguments] [options]",
+      "usage": "rabi task new|intake|list|show|report|events|override|tune|abandon|implement|publish|advance|review|risk|classify|status|approve|merge [arguments] [options]",
       "options": [
         {
           "name": "repo",
@@ -2801,6 +2801,113 @@
           "command": "rabi task events --since 7d --json",
           "description": "Read recent events across the repository"
         }
+      ]
+    },
+    "task override": {
+      "name": "task override",
+      "description": "Record a maintainer classification override without changing gates or state",
+      "usage": "rabi task override SEL --tier low|medium|high --note TEXT [--sha <40 hex>] [options]",
+      "options": [
+        {
+          "name": "tier",
+          "type": "string",
+          "description": "Maintainer-treated tier: low, medium or high"
+        },
+        {
+          "name": "note",
+          "type": "string",
+          "description": "Required sanitized explanation (1 to 8192 bytes)"
+        },
+        {
+          "name": "sha",
+          "type": "string",
+          "description": "Full 40-hex classified SHA; defaults to the latest classified task head"
+        },
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "example": "--repo owner/repo"
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "Maintainer-only: refuses nonempty RABI_AGENT and authenticated GitHub identities outside the base policy approval.approvers. Uses a full task ID or unique prefix of at least six characters.",
+        "Appends one override event with id, tier, classifiedTier, sha, sanitized note and timestamp. Requires recorded classification for the SHA. Never changes state, approvals or merges."
+      ]
+    },
+    "task tune": {
+      "name": "task tune",
+      "description": "Propose evidence-backed written policy edits as an ordinary draft task",
+      "usage": "rabi task tune [--since DUR|DATE] [--dry-run] [options]",
+      "options": [
+        {
+          "name": "since",
+          "type": "string",
+          "description": "Include evidence since a positive s/m/h/d/w duration, UTC date or RFC3339 timestamp"
+        },
+        {
+          "name": "dry-run",
+          "type": "boolean",
+          "description": "Print proposal and would-be diff without repository writes or publication"
+        },
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "example": "--repo owner/repo"
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "Uses override events, classification records and repeated task report finding fingerprints. No evidence exits 0 with nothing to propose.",
+        "A fresh tool-less Claude session proposes strict JSON edits to regular base files AGENTS.md and classifier.doc only. Invalid JSON, paths, evidence, sizes or non-unique find text get one retry, then fail.",
+        "At most 16 edits; each find and replace is limited to 8 KiB, total replacement text to 64 KiB. Summary is limited to 512 bytes. Trusted execution is required when evidence exists.",
+        "Without --dry-run, creates a normal task and linked workspace from the current base, applies replacements deterministically, commits evidence and publishes a draft PR through task publish. Preparation skips setup hooks and copying.",
+        "Stops at publication: never runs review, classify, approve or merge. Continue through task advance gates. Policy-document changes may auto-merge only when the policy gates allow it.",
+        "Dry runs show a unified diff with three context lines per hunk. The draft body lists each edit's sanitized path, rationale and evidence as readable Markdown, limited to 24 KiB; oversized proposals are rejected."
       ]
     }
   },

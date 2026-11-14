@@ -63,6 +63,17 @@ impl Default for Policy {
 }
 
 impl Policy {
+    /// Lifecycle policy consumers treat absent and blank base policies as defaults.
+    pub(super) fn load(bytes: Option<&[u8]>) -> Result<Self> {
+        let Some(bytes) = bytes.filter(|bytes| !bytes.iter().all(u8::is_ascii_whitespace)) else {
+            return Ok(Self::default());
+        };
+        Self::parse(
+            std::str::from_utf8(bytes)
+                .map_err(|_| Error::msg("Invalid .rabi/policy.toml: policy must be UTF-8"))?,
+        )
+    }
+
     pub fn parse(text: &str) -> Result<Self> {
         let policy: Self = toml_edit::de::from_str(text)
             .map_err(|error| Error::msg(format!("Invalid risk policy: {error}")))?;
@@ -324,6 +335,33 @@ pub(super) fn glob_matches(pattern: &str, path: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_loader_defaults_only_absent_or_whitespace_policy() {
+        for bytes in [None, Some(b"".as_slice()), Some(b" \t\r\n".as_slice())] {
+            let policy = Policy::load(bytes).unwrap();
+            assert_eq!(policy.default_tier, Tier::High);
+            assert!(policy.rules.is_empty());
+            assert!(policy.ci.required.is_empty());
+            assert!(policy.merge.auto.is_empty());
+            assert!(policy.approval.approvers.is_empty());
+            assert!(policy.classifier.doc.is_none());
+        }
+        assert_eq!(
+            Policy::load(Some(b"schema=1\ndefault-tier='low'"))
+                .unwrap()
+                .default_tier,
+            Tier::Low
+        );
+        for bytes in [
+            b"# schema is still required".as_slice(),
+            b"schema=2",
+            b"\xff",
+        ] {
+            assert!(Policy::load(Some(bytes)).is_err());
+        }
+        assert!(Policy::parse(" \t\r\n").is_err());
+    }
 
     #[test]
     fn glob_table() {

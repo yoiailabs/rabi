@@ -103,16 +103,7 @@ pub(crate) fn inspect(
 ) -> Result<super::Report> {
     let mut report = super::inspect_for_classifier(root, base)?;
     let policy_bytes = super::policy_blob(root, &report.base.sha)?;
-    let policy = match policy_bytes
-        .as_deref()
-        .filter(|bytes| !bytes.iter().all(u8::is_ascii_whitespace))
-    {
-        Some(bytes) => Policy::parse(
-            std::str::from_utf8(bytes)
-                .map_err(|_| Error::msg("Invalid .rabi/policy.toml: policy must be UTF-8"))?,
-        )?,
-        None => Policy::default(),
-    };
+    let policy = Policy::load(policy_bytes.as_deref())?;
     let policy_blob_sha =
         super::committed_entry(root, &report.base.sha, ".rabi/policy.toml")?.map(|(_, oid)| oid);
     let doc_blob_sha = document_oid(root, &report.base.sha, &policy).ok().flatten();
@@ -183,7 +174,7 @@ pub(crate) fn inspect(
     Ok(report)
 }
 
-fn directory(root: &Path, writing: bool) -> Result<Option<PathBuf>> {
+pub(super) fn directory(root: &Path, writing: bool) -> Result<Option<PathBuf>> {
     let common = crate::git::canonical_common_dir(root)?;
     let mut path = common;
     for component in ["rabi", "classifications"] {

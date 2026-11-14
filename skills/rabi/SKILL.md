@@ -19,7 +19,7 @@ does not authorize publication or merge.
   open PRs, change remotes or call GitHub from an implementation/parent session.
   Rabi's deterministic task commands push, create draft PRs and merge outside
   those sessions when the operator has authorized the lifecycle.
-- Never run `rabi task approve`, post a success `rabi/approval` status, submit a
+- Never run `rabi task override` or `rabi task approve`, post a success `rabi/approval` status, submit a
   GitHub approval review, or remove/unset `RABI_AGENT` to bypass the restriction.
   A configured maintainer outside rabi-launched agents approves an exact full
   HEAD SHA. Automation can consume that approval; it cannot supply it.
@@ -138,6 +138,30 @@ errors and exit codes. Aggregate exit severity is
 `130 > 124 > 6 > 1 > 5 > 4 > 3 > 2 > 10 > 0` (other errors rank with 1, first tie
 wins); interruption stops further launches. Retry retained merged cleanup with
 a single-task advance. Inspect every task result when a batch fails.
+
+## Propose policy improvements
+
+`rabi task override SEL --tier low|medium|high --note TEXT [--sha <40 hex>]`
+is maintainer-only: a nonempty `RABI_AGENT` refuses before GitHub access, and the
+authenticated login must be in the base policy's `[approval] approvers`. It appends
+a sanitized observation with classified/treated tiers and SHA, changing no state,
+approval or merge. Never unset the marker to record an override.
+
+For an authorized proposal, use `rabi task tune [--since DUR|DATE] --dry-run --json`
+to inspect evidence, proposed replacements and the would-be unified diff with
+three context lines per hunk. No evidence
+means `nothing to propose`. Tune uses a fresh tool-less Claude session, nonce-frames
+untrusted evidence, validates strict JSON, retries malformed output once, and
+allows only the base `[classifier] doc` and `AGENTS.md`. Rabi applies replacements
+itself, requiring each find text exactly once and rejecting oversize edits.
+
+Without `--dry-run`, tune creates a normal task and linked workspace, commits the
+proposal with evidence and publishes a draft PR through `task publish`. Its body
+lists each edit's sanitized path, rationale and evidence as readable Markdown
+within a 24 KiB section cap. This requires authorization to publish.
+Tune never runs review, classify, approve or merge; inspect the task and continue
+with ordinary `task advance` gates. Policy-document changes may auto-merge only
+if those gates allow it. Override observations never authorize bypassing gates.
 
 ## Read state before recovery
 

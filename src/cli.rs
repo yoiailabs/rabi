@@ -903,6 +903,48 @@ fn task_list(args: &[String]) -> Result<i32> {
 fn task_show(args: &[String]) -> Result<i32> {
     task_store(args, "show")
 }
+fn task_override(args: &[String]) -> Result<i32> {
+    let parsed = args::parse(args, &command_options("task override"), true)?;
+    if parsed.positionals.len() != 1 {
+        return Err(Error::validation(
+            "Usage: rabi task override SEL --tier low|medium|high --note TEXT [--sha <40 hex>]",
+        ));
+    }
+    let tier = single_value(&parsed, "tier")?
+        .ok_or_else(|| Error::validation("Override requires --tier"))?;
+    let note = single_value(&parsed, "note")?
+        .ok_or_else(|| Error::validation("Override requires --note"))?;
+    let sha = single_value(&parsed, "sha")?;
+    let _git = crate::task::boundary::git_read_scope();
+    let repository = selected_repository(&parsed)?;
+    let cwd = std::env::current_dir().map_err(|error| Error::msg(error.to_string()))?;
+    let root = crate::git::git_root(repository.as_deref().unwrap_or(&cwd))?;
+    let event = crate::task::tune::record_override(&root, &parsed.positionals[0], tier, note, sha)?;
+    emit_json(&event)?;
+    if !crate::output::json() {
+        outln!("Override recorded; task state unchanged");
+    }
+    Ok(SUCCESS)
+}
+fn task_tune(args: &[String]) -> Result<i32> {
+    let parsed = args::parse(args, &command_options("task tune"), true)?;
+    if !parsed.positionals.is_empty() {
+        return Err(Error::validation(
+            "Usage: rabi task tune [--since DUR] [--dry-run]",
+        ));
+    }
+    let since = crate::task::learning::parse_since(single_value(&parsed, "since")?)?;
+    let _git = crate::task::boundary::git_read_scope();
+    let repository = selected_repository(&parsed)?;
+    let cwd = std::env::current_dir().map_err(|error| Error::msg(error.to_string()))?;
+    let root = crate::git::git_root(repository.as_deref().unwrap_or(&cwd))?;
+    let report = crate::task::tune::execute(&root, &since, parsed.flag("dry-run"))?;
+    emit_json(&report)?;
+    if !crate::output::json() {
+        report.print()?;
+    }
+    Ok(SUCCESS)
+}
 fn task_report(args: &[String]) -> Result<i32> {
     task_learning(args, false)
 }
@@ -2105,6 +2147,17 @@ fn command_options(key: &str) -> Vec<Opt> {
             value_flag("ci-timeout", None),
         ],
         "task show" | "task publish" | "task review" => vec![repo_flag()],
+        "task override" => vec![
+            repo_flag(),
+            value_flag("tier", None),
+            value_flag("note", None),
+            value_flag("sha", None),
+        ],
+        "task tune" => vec![
+            repo_flag(),
+            value_flag("since", None),
+            flag("dry-run", None),
+        ],
         "task report" | "task events" => vec![repo_flag(), value_flag("since", None)],
         "task abandon" => vec![repo_flag(), value_flag("reason", None)],
         "task risk" => vec![repo_flag(), value_flag("base", None)],
@@ -2652,6 +2705,18 @@ static COMMANDS: &[Command] = &[
         help_key: "task",
         run: task_root,
         children: &[
+            Command {
+                name: "override",
+                help_key: "task override",
+                run: task_override,
+                children: &[],
+            },
+            Command {
+                name: "tune",
+                help_key: "task tune",
+                run: task_tune,
+                children: &[],
+            },
             Command {
                 name: "report",
                 help_key: "task report",

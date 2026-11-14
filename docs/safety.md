@@ -172,3 +172,32 @@ Classification records under `<git-common-dir>/rabi/classifications/` are local 
 `task new --issue` and `task intake` read issues, collaborator permissions and issue events through GET-only gh APIs; they never comment on, label or close issues. The direct issue author requires current write/maintain/admin permission. Label intake additionally checks the actor who most recently added the requested label, matching label names case-insensitively across all event pages; a later removal, missing actor or non-write actor cannot reuse earlier permission. No matching label event, or a missing or non-user (for example bot) actor, skips with `label_actor_unknown`. It also checks the author through the direct import path. HTTP 404 from a collaborator-permission lookup means no permission for that issue; other unavailable evidence remains an operational failure and never authorizes creation. Unauthorized direct intake refuses as `intake_not_permitted` (4); bulk intake skips it and continues. Issue links are reserved under the creation lock, including terminal tasks, so retries/concurrent intake cannot duplicate tasks. Dry runs write no state.
 
 External title/body text remains untrusted after permission checks. Intake strips terminal escape/control sequences and redacts recognizable secrets and local paths before truncation. Each field keeps its beginning and is capped at 4096 UTF-8 bytes, including a trailing `[truncated]` marker when cut at a character boundary before storage. The implementer prompt includes this intent only inside a fresh collision-checked nonce frame marked as untrusted data; issue text cannot change role restrictions or authorize push/GitHub/network access. Intake never launches agents automatically. The operator creates the linked checkout, runs `task implement`, then explicitly runs `task advance`. Thus agent launches consuming external text follow intake permission checks and still require repository trust and the ordinary task boundary. Framing reduces prompt ambiguity; it cannot isolate a determined same-user process or make issue requirements trustworthy.
+
+## Task overrides and tuning
+
+`task override` is maintainer-only. Like approve, it refuses a nonempty
+`RABI_AGENT` before GitHub access; it additionally requires the authenticated
+GitHub login in the base policy's `[approval] approvers`. The sanitized observation
+is appended under the task lock without changing state, approvals or merges.
+This marker is a tripwire, not access control against a determined same-user
+process. Task events and classification records remain trusted local state.
+
+`task tune` proposes only. Override notes, classification reasons and repeated
+finding fingerprints are untrusted data inside a fresh collision-checked nonce
+frame. The fresh Claude session reuses the classifier credential boundary, empty
+temporary working directory, `--tools ""`, safe flags and disabled MCP/hooks.
+It cannot write files. Rabi validates the strict JSON answer, retries malformed
+output once and rejects disallowed paths, non-unique find text and oversize edits.
+Only the base policy's `[classifier] doc` and `AGENTS.md` may change. Proposed
+text can still be harmful or misleading; inspect the diff and its evidence.
+
+Dry runs create no task, workspace, commit or publication. An applied proposal
+becomes a normal task and linked workspace; rabi applies exact text replacements,
+commits with evidence and publishes a draft PR through the existing publication
+path. Each edit's path, rationale and evidence are sanitized before Markdown
+escaping and rendered as a list within the 24 KiB section cap. Supplied Markdown
+link syntax, HTML and mentions render as literal text. Tune stops there: it
+never runs review, classify, approve or merge. Ordinary publication floors and
+`task advance` gates decide whether the proposal can proceed. Policy-document
+changes may still auto-merge only if the policy's gates allow it; tuning itself
+never authorizes a merge. No override changes gate results.
