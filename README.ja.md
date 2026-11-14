@@ -108,7 +108,7 @@ rabi remove task/auth
 | `rabi shell-init` | `rabi cd` 用のシェル関数を生成 |
 | `rabi --version` | アプリのバージョンを表示（`-v` も利用可） |
 
-Global options (`run -R` requires `SEL --`): `-R/--repo REF`, `--json`, `--output text|json`, `--no-input`, `-h/--help`, and `-v/--version`. For `exec`, put rabi options before the selector and the child command after `--`. See [all options and examples](docs/commands.md).
+グローバルオプション（`run -R` には `SEL --` が必要です）: `-R/--repo REF`、`--json`、`--output text|json`、`--no-input`、`-h/--help`、`-v/--version`。`exec` ではセレクターの前に rabi のオプション、`--` の後に子コマンドを置きます。[全オプションと使用例](docs/commands.md)を参照。
 
 ## エージェント向け
 
@@ -144,15 +144,15 @@ npx skills update rabi
 
 ## 親セッションとスキル
 
-`rabi run "Fix issue #123"` starts one Codex parent session in the current workspace. The parent manages progress, delegates to its own subagents, gathers evidence and decides completion. Run `rabi run` again to resume the same parent; `--fresh` starts over and retains old records. Optional `--skill VALUE` passes a verbatim instruction without resolving files, including on first/fresh runs. `--timeout 30m` changes the per-launch limit (default `2h`). Trust is required; create a workspace before running. See [commands](docs/commands.md).
+`rabi run "Fix issue #123"` は現在のワークスペースで Codex の親セッションを1つ起動します。親が進行管理、subagent への委任、証拠収集、完了判断を担当します。次の `rabi run` は同じ親を再開し、`--fresh` は古い記録を残して新しく開始します。`--skill VALUE` は任意で、初回や `--fresh` での起動時にも省略できます。指定した値はファイルを解決せず、そのまま指示に渡します。`--timeout 30m` で起動ごとの制限時間を変更できます（既定 `2h`）。リポジトリの信頼が必要です。先にワークスペースを作成してください。[コマンド](docs/commands.md)を参照。
 
-Choose Cursor with `--provider cursor` or Claude Code with `--provider claude` on the first run or with `--fresh`. Resume follows the recorded provider; a different `--provider` requires `--fresh`. Codex remains the default. Cursor uses sandbox mode with automatic approval review; the review service can permit execution outside the sandbox, which rabi reports in the launch audit. Existing `.cursor/sandbox.json` files are preserved; otherwise rabi creates an empty network allowlist. Claude Code requires `claude` on PATH and login, uses model `opus` with effort `high`, and refuses to run unless its reported permission mode is `auto`. See [provider details](docs/commands.md#parent-sessions).
+初回または `--fresh` とともに `--provider cursor` で Cursor、`--provider claude` で Claude Code を選べます。再開時は記録された provider に従い、異なる `--provider` には `--fresh` が必要です。既定は Codex のままです。Cursor は sandbox と自動承認レビューを使い、レビューサービスが sandbox 外での実行を許可した場合は起動の監査情報に表示します。既存の `.cursor/sandbox.json` は保持し、存在しない場合は空のネットワーク許可リストを作成します。Claude Code は PATH 上の `claude` とログインを必要とし、モデル `opus`、effort `high` を使い、報告された権限モードが `auto` でなければ起動を停止します。[provider の詳細](docs/commands.md#parent-sessions)を参照。
 
-All parent providers use the shared task credential boundary, including resume and `--no-handoff`: GitHub tokens, SSH agent/askpass and inherited `GIT_*` variables are stripped, gh configuration is empty and Git credentials/prompts are disabled. Parents must not push or call GitHub; run deterministic publication commands outside the agent. Codex uses workspace-write with network disabled and approval never; Claude disallows push, gh and web tools. See [safety](docs/safety.md#task-agent-launch-boundary).
+すべての親プロバイダには、再開時や `--no-handoff` の指定時も、タスクエージェントと共通の認証情報の制限が適用されます。GitHub トークン、SSH エージェント・askpass の設定、継承された `GIT_*` 変数を取り除き、gh の設定を空にし、Git の認証情報の取得とプロンプトを無効にします。ユーザーが設定した MCP サーバーは Claude と Cursor の run 親セッションでも独自の認証情報を保持するため、この制限の対象は継承された gh・Git の認証情報のみです（Codex の親セッションは `--ignore-user-config` を使います）。親は push や GitHub へのアクセスを行わず、公開処理はエージェントの外で決められたコマンドを使って実行してください。Codex は workspace-write を使い、ネットワークと承認要求を無効にします。Claude は push、gh、Web ツールを禁止します。[安全性](docs/safety.md#task-agent-launch-boundary)を参照してください。
 
-Use `rabi run SEL -- [TASK]` to target a workspace without changing directory; add `-R REPO` from outside its repository. A single positional without `--` remains task text. `rabi list` and `rabi show` display the current parent run state; JSON also includes its session id and latest launch log/answer paths.
+`rabi run SEL -- [TASK]` でディレクトリを移動せずにワークスペースを選べます。リポジトリ外からは `-R REPO` を追加します。`--` がない場合の単一の位置引数は従来どおりタスクの文章です。`rabi list` と `rabi show` は現在の親の実行状態を表示し、JSON にはセッション ID と最新起動のログ・回答のパスも含まれます。
 
-`rabi handoff` carries workspace context across parent providers. `rabi handoff show` reads the original task and notes; `rabi handoff add` appends notes (`--kind checkpoint -` reads stdin); `rabi handoff path` prints the memory directory. Run captures the first task once and later tasks as requests. Memory injection is on by default; `--no-handoff` skips it. All providers receive a memory `--add-dir` grant for this workspace; Codex separately receives narrow Git metadata grants for local commits. Memory is retained after remove, gc and forget. See [handoff details](docs/commands.md#workspace-handoff).
+`rabi handoff` は親プロバイダを切り替える際のコンテキストを保持します。`rabi handoff show` で元のタスクとメモを読み、`rabi handoff add` でメモを追記し（`--kind checkpoint -` は標準入力）、`rabi handoff path` で保存先を表示します。run は最初のタスクを一度保存し、その後のタスクを request として追記します。注入は既定で有効で、`--no-handoff` で省略できます。全プロバイダに、このワークスペースのメモリディレクトリを `--add-dir` で渡します。Codex には、ローカルコミットに必要な Git メタデータへの書き込み権限も範囲を絞って別途付与します。remove・gc・forget 後もメモリは保持されます。[詳細](docs/commands.md#workspace-handoff)を参照。
 
 ```sh
 rabi run "Fix issue #123"

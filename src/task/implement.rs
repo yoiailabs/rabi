@@ -125,15 +125,15 @@ pub(super) struct GitMetadata {
 
 fn metadata_file(path: &Path) -> Result<Vec<u8>> {
     if !fs::symlink_metadata(path)
-        .map_err(|_| Error::status(REFUSED, "Cannot verify task Git metadata"))?
+        .map_err(|_| Error::status(REFUSED, "Cannot verify agent Git metadata"))?
         .is_file()
     {
         return Err(Error::status(
             REFUSED,
-            "Task Git metadata must be regular files, not symlinks",
+            "Agent Git metadata must be regular files, not symlinks",
         ));
     }
-    fs::read(path).map_err(|_| Error::status(REFUSED, "Cannot read task Git metadata"))
+    fs::read(path).map_err(|_| Error::status(REFUSED, "Cannot read agent Git metadata"))
 }
 
 fn metadata_path(bytes: &[u8]) -> PathBuf {
@@ -145,31 +145,31 @@ fn metadata_path(bytes: &[u8]) -> PathBuf {
 
 pub(super) fn git_metadata_snapshot(workspace: &Path) -> Result<GitMetadata> {
     let workspace = fs::canonicalize(workspace)
-        .map_err(|_| Error::status(REFUSED, "Cannot resolve task workspace"))?;
+        .map_err(|_| Error::status(REFUSED, "Cannot resolve agent workspace"))?;
     let pointer = metadata_file(&workspace.join(".git"))?;
     let pointer_path = pointer
         .strip_prefix(b"gitdir: ")
-        .ok_or_else(|| Error::status(REFUSED, "Task implement requires a linked workspace"))?;
+        .ok_or_else(|| Error::status(REFUSED, "Agent execution requires a linked workspace"))?;
     let directory = workspace.join(metadata_path(pointer_path));
     if !fs::symlink_metadata(&directory)
-        .map_err(|_| Error::status(REFUSED, "Cannot inspect task Git directory"))?
+        .map_err(|_| Error::status(REFUSED, "Cannot inspect agent Git directory"))?
         .is_dir()
     {
         return Err(Error::status(
             REFUSED,
-            "Task Git directory must not be a symlink",
+            "Agent Git directory must not be a symlink",
         ));
     }
     let git_dir = fs::canonicalize(directory)
-        .map_err(|_| Error::status(REFUSED, "Cannot resolve task Git directory"))?;
+        .map_err(|_| Error::status(REFUSED, "Cannot resolve agent Git directory"))?;
     let commondir = metadata_file(&git_dir.join("commondir"))?;
     let common = fs::canonicalize(git_dir.join(metadata_path(&commondir)))
-        .map_err(|_| Error::status(REFUSED, "Cannot resolve task common directory"))?;
+        .map_err(|_| Error::status(REFUSED, "Cannot resolve agent Git common directory"))?;
     let registered_parent = common.join("worktrees");
     if git_dir.parent() != Some(registered_parent.as_path()) {
         return Err(Error::status(
             REFUSED,
-            "Task workspace Git directory is outside its registered admin directory",
+            "Agent workspace Git directory is outside its registered admin directory",
         ));
     }
     let backlink = metadata_file(&git_dir.join("gitdir"))?;
@@ -183,7 +183,7 @@ pub(super) fn git_metadata_snapshot(workspace: &Path) -> Result<GitMetadata> {
     {
         return Err(Error::status(
             REFUSED,
-            "Task workspace Git directory does not match its registered checkout",
+            "Agent workspace Git directory does not match its registered checkout",
         ));
     }
     validate_common_dirs(&common)?;
@@ -210,12 +210,12 @@ fn validate_common_dirs(common: &Path) -> Result<()> {
         match fs::symlink_metadata(&expected) {
             Ok(metadata) => {
                 let target = fs::canonicalize(&expected).map_err(|_| {
-                    Error::status(REFUSED, "Cannot resolve task Git metadata directory")
+                    Error::status(REFUSED, "Cannot resolve agent Git metadata directory")
                 })?;
                 if !metadata.is_dir() || target != expected {
                     return Err(Error::status(
                         REFUSED,
-                        "Task Git metadata resolves outside its dedicated directory; refusing a broader write grant",
+                        "Agent Git metadata resolves outside its dedicated directory; refusing a broader write grant",
                     ));
                 }
             }
@@ -223,7 +223,7 @@ fn validate_common_dirs(common: &Path) -> Result<()> {
             Err(_) => {
                 return Err(Error::status(
                     REFUSED,
-                    "Cannot inspect task Git metadata directory",
+                    "Cannot inspect agent Git metadata directory",
                 ))
             }
         }
@@ -233,7 +233,7 @@ fn validate_common_dirs(common: &Path) -> Result<()> {
 
 pub(crate) fn git_write_dirs(workspace: &Path) -> Result<Vec<PathBuf>> {
     let workspace =
-        fs::canonicalize(workspace).map_err(|_| Error::msg("Cannot resolve task workspace"))?;
+        fs::canonicalize(workspace).map_err(|_| Error::msg("Cannot resolve agent workspace"))?;
     let (git_dir, common) = git_metadata(&workspace)?;
     validate_common_dirs(&common)?;
     let mut paths = vec![git_dir];
@@ -246,9 +246,9 @@ pub(crate) fn git_write_dirs(workspace: &Path) -> Result<Vec<PathBuf>> {
         // Reflogs can be absent when core.logAllRefUpdates was disabled. Prepare
         // their dedicated directory so Codex can canonicalize every write grant.
         fs::create_dir_all(&path)
-            .map_err(|_| Error::msg("Cannot prepare task Git metadata directory"))?;
+            .map_err(|_| Error::msg("Cannot prepare agent Git metadata directory"))?;
         let path = fs::canonicalize(path)
-            .map_err(|_| Error::msg("Cannot resolve task Git metadata directory"))?;
+            .map_err(|_| Error::msg("Cannot resolve agent Git metadata directory"))?;
         if !path.starts_with(&workspace) && !directories.contains(&path) {
             directories.push(path);
         }
@@ -536,7 +536,7 @@ mod tests {
             assert!(
                 error
                     .to_string()
-                    .contains("outside its dedicated directory"),
+                    .contains("Agent Git metadata resolves outside its dedicated directory"),
                 "{name}: {error}"
             );
             fs::remove_file(&path).unwrap();
