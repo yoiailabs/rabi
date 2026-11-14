@@ -72,12 +72,7 @@ rabi remove task/auth
 | `rabi remove` | 指定したワークスペースを安全性を確認して削除 |
 | `rabi forget` | ファイルとブランチを残して記録だけを削除 |
 | `rabi gc` | クリーンアップを計画し、`--apply` で実行 |
-| `rabi clone` | ghq 互換の配置に clone して登録 |
-| `rabi repo` | リポジトリ登録の操作 |
-| `rabi repo add` | リポジトリを登録 |
-| `rabi repo list` | 登録済み・検出されたリポジトリの一覧 |
-| `rabi repo show` | リポジトリを確認 |
-| `rabi repo forget` | 登録だけを削除 |
+| `rabi clone` | ghq 互換のディレクトリ構成でクローン |
 | `rabi run` | ワークスペースの親セッションを起動・再開 |
 | `rabi doctor` | GitHub を読み取り専用で診断し、手動確認用にワークフローファイルを列挙（ワークフロー YAML は解析しない） |
 | `rabi task` | ローカルタスクを管理し、PR の変更を検査・承認・マージ |
@@ -85,12 +80,12 @@ rabi remove task/auth
 | `rabi task list` | 未完了のローカルタスクを一覧表示（`--all` で終了済みも表示） |
 | `rabi task show` | ローカルタスクと追記専用のイベント履歴をテキストまたは camelCase JSON で表示 |
 | `rabi task abandon` | 未完了のローカルタスクを中止 |
-| `rabi task implement` | Run one implementer in an existing task workspace; record commits and dirty state |
-| `rabi task publish` | Run prechecks, push the task branch and create or reuse a draft PR |
-| `rabi task advance` | Drive implementation through approval, merge and safe cleanup |
-| `rabi task review` | Review the exact PR head in a detached checkout; mark passing changes ready |
+| `rabi task implement` | 既存のタスクワークスペースで実装エージェントを実行し、コミットと未コミットの変更を記録 |
+| `rabi task publish` | 事前チェックを実行し、タスクブランチを push してドラフト PR を作成・再利用 |
+| `rabi task advance` | 実装から承認・マージ・安全なクリーンアップまで進行 |
+| `rabi task review` | 切り離したチェックアウトで PR の正確な HEAD をレビューし、合格した変更をレビュー可能にする |
 | `rabi task risk` | ベースコミットのリスクポリシーでコミット済みの変更を分類 |
-| `rabi task classify` | Assess committed diffs using the written policy and record an exact-head verdict |
+| `rabi task classify` | 文書化されたポリシーでコミット済みの差分を評価し、正確な HEAD に対する判定を記録 |
 | `rabi task status` | 書き込みなしで GitHub の PR 情報を表示 |
 | `rabi task approve` | PR の正確な HEAD をコミットステータスで承認 |
 | `rabi task merge` | 事前チェックと承認を確認してマージ（`--dry-run` は評価のみ） |
@@ -125,7 +120,7 @@ rabi remove task/auth
 | 4 | 安全上の拒否 |
 | 5 | 同期の競合 |
 | 6 | 永続的な変更後の部分的な完了 |
-| 10 | Task advance waiting for required CI |
+| 10 | タスクの進行に必要な CI の完了待ち |
 | 124 | run の制限時間超過 |
 | 130 | run の中断 |
 
@@ -166,7 +161,7 @@ rabi run --fresh --provider claude "Fix issue #123"
 
 ## 設定
 
-`rabi config` で `workspace-root`、`clone-root`、`discover-ghq`、`sync.strategy`、`sync.rewrite-published` を管理します。`-R/--repo REF` はパス、登録済みの名前、検出された名前でリポジトリを選びます。[設定・パス・リポジトリ登録](docs/configuration.md)を参照してください。
+`rabi config` で `workspace-root`、`clone-root`、`sync.strategy`、`sync.rewrite-published` を管理します。コマンドの対象は現在のリポジトリ、または `-R/--repo REF` で選択したリポジトリです。REF には `/`、`./`、`../`、`~` で始まるチェックアウトのルートパス（`.` と `..` も可）、または既存のクローン先に対応する正規名 `host/owner/repo`（`owner/repo` はデフォルトホストを使用）を指定します。相対パスには `./` を付けてください。サブディレクトリのパスは指定できません。[設定とリポジトリの指定](docs/configuration.md)を参照してください。
 
 プライマリチェックアウトの `.rabi.toml` に `[env]` を宣言すると、信頼済みの `rabi run` と `rabi exec` で PATH の先頭追加と変数の設定を共有できます。run はワークスペース内の PATH エントリーと `${RABI_WORKSPACE_PATH}` を参照する値を警告付きでスキップします。PATH はプロバイダーのインタープリターも選ぶため、エージェントが書き込めないディレクトリだけを宣言してください。どちらも `--no-env` で無効にできます。フックの環境は従来どおりです。展開とセキュリティのルールは[実行環境](docs/configuration.md#repository-execution-environment)を参照してください。
 

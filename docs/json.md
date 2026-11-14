@@ -2,7 +2,7 @@
 
 [README](../README.md) · [Commands](commands.md) · [JSON](json.md)
 
-`--json` (an alias for `--output json`) prints exactly one schema 2 envelope to **stdout**. Every JSON command uses the same contract, including errors and `repo list`. Parsers must ignore unknown fields. Progress, hooks, Git output go to **stderr**. Human output is selected with `--output text`.
+`--json` (an alias for `--output json`) prints exactly one schema 2 envelope to **stdout**. Every JSON command uses the same contract, including errors. Parsers must ignore unknown fields. Progress, hooks, Git output go to **stderr**. Human output is selected with `--output text`.
 
 ## Envelope examples
 
@@ -37,11 +37,11 @@ An absent workspace (`rabi show topic --json`) returned exit 3:
 }
 ```
 
-`command` uses space-separated names such as `set` and `repo list`. `data` contains the command result without a top-level `schema`; only `--version` uses `data.version` for the application version. `error` is null on success, otherwise an object with stable `code`, human `message` and optional `details`. Partial results remain in `data`, including setup failures and per-item remove/gc/sync results. Per-item errors stay on their items. `warnings` contains objects with stable `code` and `message`, including metadata read/update failures and unavailable PR status; warnings may also appear on stderr and include contextual fields such as `workspace`.
+`command` uses space-separated names such as `set` and `task list`. `data` contains the command result without a top-level `schema`; only `--version` uses `data.version` for the application version. `error` is null on success, otherwise an object with stable `code`, human `message` and optional `details`. Partial results remain in `data`, including setup failures and per-item remove/gc/sync results. Per-item errors stay on their items. `warnings` contains objects with stable `code` and `message`, including metadata read/update failures and unavailable PR status; warnings may also appear on stderr and include contextual fields such as `workspace`.
 
 `refused` is the fallback when a safety refusal has no more specific cause. The same statuses apply to text output. Standalone `exec` preserves its child's exit status, including 128+signal. Create setup failures exit 6 and retain the workspace plus hook status in `data.setup.exitCode`. Metadata save and copy failures after creation also exit 6. Remove checks every selector and safety guard before removing anything. A later failure exits 6 after persistent removal, otherwise the cause exit code. Per-item results remain available for retries. Remove reports unknown selectors as exit 3 before any hooks or removal, including with `--dry-run`. After exit 6, use `error.details.retryCommand` (also shown in text) to retry only unfinished work; repeating the original command may exit 3 for completed targets.
 
-`RABI_OUTPUT=json|text` sets the default; empty means unset and other values exit 2. Explicit output flags override it. Unknown commands and missing commands after common options also return a usage envelope when JSON is selected. `list --names`/`--paths` (and repo `--names`/`--paths`) select text even with `RABI_OUTPUT=json`; explicitly combining it with JSON is a usage error. `exec`, `completions`, `shell-init` and text help through `--help` ignore `RABI_OUTPUT`. `--version` and `help` support JSON and honor the output mode. Explicit JSON output for `exec`, `completions` or `shell-init` is a usage error; arguments after the required `--` belong to the child.
+`RABI_OUTPUT=json|text` sets the default; empty means unset and other values exit 2. Explicit output flags override it. Unknown commands and missing commands after common options also return a usage envelope when JSON is selected. `list --names`/`--paths` select text even with `RABI_OUTPUT=json`; explicitly combining it with JSON is a usage error. `exec`, `completions`, `shell-init` and text help through `--help` ignore `RABI_OUTPUT`. `--version` and `help` support JSON and honor the output mode. Explicit JSON output for `exec`, `completions` or `shell-init` is a usage error; arguments after the required `--` belong to the child.
 
 rabi never prompts in non-interactive mode: nonempty `CI`, JSON output, `--no-input`, `RABI_NO_INPUT` other than empty or `0`, or stdin/stderr without a TTY. Untrusted hooks refuse before changes with exit 4 and a `rabi trust add` / `create --no-setup` / `setup --no-hooks` hint. Network Git operations receive `GIT_TERMINAL_PROMPT=0`; repository hooks and gh read stdin from `/dev/null`. User commands (standalone `exec`) inherit stdin.
 
@@ -94,7 +94,7 @@ The `data.workspace` object captured from `rabi create json-example --base main 
 
 Workspace records contain `schema: 2`, an `id` of the form `ws_<uuid v4>`, `path`, an optional `name`, and the metadata fields above. JSON workspace objects include `id` (null for an unrecorded workspace). Each record is written atomically through a temporary file in the same directory, fsync, and rename. Deleting a record removes only its file. Concurrent additions of different records preserve both; concurrent updates of the same record use the last write.
 
-Repo registrations live in `$XDG_STATE_HOME/rabi/repos/<id>.json`, falling back to `~/.local/state/rabi/repos/<id>.json`. Their IDs have the form `proj_<uuid>`. Readers deduplicate registrations by root path, keeping the oldest `createdAt` (then the smallest ID on a tie). rabi uses no internal file locks; trust and user config remain single files replaced atomically.
+Former repository registrations and their `proj_` IDs are no longer read or written. Existing registry files are ignored and left untouched; see [storage cleanup](configuration.md#targeting-a-repository). Workspace records and their `repo: {root, name}` context remain in use. Trust and user config remain single files replaced atomically.
 
 ## Per-command data
 
@@ -106,7 +106,7 @@ These are the keys inside envelope `data`; nested workspace objects use the cont
 | `run` | `run: RECORD, launch: LAUNCH, answer: string` |
 | `show`, `set`, `adopt` | `workspace` |
 | `path` | `path` |
-| `list` | `workspaces`; `--all-repos` also adds `repos` |
+| `list` | `workspaces` (current or selected repository only) |
 | `setup` | `workspace`, `setup`, `copy` |
 | `forget` | `items: [{workspace, ok}]` |
 | `remove` | `items`; plans also include `plan` |
@@ -115,9 +115,6 @@ These are the keys inside envelope `data`; nested workspace objects use the cont
 | `config get`, `config list` | `config` (effective values, or source objects with `--sources`) |
 | `config set` | `key`, `value` |
 | `config unset` | `key`, `unset` |
-| `repo add`, `repo forget` | `status`, `repo` |
-| `repo show` | `repo` |
-| `repo list` | `repos` |
 | `trust add` | `path`, `trustedAt` |
 | `trust remove` | `path`, `removed` |
 | `trust list` | `repos` (common-directory paths and trust timestamps) |
@@ -167,21 +164,17 @@ The other `data` fields from that create invocation were:
 
 `adopt --json` returns `{workspace: {...}}`. If refreshing the workspace after saving its record fails, it exits 6 (`partial`) and preserves the saved registration fields in `data.workspace`. `forget --json` returns `{items: [{workspace: {...}, ok: true}]}` using the workspace state after record removal.
 
-## Repository data
-
-`repo list --json` uses the common schema 2 envelope. It uses camelCase and absolute `rootPath` values. Each repo includes `canonicalName` (`host/owner/repo` from `origin`, otherwise from a `<root>/<host>/<owner>/<repo>` checkout, otherwise the directory name). `name` stays the directory name. Warnings are recorded in the envelope and on stderr. Parsers must ignore unknown fields, so adding `canonicalName` does not change `schema`.
-
-`repo add --json` and `repo forget --json` return `{ "status", "repo" }` in `data`. Errors use the common envelope.
+Removed repository commands have no JSON data contract; invoking them returns a usage error. Cross-repository `list` output and its top-level `data.repos` are removed; use one invocation per repository. The clone-root fallback warning is `clone_root` (formerly `repo_discovery`).
 
 ## Clone data
 
-`clone --json` uses the common schema 2 envelope. `repo.root` is the absolute primary checkout path. `repo.name` is the canonical `host/owner/repo` name, with a lowercased host (including any port). `repo.remoteUrl` is the clone URL with the same lowercased host. `http` and `https` userinfo is removed, including a token used as the username (`https://github.com/<owner>/<repo>.git` for `owner/repo` and `host/owner/repo`). `ssh` and scp-style URLs keep the login name. `cloned` is true when this command created the checkout. `updated` is true only when `--update` fetched an existing checkout. Git's progress stays on stderr.
+`clone --json` uses the common schema 2 envelope. `repo.root` is the absolute primary checkout path. `repo.name` is the canonical `host/owner/repo` name, with a lowercased host (including any port). `repo.remoteUrl` is the clone URL with the same lowercased host. `http` and `https` userinfo is removed, including a token used as the username (`https://github.com/<owner>/<repo>.git` for `owner/repo` and `host/owner/repo`). `ssh` and scp-style URLs keep the login name. `cloned` is true when this command created the checkout. `updated` is true only when `--update` fetched an existing checkout. Git's progress stays on stderr. No registration ID, registry source, or registry timestamps are returned. Clone does not access registry state and cannot fail because that state is corrupt or unwritable.
 
-A failed clone uses the common error envelope. A destination that is not the expected repository is `usage` / exit code 2. A path component the filesystem rejects, such as a name longer than the filename limit, is also `usage` / exit code 2. If Git cannot read its configuration while inspecting an existing checkout, the error includes Git's message and uses exit code 1. A Git failure during clone or fetch is `command_failed` with exit code 1. If repo registration fails after a checkout was created or an existing checkout was fetched, the command exits 6 with `error.code` set to `partial`, retaining the completed result (including `repo.root`, `cloned`, and `updated`) in `data`. The checkout remains available; retrying the command can register it. Registration failure without a clone or fetch exits 1.
+A failed clone uses the common error envelope. A destination that is not the expected repository is `usage` / exit code 2. A path component the filesystem rejects, such as a name longer than the filename limit, is also `usage` / exit code 2. If Git cannot read its configuration while inspecting an existing checkout, the error includes Git's message and uses exit code 1. A Git failure during clone or fetch is `command_failed` with exit code 1.
 
 ## Help and version discovery
 
-`rabi help [COMMAND...]` prints the same text as `--help`. `rabi help --json` puts the full contents of `help-data.json` in `data`, including `commands`, `helps`, `globalOptions`, `exitCodes`, `errorCodes`, `warningCodes`, and `schemaVersion: 2`. `rabi help repo show --json` adds `data.selected` for that command. This is separate from the envelope’s `schema`.
+`rabi help [COMMAND...]` prints the same text as `--help`. `rabi help --json` puts the full contents of `help-data.json` in `data`, including `commands`, `helps`, `globalOptions`, `exitCodes`, `errorCodes`, `warningCodes`, and `schemaVersion: 2`. `rabi help show --json` adds `data.selected` for that command. This is separate from the envelope’s `schema`.
 
 `--version` and `-v` show the application version. `rabi --version --json` uses `command: "--version"`; `data.version` contains the application version and `data.display` contains the text version line.
 

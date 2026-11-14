@@ -19,6 +19,8 @@
 
 Create may retain a workspace and exit 6 if metadata, copying, or setup fails. Read `data` before handling the error. A remove failure after persistent removal exits 6; use `error.details.retryCommand` after fixing the cause. Repeating the original remove command can exit 3 because completed targets have already gone. Sync uses exit 6 if another selected item changed before an error, conflict, or refusal.
 
+Removed repository commands and cross-repository flags return usage (exit 2). Repository selection no longer reports ambiguous name suffixes: canonical `-R` locations that are missing return 3; a location containing a different repository returns 2. Clone has no registry-related failure or partial-success status. Run each command separately for each repository using a filesystem path or canonical clone location.
+
 GC plans and protected skips succeed with exit 0. A warning does not by itself mean failure. The complete error and warning code lists are in `rabi help --json` (`data.errorCodes` and `data.warningCodes`). See [JSON](json.md), [safety](safety.md), and [sync](sync.md) for per-command details.
 
 `run` passes through the parent's exit status (0 does not imply task completion; signals use 128+signal). Launcher/protocol errors use 1, invalid options/timeout or a primary checkout use 2, untrusted or concurrent launches and Codex Git metadata safety refusals (such as redirected metadata or symlinked grant directories) use 4 (`refused` for metadata). Timeout uses 124; SIGINT/SIGTERM received by rabi use 130. JSON retains run/launch data after launch failure and reports an error; the launch's exitCode records the parent's actual status separately. Parent edits and local commits are retained.

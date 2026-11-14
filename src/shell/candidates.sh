@@ -25,10 +25,6 @@ _rabi_candidates() {
         rabi_count=$((rabi_count + 1))
     done
     if [ -n "$rabi_pending" ]; then
-        if [ "$rabi_pending" = repo ]; then
-            rabi_names=$(command rabi repo list --names 2>/dev/null) || return 0
-            [ -z "$rabi_names" ] || printf '%s\n' "$rabi_names"
-        fi
         return 0
     fi
     if [ "$rabi_context" = exec ] && [ "$rabi_count" -gt 0 ]; then

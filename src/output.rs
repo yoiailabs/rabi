@@ -212,7 +212,7 @@ fn failure_with(error: JsonErrorBody, report: impl FnOnce(&str)) {
 
 pub(crate) fn warning(code: &str, message: impl Into<String>) {
     let message = message.into();
-    if code == "repo_discovery" {
+    if code == "clone_root" {
         errln!("{}", visible_text(&message));
     } else {
         errln!("{message}");

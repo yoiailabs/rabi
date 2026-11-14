@@ -93,12 +93,7 @@ pub(crate) fn prepare(
             }
             "--help" | "-h" if inline.is_none() && help_available => help = true,
             _ => {
-                if inline.is_none()
-                    && matches!(
-                        (key, name),
-                        ("list", "--names" | "--paths") | ("repo list", "--names" | "--paths")
-                    )
-                {
+                if inline.is_none() && matches!((key, name), ("list", "--names" | "--paths")) {
                     text_listing = true;
                 }
                 remaining.push(arg.clone());

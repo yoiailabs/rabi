@@ -1,12 +1,11 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use serde::Serialize;
 
 use crate::error::{Error, Result, JSON_VERSION};
 use crate::preferences;
 use crate::process;
-use crate::projects::ProjectRegistryStore;
 
 /// Clone target parsed from a URL or `host/owner/repo` shorthand.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -40,22 +39,15 @@ pub struct CloneRequest<'a> {
     pub update: bool,
 }
 
-pub struct CloneOutcome {
-    pub result: CloneResult,
-    pub registration_error: Option<Error>,
-}
-
-pub fn clone_repository(request: &CloneRequest<'_>) -> Result<CloneOutcome> {
+pub fn clone_repository(request: &CloneRequest<'_>) -> Result<CloneResult> {
     let spec = parse_clone_source(request.source)?;
     let branch = normalize_branch(request.branch)?;
     let depth = parse_depth(request.depth)?;
     let root = resolve_repository_root()?;
     let destination = root.join(&spec.host).join(&spec.owner).join(&spec.repo);
     let (cloned, updated) = place_clone(&destination, &spec, branch, depth, request.update)?;
-
-    // Preserve the completed checkout/fetch even if registry access fails.
     let path = fs::canonicalize(&destination).unwrap_or(destination);
-    let mut result = CloneResult {
+    Ok(CloneResult {
         version: JSON_VERSION,
         path: path.to_string_lossy().into_owned(),
         host: spec.host,
@@ -64,20 +56,6 @@ pub fn clone_repository(request: &CloneRequest<'_>) -> Result<CloneOutcome> {
         remote_url: spec.remote_url,
         cloned,
         updated,
-    };
-    let registration_error = match register_repository(&path) {
-        Ok(registered) => {
-            result.path = registered;
-            None
-        }
-        Err(error) => Some(Error::msg(format!(
-            "Failed to register repository at {}: {error}",
-            result.path
-        ))),
-    };
-    Ok(CloneOutcome {
-        result,
-        registration_error,
     })
 }
 
@@ -94,11 +72,11 @@ pub fn human_clone_message(result: &CloneResult) -> String {
 /// Root used for `<root>/<host>/<owner>/<repo>`.
 ///
 /// Order: `root` in the user config, the first `git config ghq.root` value,
-/// `$GHQ_ROOT`, then `~/ghq`. `repo list` scans this same directory.
+/// `$GHQ_ROOT`, then `~/ghq`. Repository shorthand selects this same location.
 pub fn resolve_repository_root() -> Result<PathBuf> {
     let (root, warnings) = resolve_repository_root_quiet()?;
     for warning in warnings {
-        crate::output::warning("repo_discovery", format!("Warning: {warning}"));
+        crate::output::warning("clone_root", format!("Warning: {warning}"));
     }
     Ok(root)
 }
@@ -133,7 +111,7 @@ pub(crate) fn clone_root_with_source(
         &mut warnings,
     )?;
     for warning in warnings {
-        crate::output::warning("repo_discovery", format!("Warning: {warning}"));
+        crate::output::warning("clone_root", format!("Warning: {warning}"));
     }
     Ok(value)
 }
@@ -163,50 +141,183 @@ pub(crate) fn canonical_remote_name(url: &str) -> Option<String> {
     Some(format!("{}/{}/{}", spec.host, spec.owner, spec.repo))
 }
 
+/// Select a checkout by filesystem path or its exact clone-layout location.
+/// Only explicit path prefixes select filesystem lookup.
+pub fn resolve_repository_ref(reference: &str) -> Result<PathBuf> {
+    let reference = reference.trim();
+    if reference.is_empty() {
+        return Err(Error::validation(
+            "Option '--repo <value>' requires a repository path or host/owner/repo name",
+        ));
+    }
+    if reference.starts_with('-') {
+        return Err(Error::validation(format!(
+            "Option '--repo <value>' received '{reference}', which looks like an option"
+        )));
+    }
+    let path = if reference == "~" {
+        home_dir()?
+    } else if let Some(rest) = reference.strip_prefix("~/") {
+        home_dir()?.join(rest)
+    } else if reference.starts_with('~') {
+        return Err(Error::validation("Repository paths support only ~ or ~/"));
+    } else {
+        PathBuf::from(reference)
+    };
+    if reference.starts_with('/')
+        || reference.starts_with('~')
+        || reference.starts_with("./")
+        || reference.starts_with("../")
+        || matches!(reference, "." | "..")
+    {
+        return resolve_directory_reference(&path, reference);
+    }
+    let Some(segments) = path_segments(reference) else {
+        return Err(Error::RepositoryNotFound(reference.to_owned()));
+    };
+    if !matches!(segments.len(), 2 | 3) {
+        return Err(Error::RepositoryNotFound(reference.to_owned()));
+    }
+    if reference.starts_with('/')
+        || reference.ends_with('/')
+        || reference.contains('@')
+        || reference.contains("://")
+        || reference.chars().any(char::is_whitespace)
+    {
+        return Err(Error::validation(
+            "Repository names must be host/owner/repo or owner/repo",
+        ));
+    }
+    let spec = parse_shorthand(reference)?;
+    let root = resolve_repository_root()?;
+    resolve_named_repository(&root, &spec, reference)
+}
+
+fn resolve_named_repository(root: &Path, spec: &RepoSpec, reference: &str) -> Result<PathBuf> {
+    let destination = root.join(&spec.host).join(&spec.owner).join(&spec.repo);
+    if !destination_exists(&destination)? {
+        return Err(Error::RepositoryNotFound(reference.to_owned()));
+    }
+    ensure_matching_repository(&destination, spec)?;
+    let root = crate::git::git_root(&destination)?;
+    fs::canonicalize(root).map_err(|error| Error::msg(error.to_string()))
+}
+
+fn resolve_directory_reference(path: &Path, reference: &str) -> Result<PathBuf> {
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| Error::msg(error.to_string()))?
+            .join(path)
+    };
+    let path = absolute.as_path();
+    let metadata = match fs::metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(Error::PathNotFound(reference.to_owned()));
+        }
+        Err(error) => return Err(Error::msg(error.to_string())),
+    };
+    if !metadata.is_dir() {
+        if path.file_name().is_some_and(|name| name == ".git") {
+            if let Some(checkout) = path.parent() {
+                if let Ok(root) = filesystem_checkout_root(checkout) {
+                    return Err(not_checkout_root(reference, &root));
+                }
+            }
+        }
+        return Err(Error::validation(format!(
+            "Repository path '{reference}' is not a directory"
+        )));
+    }
+    resolve_checkout_path(path, reference)
+}
+
+fn resolve_checkout_path(path: &Path, reference: &str) -> Result<PathBuf> {
+    let checkout = match filesystem_checkout_root(path) {
+        Ok(checkout) => checkout,
+        Err(error) => {
+            // Git's admin directory is outside the work tree. Still give a
+            // checkout-root hint without accepting that directory.
+            for ancestor in path.ancestors() {
+                if ancestor.file_name().is_some_and(|name| name == ".git") {
+                    if let Some(checkout) = ancestor.parent() {
+                        if let Ok(root) = filesystem_checkout_root(checkout) {
+                            return Err(not_checkout_root(reference, &root));
+                        }
+                    }
+                }
+            }
+            return Err(error);
+        }
+    };
+    let canonical = fs::canonicalize(path).map_err(|error| Error::msg(error.to_string()))?;
+    let checkout = fs::canonicalize(checkout).map_err(|error| Error::msg(error.to_string()))?;
+    if canonical != checkout {
+        return Err(not_checkout_root(reference, &checkout));
+    }
+    let root = crate::git::git_root(path)?;
+    fs::canonicalize(root).map_err(|error| Error::msg(error.to_string()))
+}
+
+fn filesystem_checkout_root(path: &Path) -> Result<PathBuf> {
+    let inside = crate::git::output(&["rev-parse", "--is-inside-work-tree"], Some(path), true)?;
+    if inside != "true" {
+        return Err(Error::validation(
+            "Repository path is not inside a checkout",
+        ));
+    }
+    // Git returns only ../ components here. Keep the filesystem path itself out
+    // of text output so trailing whitespace and non-UTF-8 bytes survive.
+    let relative = crate::git::output(&["rev-parse", "--show-cdup"], Some(path), true)?;
+    fs::canonicalize(path.join(relative)).map_err(|error| Error::msg(error.to_string()))
+}
+
+fn not_checkout_root(reference: &str, checkout: &Path) -> Error {
+    Error::validation(format!(
+        "Repository path '{reference}' is not a repository root. Use the checkout root {} instead.",
+        checkout.display()
+    ))
+}
+
+/// Display identity for the selected repository, independent of registrations.
+pub(crate) fn canonical_name(root: &Path) -> String {
+    if let Some(name) = canonical_name_from_origin(root) {
+        return name;
+    }
+    if let Ok((clone_root, _)) = resolve_repository_root_quiet() {
+        let canonical = fs::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        let clone_root = fs::canonicalize(&clone_root).unwrap_or(clone_root);
+        if let Ok(relative) = canonical.strip_prefix(&clone_root) {
+            let segments = relative
+                .components()
+                .map(|component| match component {
+                    Component::Normal(part) => Some(part.to_string_lossy().into_owned()),
+                    _ => None,
+                })
+                .collect::<Option<Vec<_>>>();
+            if let Some(segments) = segments.filter(|segments| segments.len() == 3) {
+                return format!(
+                    "{}/{}/{}",
+                    segments[0].to_ascii_lowercase(),
+                    segments[1],
+                    segments[2]
+                );
+            }
+        }
+    }
+    root.file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_default()
+}
+
 /// A remote git can talk to by scheme or scp-style `host:path`.
 fn is_hosted_remote(url: &str) -> bool {
     if url.is_empty() || url.starts_with('/') || url.starts_with('.') || url.starts_with('~') {
         return false;
     }
     url.contains("://") || url.contains(':')
-}
-
-/// Git checkouts located at `<root>/<host>/<owner>/<repo>`.
-pub fn scan_repository_root(root: &Path) -> Vec<String> {
-    let mut found = Vec::new();
-    let Ok(hosts) = fs::read_dir(root) else {
-        return found;
-    };
-    for host in hosts.flatten() {
-        let host_path = host.path();
-        if !is_project_directory(&host_path) {
-            continue;
-        }
-        let Ok(owners) = fs::read_dir(&host_path) else {
-            continue;
-        };
-        for owner in owners.flatten() {
-            let owner_path = owner.path();
-            if !is_project_directory(&owner_path) {
-                continue;
-            }
-            let Ok(repos) = fs::read_dir(&owner_path) else {
-                continue;
-            };
-            for repo in repos.flatten() {
-                let repo_path = repo.path();
-                // Clone staging directories are not projects.
-                if !is_project_directory(&repo_path) || !repo_path.join(".git").exists() {
-                    continue;
-                }
-                let canonical = fs::canonicalize(&repo_path).unwrap_or(repo_path);
-                found.push(canonical.to_string_lossy().to_string());
-            }
-        }
-    }
-    found.sort();
-    found.dedup();
-    found
 }
 
 #[cfg(test)]
@@ -403,13 +514,6 @@ fn adopt_existing(destination: &Path, spec: &RepoSpec, update: bool) -> Result<(
 
 fn remove_staging(staging: &Path) {
     let _ = fs::remove_dir_all(staging);
-}
-
-fn register_repository(destination: &Path) -> Result<String> {
-    let root = crate::projects::resolve_project_root(destination)?;
-    let store = ProjectRegistryStore::default_store()?;
-    let (project, _) = store.add(&root)?;
-    Ok(project.root_path)
 }
 
 fn ensure_matching_repository(path: &Path, spec: &RepoSpec) -> Result<()> {
@@ -763,6 +867,9 @@ fn validate_component(input: &str, value: &str, label: &str) -> Result<String> {
 }
 
 fn same_repository(expected: &RepoSpec, actual_url: &str) -> bool {
+    if !is_hosted_remote(actual_url) {
+        return false;
+    }
     match parse_clone_source(actual_url) {
         Ok(actual) => {
             actual.host == expected.host
@@ -930,10 +1037,7 @@ fn is_directory(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn is_project_directory(path: &Path) -> bool {
-    !is_staging_directory(path) && is_directory(path)
-}
-
+#[cfg(test)]
 fn is_staging_directory(path: &Path) -> bool {
     path.file_name()
         .is_some_and(|name| name.as_encoded_bytes().starts_with(b".rabi-clone-"))
@@ -1343,6 +1447,21 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn local_relative_origins_do_not_prove_hosted_repository_identity() {
+        let expected = spec("acme/widget");
+        for origin in [
+            "acme/widget",
+            "acme/widget.git",
+            "github.com/acme/widget",
+            "github.com/acme/widget.git",
+            "./acme/widget",
+            "../acme/widget",
+        ] {
+            assert!(!same_repository(&expected, origin), "{origin}");
+        }
+    }
+
     fn git_roots(values: &'static [&str]) -> impl FnOnce() -> Result<Vec<String>> {
         move || Ok(values.iter().map(|value| (*value).to_string()).collect())
     }
@@ -1458,64 +1577,95 @@ mod tests {
     }
 
     #[test]
-    fn scan_finds_only_host_owner_repo_checkouts() {
-        let root = std::env::temp_dir().join(format!(
-            "rabi-scan-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .expect("clock")
-                .as_nanos()
+    fn exact_clone_location_requires_matching_repository_identity() {
+        let root = temp_dir("repository-ref");
+        let expected = spec("example.com/acme/widget");
+        let reference = "example.com/acme/widget";
+        assert!(matches!(
+            resolve_named_repository(&root, &expected, reference),
+            Err(Error::RepositoryNotFound(_))
         ));
-        let repo = root.join("github.com").join("owner").join("repo");
-        fs::create_dir_all(repo.join(".git")).expect("git dir");
-        fs::create_dir_all(root.join("github.com").join("owner").join("not-a-repo"))
-            .expect("plain");
-        fs::write(root.join("github.com").join("file"), "nope").expect("file");
-        let staging = root
-            .join("github.com")
-            .join("owner")
-            .join(".rabi-clone-1-abc");
-        fs::create_dir_all(staging.join(".git")).expect("staging");
-        for path in [
-            root.join("github.com").join("acme").join(".dotfiles"),
-            root.join("github.com").join(".org").join("repo"),
-            root.join("github.com").join("org").join(".github"),
-        ] {
-            fs::create_dir_all(path.join(".git")).expect("dot repo");
+        let checkout = root.join(reference);
+        fs::create_dir_all(&checkout).expect("checkout");
+        git(&["init", "-b", "main"], Some(&checkout));
+        assert!(resolve_named_repository(&root, &expected, reference).is_err());
+        git(
+            &[
+                "remote",
+                "add",
+                "origin",
+                "https://example.com/acme/other.git",
+            ],
+            Some(&checkout),
+        );
+        assert!(resolve_named_repository(&root, &expected, reference).is_err());
+        git(
+            &[
+                "remote",
+                "set-url",
+                "origin",
+                "https://example.com/acme/widget.git",
+            ],
+            Some(&checkout),
+        );
+        assert_eq!(
+            resolve_named_repository(&root, &expected, reference).expect("matching identity"),
+            fs::canonicalize(&checkout).expect("canonical")
+        );
+        let relocated = root.join("elsewhere");
+        fs::rename(&checkout, &relocated).expect("relocate");
+        assert!(matches!(
+            resolve_named_repository(&root, &expected, reference),
+            Err(Error::RepositoryNotFound(_))
+        ));
+        fs::remove_dir_all(root).expect("cleanup");
+    }
+
+    #[test]
+    fn filesystem_references_preserve_linked_checkout_resolution() {
+        let root = temp_dir("filesystem-ref");
+        let checkout = root.join("checkout");
+        fs::create_dir_all(&checkout).expect("checkout");
+        git(&["init", "-b", "main"], Some(&checkout));
+        git(
+            &["commit", "--allow-empty", "-m", "initial"],
+            Some(&checkout),
+        );
+        let linked = root.join("linked");
+        git(
+            &[
+                "worktree",
+                "add",
+                "-b",
+                "linked",
+                linked.to_str().expect("path"),
+            ],
+            Some(&checkout),
+        );
+        let nested = linked.join("nested");
+        fs::create_dir(&nested).expect("nested");
+        let primary = fs::canonicalize(&checkout).expect("primary");
+        for path in [checkout.clone(), linked.clone()] {
+            assert_eq!(
+                resolve_directory_reference(&path, "checkout").expect("filesystem path"),
+                primary
+            );
         }
-        let found = scan_repository_root(&root);
-        assert!(
-            found
-                .iter()
-                .any(|path| path.ends_with("/github.com/owner/repo")),
-            "{found:?}"
-        );
-        assert!(
-            found
-                .iter()
-                .any(|path| path.ends_with("/github.com/acme/.dotfiles")),
-            "{found:?}"
-        );
-        assert!(
-            found
-                .iter()
-                .any(|path| path.ends_with("/github.com/.org/repo")),
-            "{found:?}"
-        );
-        assert!(
-            found
-                .iter()
-                .any(|path| path.ends_with("/github.com/org/.github")),
-            "{found:?}"
-        );
-        assert!(
-            found.iter().all(|path| !path.contains(".rabi-clone")),
-            "{found:?}"
-        );
-        assert_eq!(found.len(), 4, "{found:?}");
-        assert!(scan_repository_root(&root.join("missing")).is_empty());
-        let _ = fs::remove_dir_all(root);
+        for path in [checkout.join(".git/objects"), linked.join(".git"), nested] {
+            assert!(resolve_directory_reference(&path, "checkout").is_err());
+        }
+        let file = linked.join("file");
+        fs::write(&file, "content").expect("file");
+        assert!(matches!(
+            resolve_directory_reference(&file, "file"),
+            Err(Error::Validation(_))
+        ));
+        let missing = root.join("missing");
+        assert!(matches!(
+            resolve_directory_reference(&missing, "missing"),
+            Err(Error::PathNotFound(_))
+        ));
+        fs::remove_dir_all(root).expect("cleanup");
     }
 
     #[test]
@@ -1699,7 +1849,7 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_staging_prefix_is_discovered_and_never_reaped() {
+    fn unsupported_staging_prefix_is_never_reaped() {
         let root = temp_dir("unsupported-staging");
         let owner = root.join("example.com/acme");
         let name = format!(".mabo-clone-{}-{}", unused_pid(), uuid::Uuid::new_v4());
@@ -1708,28 +1858,11 @@ mod tests {
         fs::write(checkout.join("payload"), "preserve\n").unwrap();
         assert!(!is_staging_directory(&checkout));
         assert_eq!(staging_owner_pid(std::ffi::OsStr::new(&name)), None);
-        assert_eq!(
-            scan_repository_root(&root),
-            vec![checkout.to_string_lossy().into_owned()]
-        );
         reap_stale_staging(Some(&owner), &owner.join("destination"));
         assert_eq!(
             fs::read_to_string(checkout.join("payload")).unwrap(),
             "preserve\n"
         );
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn staging_names_are_ignored_by_discovery() {
-        let root = temp_dir("staging-prefix");
-        let owner = root.join("example.com/acme");
-        let name = format!(".rabi-clone-123-{}", uuid::Uuid::new_v4());
-        let checkout = owner.join(&name);
-        fs::create_dir_all(checkout.join(".git")).unwrap();
-        assert!(is_staging_directory(&checkout));
-        assert_eq!(staging_owner_pid(std::ffi::OsStr::new(&name)), Some(123));
-        assert!(scan_repository_root(&root).is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 

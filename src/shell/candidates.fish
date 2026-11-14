@@ -42,11 +42,6 @@ function _rabi_candidates
         set rabi_count (math $rabi_count + 1)
     end
     if test -n "$rabi_pending"
-        if test "$rabi_pending" = repo
-            set -l rabi_names (command rabi repo list --names 2>/dev/null | string collect)
-            test $pipestatus[1] -eq 0; or return 0
-            test -z "$rabi_names"; or printf '%s\n' "$rabi_names"
-        end
         return 0
     end
     if test "$rabi_context" = exec; and test $rabi_count -gt 0

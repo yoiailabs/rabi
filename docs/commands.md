@@ -14,7 +14,7 @@ rabi manages workspace boundaries and preparation. Use Git for commits and histo
 
 `path` prints only an absolute path and newline in text mode; JSON is `data: {path}`. `show` and `set` return `data.workspace`. `show`, `path`, `list`, and `exec` never change record contents or mtimes. `set` atomically replaces the supplied purpose, base, PR and issue fields; omitted fields are kept. `--unset FIELD` clears one of purpose/base/pr/issue per occurrence; repeat the flag to clear several fields. It rejects unknown fields or a field that is also being set. `--base` validates and normalizes a ref; commit bases remain supported. `--unset base` records an unknown base without choosing a default. Sync skips it with `base-unknown` until `rabi set <name> --base REF` restores a base. Records with no base field still use the default base.
 
-`list` includes primary checkouts. Use `--kind workspace` or `--kind primary` to filter, `--names` or `--paths` for shell output, and `--all-repos` for repositories known to `repo list` (registrations and enabled discovery). `--all-repos` cannot be combined with `-R`. Its JSON includes `data.repos` as well as the flattened `data.workspaces`. Human output starts each repository with its name and primary path, then shows current (`*`), name, branch, ahead/behind (`↑a ↓b`), dirty state, PR/issue links (`#12` / `issue #34`), setup state when it is not `ok` (such as `setup:failed`), and purpose. A deleted upstream appears as `upstream:gone`.
+`list` includes the primary checkout of the current or `-R`-selected repository. Use `--kind workspace` or `--kind primary` to filter, and `--names` or `--paths` for shell output. JSON contains `data.workspaces`. Human output starts with the repository name and primary path, then shows current (`*`), name, branch, ahead/behind (`↑a ↓b`), dirty state, PR/issue links (`#12` / `issue #34`), setup state when it is not `ok` (such as `setup:failed`), and purpose. A deleted upstream appears as `upstream:gone`.
 
 Exec preserves child output and exit status, ignores `RABI_OUTPUT`, and refuses explicit JSON output. Usage diagnostics and any accompanying help go to stderr, leaving text stdout empty.
 
@@ -297,7 +297,7 @@ rabi show pr:774 --json
 rabi set feature/auth --unset purpose --unset pr --unset issue
 rabi list --kind workspace --names
 rabi list --kind primary --paths
-rabi list --all-repos --json
+rabi list --json
 rabi sync --all --dry-run --json
 rabi sync --all --json
 ```
@@ -331,7 +331,7 @@ cd "$(rabi path issues/812)"
 rabi set --pr 853 --json
 rabi sync --json
 rabi show pr:853 --json
-primary=$(rabi repo show --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["repo"]["root"])')
+primary=$(rabi show --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["workspace"]["repo"]["root"])')
 cd "$primary"
 rabi remove pr:853 --json
 rabi gc --json
@@ -343,12 +343,14 @@ After integration, remove deletes a branch only with preservation evidence; othe
 
 | Option | Meaning |
 |---|---|
-| `-R, --repo <value>` | Select a repository by path, registered ID, canonical host/owner/repo name, or an unambiguous name suffix. May precede the command. For exec, put it before the workspace name. |
+| `-R, --repo <value>` | Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector). |
 | `--output <value>` | Select text or json on JSON-capable commands; overrides RABI_OUTPUT |
 | `--json` | Alias for --output json on JSON-capable commands |
 | `--no-input` | Never prompt; also enabled by CI, JSON, RABI_NO_INPUT, or no stdin/stderr TTY |
 | `-h, --help` | Show text help |
 | `-v, --version` | Show the application version; supports --json |
+
+Repository commands operate on one repository: the current checkout or `-R` selection. Canonical names resolve directly to the ghq-compatible clone location and require a matching existing checkout; see [repository targeting](configuration.md#targeting-a-repository).
 
 `-R` may precede the command. For `exec`, put rabi options before SEL and always use `--` before the child command. `exec`, `completions`, and `shell-init` reject explicit JSON; the script commands ignore `RABI_OUTPUT`. See [JSON output exceptions](json.md).
 
@@ -385,7 +387,6 @@ Usage: `rabi list [--repo <ref>] [options]`
 | `--names` | Output only workspace names (for scripts and automation) |
 | `--kind <value>` | Filter by workspace or primary |
 | `--paths` | Output only absolute paths, one per line |
-| `--all-repos` | List repositories known to repo list; JSON adds data.repos. Cannot be combined with --repo. |
 
 ### rabi gc
 
@@ -453,7 +454,7 @@ Usage: `rabi config unset KEY [options]`
 
 ### rabi clone
 
-Clone a Git repository into the ghq-compatible layout and register it
+Clone a Git repository into the ghq-compatible layout
 
 Usage: `rabi clone <url|host/owner/repo|owner/repo> [options]`
 
@@ -468,37 +469,6 @@ Usage: `rabi clone <url|host/owner/repo|owner/repo> [options]`
 Show the application version
 
 Usage: `rabi --version [--json]`
-
-### rabi repo
-
-Register, discover, and inspect repositories
-
-Usage: `rabi repo <add|list|show|forget> [options]`
-
-### rabi repo add
-
-Register a Git repository as a rabi repo
-
-Usage: `rabi repo add [path] [options]`
-
-### rabi repo list
-
-List registered and discovered rabi repos
-
-Usage: `rabi repo list [--registered|--discovered] [--names|--paths] [options]`
-
-| Option | Meaning |
-|---|---|
-| `--names` | Output only repo names |
-| `--paths` | Output only repo root paths |
-| `--registered` | Only explicitly registered repos; do not discover |
-| `--discovered` | Only discovered repos without a registration |
-
-### rabi repo forget
-
-Remove a Git repository from rabi's registry
-
-Usage: `rabi repo forget <id|name|path> [options]`
 
 ### rabi sync
 
@@ -516,12 +486,6 @@ Usage: `rabi sync [SEL... | --all | --main] [--auto | --rebase | --merge] [--rew
 | `--rebase` | Choose the rebase strategy |
 | `--merge` | Merge the base instead of choosing automatically |
 | `--keep-conflicts` | Leave conflicts in progress; exactly one workspace target required |
-
-### rabi repo show
-
-Inspect a repository and its primary checkout
-
-Usage: `rabi repo show [REF] [options]`
 
 ### rabi config list
 

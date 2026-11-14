@@ -26,7 +26,7 @@ pub enum Error {
     #[error("Branch '{0}' not found")]
     BranchNotFound(String),
     #[error("Repository '{0}' not found")]
-    ProjectNotFound(String),
+    RepositoryNotFound(String),
     #[error("Path '{0}' does not exist")]
     PathNotFound(String),
     #[error("Not a git repository. Run rabi from inside a Git repository.")]
@@ -47,8 +47,6 @@ pub enum Error {
     Signaled(String),
     #[error("Error executing command '{command}': {details}")]
     Spawn { command: String, details: String },
-    #[error("{0}")]
-    Projects(String),
     #[error("{0}")]
     Untrusted(String),
 }
@@ -108,7 +106,7 @@ impl Error {
     pub fn json_code(&self, requested: i32) -> &'static str {
         match self {
             Self::Status { code, .. } => code,
-            Self::WorktreeNotFound(_) | Self::ProjectNotFound(_) | Self::PathNotFound(_) => {
+            Self::WorktreeNotFound(_) | Self::RepositoryNotFound(_) | Self::PathNotFound(_) => {
                 "not_found"
             }
             Self::WorktreeAlreadyExists(_) => "exists",
@@ -121,7 +119,6 @@ impl Error {
             Self::Spawn { .. } => "spawn",
             Self::Validation(_) => "usage",
             Self::Untrusted(_) => "untrusted",
-            Self::Projects(_) => "failed",
             Self::Message(_) => status_code(requested),
         }
     }

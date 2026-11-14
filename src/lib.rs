@@ -32,7 +32,6 @@ pub mod output;
 pub mod paths;
 pub mod preferences;
 pub mod process;
-pub mod projects;
 mod provider;
 pub mod repository;
 mod repository_state;
