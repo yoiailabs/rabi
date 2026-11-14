@@ -1,3 +1,5 @@
+#[path = "common/scripts.rs"]
+mod scripts;
 #[path = "common/git.rs"]
 mod test_git;
 
@@ -51,6 +53,7 @@ impl Repo {
             .env("XDG_CONFIG_HOME", self.root.join("config"))
             .env("XDG_DATA_HOME", self.root.join("data"))
             .env("GIT_CONFIG_NOSYSTEM", "1")
+            .env_remove("RABI_TRUST_ALL")
             .env_remove("RABI_OUTPUT")
             .env_remove("GHQ_ROOT")
             .env_remove("GIT_CONFIG_PARAMETERS")
@@ -162,7 +165,7 @@ fn inventory(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 }
 
 #[test]
-fn new_list_show_abandon_preserve_git_and_append_events() {
+fn new_creates_workspace_and_preserves_primary_git_while_store_commands_append_events() {
     let repo = Repo::new();
     let git_before = inventory(&repo.repo.join(".git"));
     let task = repo.create("task/example");
@@ -171,7 +174,30 @@ fn new_list_show_abandon_preserve_git_and_append_events() {
     assert_eq!(task["state"], json!({"name":"new"}));
     assert_eq!(task["baseRef"], "origin/main");
     assert_eq!(task["pushRemoteUrl"], "https://example.invalid/project.git");
-    assert!(task["workspacePath"].is_null());
+    let workspace = task["workspacePath"].as_str().unwrap();
+    assert!(Path::new(workspace).join(".git").is_file());
+    assert_eq!(
+        repo.git(&["rev-parse", "task/example"]),
+        repo.git(&["rev-parse", task["baseRef"].as_str().unwrap()])
+    );
+    assert_eq!(
+        repo.git(&["-C", workspace, "branch", "--show-current"]),
+        "task/example"
+    );
+    assert_eq!(
+        repo.git(&["worktree", "list", "--porcelain"])
+            .matches("worktree ")
+            .count(),
+        2
+    );
+    let git_after_creation = inventory(&repo.repo.join(".git"));
+    for (path, contents) in &git_before {
+        assert_eq!(git_after_creation.get(path), Some(contents), "{path:?}");
+    }
+    assert_eq!(
+        git_before.get(Path::new("index")),
+        git_after_creation.get(Path::new("index"))
+    );
     assert!(task["prNumber"].is_null());
     let list = repo.json(&["task", "list", "--json"]);
     assert_eq!(list["command"], "task list");
@@ -235,7 +261,7 @@ fn new_list_show_abandon_preserve_git_and_append_events() {
     let before = inventory(&repo.tasks());
     repo.error(&["task", "abandon", id, "--json"], 2, "usage");
     assert_eq!(inventory(&repo.tasks()), before);
-    assert_eq!(inventory(&repo.repo.join(".git")), git_before);
+    assert_eq!(inventory(&repo.repo.join(".git")), git_after_creation);
     for directory in [
         repo.root.join("state/rabi"),
         repo.tasks().parent().unwrap().to_path_buf(),
@@ -320,6 +346,7 @@ fn creation_refusal_table_writes_nothing() {
             _ => {}
         }
         let before = repo.tasks().exists().then(|| inventory(&repo.tasks()));
+        let git_before = inventory(&repo.repo.join(".git"));
         let intent = if case == "empty intent" {
             " \n "
         } else {
@@ -351,7 +378,44 @@ fn creation_refusal_table_writes_nothing() {
             before,
             "{case}"
         );
+        assert_eq!(inventory(&repo.repo.join(".git")), git_before, "{case}");
     }
+}
+
+#[test]
+fn remote_tracking_branch_is_refused_before_the_task_record() {
+    let repo = Repo::new();
+    repo.git(&["update-ref", "refs/remotes/origin/reserved", "HEAD"]);
+    let before = repo.tasks().exists().then(|| inventory(&repo.tasks()));
+    let git_before = inventory(&repo.repo.join(".git"));
+    let error = repo.error(
+        &[
+            "task", "new", "Intent", "--branch", "reserved", "--base", "main", "--json",
+        ],
+        4,
+        "exists_remote",
+    );
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("already exists as a remote-tracking branch"),
+        "{message}"
+    );
+    assert!(
+        !message.contains("was recorded")
+            && !message.contains("Recover with")
+            && !message.contains("rabi create --branch"),
+        "{message}"
+    );
+    assert!(
+        message.contains("Choose another --branch")
+            || message.contains("delete the stale remote-tracking ref"),
+        "{message}"
+    );
+    assert_eq!(
+        repo.tasks().exists().then(|| inventory(&repo.tasks())),
+        before
+    );
+    assert_eq!(inventory(&repo.repo.join(".git")), git_before);
 }
 
 #[test]
@@ -373,6 +437,9 @@ fn stdin_slug_and_explicit_repository_selection() {
     let value = Repo::decode(child.wait_with_output().unwrap());
     let task = &value["data"]["task"];
     assert_eq!(task["intent"], "Fix authentication!\nDetails\n");
+    assert!(Path::new(task["workspacePath"].as_str().unwrap())
+        .join(".git")
+        .is_file());
     assert!(task["branch"]
         .as_str()
         .unwrap()
@@ -479,20 +546,33 @@ fn prefix_resolution_table() {
 
 #[test]
 fn state_derivation_and_terminal_refusal_table_are_read_only() {
-    for (state, branch_exists, mismatch) in [
-        ("new", false, false),
-        ("new", true, true),
-        ("implementing", false, true),
-        ("implementing", true, false),
-        ("merged", false, false),
-        ("abandoned", false, false),
+    for (state, branch_exists, bound, mismatch) in [
+        ("new", false, false, false),
+        ("new", true, false, true),
+        ("new", true, true, false),
+        ("new", false, true, true),
+        ("implementing", false, true, true),
+        ("implementing", true, true, false),
+        ("merged", false, true, false),
+        ("abandoned", false, true, false),
     ] {
         let repo = Repo::new();
         let task = repo.create("topic");
         let id = task["id"].as_str().unwrap();
         repo.set_state(&task, state);
-        if branch_exists {
-            repo.git(&["branch", "topic"]);
+        if !bound {
+            let path = repo.directory(&task).join("task.json");
+            let mut record: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            record["workspacePath"] = Value::Null;
+            fs::write(path, serde_json::to_vec(&record).unwrap()).unwrap();
+        }
+        if !branch_exists {
+            repo.git(&[
+                "worktree",
+                "remove",
+                task["workspacePath"].as_str().unwrap(),
+            ]);
+            repo.git(&["branch", "-D", "topic"]);
         }
         let before = inventory(&repo.tasks());
         let show = repo.json(&["task", "show", id, "--json"]);
@@ -524,8 +604,13 @@ fn blocked_reason_is_preserved_with_or_without_a_branch() {
             serde_json::to_vec(&task).unwrap(),
         )
         .unwrap();
-        if branch_exists {
-            repo.git(&["branch", "topic"]);
+        if !branch_exists {
+            repo.git(&[
+                "worktree",
+                "remove",
+                task["workspacePath"].as_str().unwrap(),
+            ]);
+            repo.git(&["branch", "-D", "topic"]);
         }
         let before = inventory(&repo.tasks());
         let show = repo.json(&["task", "show", task["id"].as_str().unwrap(), "--json"]);
@@ -913,6 +998,277 @@ fn linked_checkouts_share_the_store_and_abandon_releases_reservation() {
         .unwrap();
     assert_eq!(Repo::decode(output)["data"]["tasks"][0]["id"], task["id"]);
     repo.json(&["task", "abandon", task["id"].as_str().unwrap(), "--json"]);
+    repo.git(&[
+        "worktree",
+        "remove",
+        task["workspacePath"].as_str().unwrap(),
+    ]);
+    repo.git(&["branch", "-D", "reserved"]);
     let replacement = repo.create("reserved");
     assert_ne!(replacement["id"], task["id"]);
+}
+
+#[test]
+fn allocation_failure_keeps_published_task_and_reports_recovery() {
+    for untrusted in [false, true] {
+        let repo = Repo::new();
+        if untrusted {
+            fs::write(
+                repo.repo.join(".rabi.toml"),
+                "[hooks]\nsetup = [\"touch hook-ran\"]\n",
+            )
+            .unwrap();
+        } else {
+            let blocked = repo.root.join("blocked");
+            fs::write(&blocked, "occupied").unwrap();
+            repo.json(&[
+                "config",
+                "set",
+                "workspace-root",
+                blocked.to_str().unwrap(),
+                "--json",
+            ]);
+        }
+        let output = repo.rabi(&[
+            "task",
+            "new",
+            "Retain intent",
+            "--branch",
+            "task/recover",
+            "--base",
+            "main",
+            "--json",
+        ]);
+        assert!(!output.status.success());
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        if untrusted {
+            assert_eq!(output.status.code(), Some(4));
+            assert_eq!(value["error"]["code"], "untrusted");
+        }
+        let task = &value["data"]["task"];
+        let id = task["id"].as_str().unwrap();
+        let message = value["error"]["message"].as_str().unwrap();
+        assert!(message.contains(id));
+        assert!(
+            message.contains("rabi create 'task/recover' --base 'main'"),
+            "{message}"
+        );
+        assert!(task["workspacePath"].is_null());
+        assert_eq!(
+            repo.json(&["task", "show", id, "--json"])["data"]["task"],
+            *task
+        );
+        assert_eq!(repo.git(&["branch", "--format=%(refname:short)"]), "main");
+        assert_eq!(
+            repo.git(&["worktree", "list", "--porcelain"])
+                .matches("worktree ")
+                .count(),
+            1
+        );
+        assert!(!repo.repo.join("hook-ran").exists());
+        assert!(fs::read_dir(repo.tasks()).unwrap().all(|entry| !entry
+            .unwrap()
+            .file_name()
+            .to_string_lossy()
+            .starts_with(".staging-")));
+        repo.error(
+            &[
+                "task",
+                "new",
+                "Retry",
+                "--branch",
+                "task/recover",
+                "--base",
+                "main",
+                "--json",
+            ],
+            2,
+            "usage",
+        );
+        assert_eq!(
+            repo.json(&["task", "list", "--json"])["data"]["tasks"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        if untrusted {
+            repo.json(&["trust", "add", "--json"]);
+            let created = repo.json(&["create", "task/recover", "--base", "main", "--json"]);
+            assert!(
+                Path::new(created["data"]["workspace"]["path"].as_str().unwrap())
+                    .join("hook-ran")
+                    .is_file()
+            );
+        }
+    }
+}
+
+#[test]
+fn task_new_runs_ordinary_copy_and_hooks_and_binds_partial_setup() {
+    for partial in [false, true] {
+        let repo = Repo::new();
+        fs::write(repo.repo.join(".gitignore"), ".env\n").unwrap();
+        fs::write(repo.repo.join(".env"), "EXAMPLE=1\n").unwrap();
+        fs::write(repo.repo.join(".worktreeinclude"), ".env\n").unwrap();
+        fs::write(
+            repo.repo.join(".rabi.toml"),
+            if partial {
+                "[hooks]\nsetup = [\"exit 7\"]\n"
+            } else {
+                "[hooks]\nsetup = [\"touch prepared\"]\n"
+            },
+        )
+        .unwrap();
+        repo.git(&["add", ".gitignore", ".worktreeinclude", ".rabi.toml"]);
+        repo.git(&["commit", "-m", "fixture setup"]);
+        repo.json(&["trust", "add", "--json"]);
+        let output = repo.rabi(&[
+            "task",
+            "new",
+            "Prepare task",
+            "--branch",
+            "prepared",
+            "--base",
+            "main",
+            "--json",
+        ]);
+        assert_eq!(output.status.code(), Some(if partial { 6 } else { 0 }));
+        let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+        let task = &value["data"]["task"];
+        let workspace = task["workspacePath"].as_str().unwrap();
+        assert_eq!(value["data"]["workspace"]["path"], workspace);
+        assert_eq!(
+            fs::read_to_string(Path::new(workspace).join(".env")).unwrap(),
+            "EXAMPLE=1\n"
+        );
+        assert_eq!(Path::new(workspace).join("prepared").exists(), !partial);
+        assert_eq!(
+            repo.json(&["task", "show", task["id"].as_str().unwrap(), "--json"])["data"]["task"],
+            *task
+        );
+        if partial {
+            assert_eq!(value["error"]["code"], "partial");
+            let message = value["error"]["message"].as_str().unwrap();
+            assert!(message.contains(task["id"].as_str().unwrap()));
+            assert!(message.contains(workspace));
+            assert!(message.contains("Retry with `"));
+            assert!(message.contains("rabi setup 'prepared'"));
+        }
+    }
+}
+
+#[test]
+fn attach_reuses_workspace_created_after_task_publication_and_binds_path() {
+    let repo = Repo::new();
+    let real_git = repo
+        .command("sh", &["-c", "command -v git"])
+        .output()
+        .unwrap();
+    let bin = repo.root.join("bin");
+    fs::create_dir(&bin).unwrap();
+    scripts::write_executable(
+        bin.join("git"),
+        r#"#!/bin/sh
+set -eu
+if [ ! -e "$RABI_REUSE_MARKER" ]; then
+  for record in "$XDG_STATE_HOME"/rabi/repositories/*/tasks/task_*/task.json; do
+    if [ -f "$record" ]; then
+      touch "$RABI_REUSE_MARKER"
+      "$RABI_REUSE_BIN" create task/reused --base main --json > "$RABI_REUSE_RESULT"
+      break
+    fi
+  done
+fi
+exec "$RABI_REUSE_GIT" "$@"
+"#,
+    )
+    .unwrap();
+    let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+    let output = repo
+        .command(
+            env!("CARGO_BIN_EXE_rabi"),
+            &[
+                "task",
+                "new",
+                "Reuse task checkout",
+                "--branch",
+                "task/reused",
+                "--base",
+                "main",
+                "--json",
+            ],
+        )
+        .env("PATH", path)
+        .env("RABI_REUSE_MARKER", repo.root.join("reused"))
+        .env("RABI_REUSE_RESULT", repo.root.join("allocation.json"))
+        .env("RABI_REUSE_BIN", env!("CARGO_BIN_EXE_rabi"))
+        .env(
+            "RABI_REUSE_GIT",
+            String::from_utf8(real_git.stdout).unwrap().trim(),
+        )
+        .output()
+        .unwrap();
+    let value = Repo::decode(output);
+    let created: Value =
+        serde_json::from_slice(&fs::read(repo.root.join("allocation.json")).unwrap()).unwrap();
+    assert_eq!(value["data"]["source"]["reused"], true);
+    assert_eq!(
+        value["data"]["task"]["workspacePath"],
+        created["data"]["workspace"]["path"]
+    );
+    assert_eq!(
+        repo.git(&["worktree", "list", "--porcelain"])
+            .matches("worktree ")
+            .count(),
+        2
+    );
+    let task = &value["data"]["task"];
+    assert_eq!(
+        repo.json(&["task", "show", task["id"].as_str().unwrap(), "--json"])["data"]["task"],
+        *task
+    );
+}
+
+#[cfg(debug_assertions)]
+#[test]
+fn metadata_save_failure_still_binds_task_workspace_and_returns_partial() {
+    let repo = Repo::new();
+    let output = repo
+        .command(
+            env!("CARGO_BIN_EXE_rabi"),
+            &[
+                "task",
+                "new",
+                "Retain checkout",
+                "--branch",
+                "topic",
+                "--base",
+                "main",
+                "--json",
+            ],
+        )
+        .env("RABI_TEST_FAIL_METADATA_SAVE", "1")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(6));
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["error"]["code"], "partial");
+    assert_eq!(value["data"]["metadata"]["ok"], false);
+    assert_eq!(value["data"]["setup"]["ok"], true);
+    let task = &value["data"]["task"];
+    let workspace = task["workspacePath"].as_str().unwrap();
+    assert!(Path::new(workspace).join(".git").is_file());
+    assert_eq!(value["data"]["workspace"]["path"], workspace);
+    assert_eq!(
+        repo.json(&["task", "show", task["id"].as_str().unwrap(), "--json"])["data"]["task"],
+        *task
+    );
+    let message = value["error"]["message"].as_str().unwrap();
+    assert!(message.contains(task["id"].as_str().unwrap()));
+    assert!(message.contains(workspace));
+    assert!(message.contains("rabi setup 'topic'"));
 }

@@ -143,15 +143,9 @@ impl Repo {
                 .unwrap(),
             0,
         );
+        fixture.workspace =
+            PathBuf::from(created["data"]["task"]["workspacePath"].as_str().unwrap());
         fixture.task = created["data"]["task"]["id"].as_str().unwrap().into();
-        fixture.git(&[
-            "worktree",
-            "add",
-            "-b",
-            "topic",
-            fixture.workspace.to_str().unwrap(),
-            "main",
-        ]);
         let repository = fs::read_dir(fixture.root.join("state/rabi/repositories"))
             .unwrap()
             .next()

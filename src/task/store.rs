@@ -1,6 +1,6 @@
 //! Local bookkeeping claims, independent of GitHub evidence and workspace records.
 use crate::error::{Error, Result};
-use crate::{git, output};
+use crate::{git, output, tracking};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -340,7 +340,7 @@ impl Store {
     pub(super) fn derived(&self, task: &Task) -> Result<TaskState> {
         if !task.state.terminal() && !matches!(task.state, TaskState::Blocked(_)) {
             let exists = git::reference_exists(&self.root, &format!("refs/heads/{}", task.branch))?;
-            if exists == (task.state == TaskState::New) {
+            if exists != (task.state != TaskState::New || task.workspace_path.is_some()) {
                 output::warning(
                     "record_mismatch",
                     format!("Task {} branch disagrees with its recorded state", task.id),
@@ -424,6 +424,27 @@ impl Store {
             return Err(Error::validation(
                 "Task branch already exists or is checked out in a checkout",
             ));
+        }
+        if let Err(error) = tracking::reject_remote_create(&self.root, branch) {
+            return Err(match error {
+                Error::Status {
+                    code: "exists_remote",
+                    message,
+                } => {
+                    let detail = message
+                        .split(". Run ")
+                        .next()
+                        .unwrap_or(message.as_str())
+                        .trim_end_matches('.');
+                    Error::Status {
+                        code: "exists_remote",
+                        message: format!(
+                            "{detail}. Choose another --branch, or delete the stale remote-tracking ref."
+                        ),
+                    }
+                }
+                other => other,
+            });
         }
         Ok(())
     }
@@ -849,19 +870,52 @@ impl Store {
         Ok(event)
     }
 
+    fn update_workspace(
+        &self,
+        id: &str,
+        workspace: &Path,
+        update: impl FnOnce(&mut Task) -> Result<Option<Event>>,
+    ) -> Result<View> {
+        let directory = self.path.join(id);
+        let _lock = lock(&directory.join(".lock"))?;
+        let mut task = self.load(id)?;
+        let mut events = self.events(id)?;
+        let event = update(&mut task)?;
+        task.workspace_path = Some(workspace.to_path_buf());
+        task.updated_at = event.as_ref().map_or_else(now, |event| event.at.clone());
+        if let Some(event) = event {
+            self.save(&directory, &task, &event)?;
+            events.push(event);
+        } else {
+            io(crate::atomic::write(
+                &directory.join("task.json"),
+                &encode(&task)?,
+            ))?;
+        }
+        Ok(View {
+            budget: None,
+            recorded_state: task.state,
+            task,
+            events,
+        })
+    }
+
+    pub fn bind_workspace(&self, id: &str, workspace: &Path) -> Result<View> {
+        self.update_workspace(id, workspace, |_| Ok(None))
+    }
+
     pub(super) fn tune_workspace(
         &self,
         id: &str,
         workspace: &Path,
         proposal: super::tune::Proposal,
     ) -> Result<()> {
-        let directory = self.path.join(id);
-        let _lock = lock(&directory.join(".lock"))?;
-        let mut task = self.load(id)?;
-        let event = transition(&mut task, TaskState::Implementing, "tune_proposed")?;
-        task.workspace_path = Some(workspace.to_path_buf());
-        task.proposal = Some(proposal);
-        self.save(&directory, &task, &event)
+        self.update_workspace(id, workspace, |task| {
+            let event = transition(task, TaskState::Implementing, "tune_proposed")?;
+            task.proposal = Some(proposal);
+            Ok(Some(event))
+        })?;
+        Ok(())
     }
 
     pub fn transition(&self, prefix: &str, to: TaskState, reason: &str) -> Result<View> {

@@ -139,6 +139,14 @@ impl Repo {
         serde_json::from_slice(&output.stdout).unwrap()
     }
 
+    fn workspace(&self, branch: &str) -> PathBuf {
+        PathBuf::from(
+            self.rabi(&["path", branch, "--json"], 0)["data"]["path"]
+                .as_str()
+                .unwrap(),
+        )
+    }
+
     fn task(&self, index: u32, branch: &str, state: &str, checkout: bool) -> (String, PathBuf) {
         let created = self.rabi(
             &[
@@ -171,18 +179,13 @@ impl Repo {
         if state == "blocked" {
             value["state"]["reason"] = json!("budget");
         }
+        let workspace = created["data"]["task"]["workspacePath"].as_str().unwrap();
         if checkout {
-            let workspace = self.root.join(branch);
-            self.git(&[
-                "worktree",
-                "add",
-                "-b",
-                branch,
-                workspace.to_str().unwrap(),
-                "main",
-            ]);
-            value["workspacePath"] = json!(workspace);
             value["advance"]["evaluatedHead"] = json!(self.git(&["rev-parse", "main"]));
+        } else {
+            self.git(&["worktree", "remove", workspace]);
+            self.git(&["branch", "-D", branch]);
+            value["workspacePath"] = Value::Null;
         }
         fs::write(&record, serde_json::to_vec(&value).unwrap()).unwrap();
         (id, record)
@@ -216,7 +219,7 @@ fn batch_continues_after_errors_and_skips_terminal_blocked_and_mismatched_tasks(
     let (progress, progress_record) = repo.task(3, "progress", "implementing", true);
     repo.git(&[
         "-C",
-        repo.root.join("progress").to_str().unwrap(),
+        repo.workspace("progress").to_str().unwrap(),
         "commit",
         "--allow-empty",
         "-m",
@@ -294,7 +297,7 @@ fn batch_new_task_does_not_turn_other_tasks_progress_into_a_refusal() {
     let (progress, record) = repo.task(2, "progress", "implementing", true);
     repo.git(&[
         "-C",
-        repo.root.join("progress").to_str().unwrap(),
+        repo.workspace("progress").to_str().unwrap(),
         "commit",
         "--allow-empty",
         "-m",
@@ -357,7 +360,7 @@ fn batch_preserves_per_task_lock_and_continues_after_contention() {
     let (progress, progress_record) = repo.task(2, "progress", "implementing", true);
     repo.git(&[
         "-C",
-        repo.root.join("progress").to_str().unwrap(),
+        repo.workspace("progress").to_str().unwrap(),
         "commit",
         "--allow-empty",
         "-m",
@@ -386,7 +389,7 @@ fn batch_wait_drives_multiple_steps_and_retains_partial_results_after_error() {
     let (progress, progress_record) = repo.task(1, "progress", "implementing", true);
     repo.git(&[
         "-C",
-        repo.root.join("progress").to_str().unwrap(),
+        repo.workspace("progress").to_str().unwrap(),
         "commit",
         "--allow-empty",
         "-m",
@@ -430,7 +433,7 @@ fn batch_continues_from_primary_after_the_invoking_checkout_is_removed() {
     let (progress, progress_record) = repo.task(2, "progress", "implementing", true);
     repo.git(&[
         "-C",
-        repo.root.join("progress").to_str().unwrap(),
+        repo.workspace("progress").to_str().unwrap(),
         "commit",
         "--allow-empty",
         "-m",
@@ -441,14 +444,17 @@ fn batch_continues_from_primary_after_the_invoking_checkout_is_removed() {
     // batch discovery and the later task must keep using the primary checkout.
     scripts::write_executable(
         repo.root.join("bin/codex"),
-        "#!/bin/sh\ncat >/dev/null\n/bin/rm -rf -- \"$RABI_BATCH_FIXTURE/first\"\n",
+        "#!/bin/sh\ncat >/dev/null\n/bin/rm -rf -- \"$RABI_BATCH_WORKSPACE\"\n",
     )
     .unwrap();
     let mut command = repo.command(
         env!("CARGO_BIN_EXE_rabi"),
         &["task", "advance", "--all", "--json"],
     );
-    command.current_dir(repo.root.join("first"));
+    let first_workspace = repo.workspace("first");
+    command
+        .current_dir(&first_workspace)
+        .env("RABI_BATCH_WORKSPACE", &first_workspace);
     let output = repo.run(command);
     assert_eq!(
         output.status.code(),
