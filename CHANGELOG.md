@@ -11,7 +11,7 @@
 
 ### Fixed
 
-- All `.rabi/policy.toml` readers share one loader. `task risk`, `task status`, `task approve`, standalone `task merge` and the CI step of `task advance` now treat a whitespace-only policy file as the default policy, like classification and landing already did, instead of failing.
+- All `.rabi/policy.toml` readers share one loader. `task risk`, `task status`, `task approve`, `task review`, `task publish`, standalone `task merge` and the CI step of `task advance` now treat a whitespace-only policy file as the default policy, like classification and landing already did, instead of failing.
 - Post-launch `task implement` Git inspections pin the Git directory and common directory validated before the agent ran. Redirected metadata stops with exit 4 (`refused`), `stopReason: "metadata_changed"` and null post-launch Git facts; command, exit-code and JSON references now document this outcome.
 
 ## v8.0.0 (2026-11-14)

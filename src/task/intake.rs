@@ -97,8 +97,10 @@ impl<'a> Client<'a> {
         if !login(actor) {
             return Ok(false);
         }
-        // Inspect the HTTP status only for this endpoint: GitHub returns 404
-        // for non-collaborators, while all other missing evidence stays an error.
+        // Inspect the HTTP status only for this endpoint. GitHub reports
+        // non-collaborators as 200 with `read` permission and returns 404 for
+        // logins that no longer resolve (for example deleted accounts); both
+        // deny intake, while all other missing evidence stays an error.
         let response = self.request(
             &self.path(&format!("collaborators/{actor}/permission")),
             true,
