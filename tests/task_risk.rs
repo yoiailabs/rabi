@@ -720,11 +720,20 @@ fn object_queries_use_options_and_policy_lookup_never_probes_checkout_paths() {
             || line.contains("merge-base")
             || line.contains(" diff ")
     }) {
-        assert!(line.starts_with("--no-lazy-fetch "), "{line}");
+        let (options, _) = line
+            .split_once("--no-lazy-fetch ")
+            .unwrap_or_else(|| panic!("object query allows lazy fetch: {line}"));
+        for setting in [
+            "-c core.hooksPath=/dev/null",
+            "-c core.fsmonitor=false",
+            "-c core.untrackedCache=false",
+        ] {
+            assert!(options.contains(setting), "unhardened object query: {line}");
+        }
     }
     for line in calls.lines().filter(|line| line.contains(" diff ")) {
         assert!(
-            line.starts_with(&format!("--no-lazy-fetch --attr-source={base} diff ")),
+            line.contains(&format!("--no-lazy-fetch --attr-source={base} diff ")),
             "{line}"
         );
     }

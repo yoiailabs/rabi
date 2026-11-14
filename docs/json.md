@@ -312,12 +312,17 @@ Task file schema 1 and command data both use camelCase field names:
 | `branch` | Reserved branch name; creation does not create the branch |
 | `baseRef` | Locally resolvable base ref captured at creation |
 | `pushRemoteUrl` | Push URL captured once; userinfo, query and fragment stripped |
-| `workspacePath`, `prNumber` | Null; unset by these commands |
+| `workspacePath` | Null until `task implement` binds an existing linked checkout |
+| `prNumber` | Null; unset by these commands |
 
 States are `new`, `implementing`, `prechecking`, `publishing`, `ci`, `reviewing`, `ready`, `classifying`, `awaiting_approval`, `merging`, `merged`, `blocked`, and `abandoned`. Blocked reason codes are `no_progress`, `no_ci`, `ci_timeout`, `conflict`, `diverged`, `policy_invalid`, `provider_failed`, `evidence_missing`, `floor_changed`, `precheck_changed`, `review_invalid`, `budget`, `internal`, and `record_mismatch`.
 
-Each event is one JSON object and newline: `{at, from, to, reason}` with optional string `detail`. `at` is a UTC RFC3339 timestamp, `from`/`to` are state objects, and `reason` is text. Creation appends `{from: null, to: {name: "new"}, reason: "created"}`. Abandon appends the previous saved state and `{name: "abandoned"}`, using the supplied reason or `abandoned`. Previous lines remain unchanged.
+Each event is one JSON object and newline: `{at, from, to, reason}` with optional string `detail` and optional object `agent`. `at` is a UTC RFC3339 timestamp, `from`/`to` are state objects, and `reason` is text. Creation appends `{from: null, to: {name: "new"}, reason: "created"}`. Abandon appends the previous saved state and `{name: "abandoned"}`, using the supplied reason or `abandoned`. Previous lines remain unchanged.
 
 The [transition table](commands.md#local-task-store) allows the forward chain through implementation, checks, publication, CI, review and classification; classification goes directly to merging or through awaiting approval. Prechecking, CI, reviewing and awaiting approval can return to implementing. Any non-terminal state can become blocked or abandoned; blocked can return to any non-terminal state. Merged and abandoned are terminal. Invalid edges use exit 2 (`usage`). These states are bookkeeping claims, not GitHub evidence, and do not authorize merges or launches. The existing merge preflight does not read this store.
 
 For non-terminal tasks other than `blocked`, output derives `blocked(record_mismatch)` when a new task's local branch already exists or a later state's branch is missing. A stored `blocked` state keeps its reason regardless of branch existence. `recordedState` and the saved record are preserved. No other Git or GitHub derivation is performed.
+
+`task implement` returns `data: {taskId, launchId, provider, exitCode, preHead, postHead, newCommits, dirty, stopReason}`. `provider` is `codex` or `claude`; post-launch Git facts are nullable when inspection fails. The command reports a failed attempt through the ordinary envelope while retaining the launch data. Provider output goes to stderr.
+
+Implementation appends `implementation_started` and `implementation_finished` events. Their optional `agent` object carries launch details: the start event includes `launchId`, `provider`, `preHead` and pre-launch `dirty`; the finished event carries the command result fields. Only the first start changes state, from `new` to `implementing`; subsequent events preserve the current state, including concurrent abandonment. A separate nonblocking `.implement.lock` excludes concurrent implementers for the same task and remains held through process cleanup and outcome recording. It does not lock out plain `rabi run` or unrelated workspace commands.

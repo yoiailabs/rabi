@@ -85,6 +85,7 @@ rabi remove task/auth
 | `rabi task list` | 未完了のローカルタスクを一覧表示（`--all` で終了済みも表示） |
 | `rabi task show` | ローカルタスクと追記専用のイベント履歴をテキストまたは camelCase JSON で表示 |
 | `rabi task abandon` | 未完了のローカルタスクを中止 |
+| `rabi task implement` | Run one implementer in an existing task workspace; record commits and dirty state |
 | `rabi task risk` | ベースコミットのリスクポリシーでコミット済みの変更を分類 |
 | `rabi task classify` | Assess committed diffs using the written policy and record an exact-head verdict |
 | `rabi task status` | 書き込みなしで GitHub の PR 情報を表示 |

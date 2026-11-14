@@ -1,4 +1,5 @@
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
+use std::ffi::OsString;
 use std::io::Read;
 use std::marker::PhantomData;
 use std::path::Path;
@@ -9,7 +10,35 @@ use std::time::Duration;
 use crate::error::{Error, Result};
 
 thread_local! {
+    static TASK_GIT_ENVIRONMENT: RefCell<Option<GitEnvironment>> = const { RefCell::new(None) };
     static GIT_HOOK_SUPPRESSION: Cell<usize> = const { Cell::new(0) };
+}
+
+type GitEnvironment = Vec<(OsString, Option<OsString>)>;
+
+/// Apply task credentials and hardening to shared Git helpers on this thread.
+/// A launch boundary owning any temporary GH_CONFIG_DIR must outlive this guard.
+pub(crate) struct TaskGitEnvironment {
+    previous: Option<GitEnvironment>,
+    _thread: PhantomData<Rc<()>>,
+}
+
+pub(crate) fn task_git_environment(command: &Command) -> TaskGitEnvironment {
+    let environment = command
+        .get_envs()
+        .map(|(key, value)| (key.to_owned(), value.map(ToOwned::to_owned)))
+        .collect();
+    let previous = TASK_GIT_ENVIRONMENT.with(|slot| slot.replace(Some(environment)));
+    TaskGitEnvironment {
+        previous,
+        _thread: PhantomData,
+    }
+}
+
+impl Drop for TaskGitEnvironment {
+    fn drop(&mut self) {
+        TASK_GIT_ENVIRONMENT.with(|slot| slot.replace(self.previous.take()));
+    }
 }
 
 // A scoped setting also covers Git calls made by shared worktree/git helpers.
@@ -29,7 +58,32 @@ impl Drop for GitHookSuppression {
 
 fn command(program: &str) -> Command {
     let mut cmd = Command::new(program);
-    if program == "git" && GIT_HOOK_SUPPRESSION.with(|depth| depth.get() > 0) {
+    let task_git = program == "git" && TASK_GIT_ENVIRONMENT.with(|slot| slot.borrow().is_some());
+    if task_git {
+        TASK_GIT_ENVIRONMENT.with(|slot| {
+            if let Some(environment) = slot.borrow().as_ref() {
+                for (key, value) in environment {
+                    match value {
+                        Some(value) => {
+                            cmd.env(key, value);
+                        }
+                        None => {
+                            cmd.env_remove(key);
+                        }
+                    }
+                }
+            }
+        });
+        cmd.args([
+            "-c",
+            "core.untrackedCache=false",
+            "-c",
+            "core.attributesFile=/dev/null",
+            // Committed policy diffs may override this default with their base.
+            "--attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        ]);
+    }
+    if program == "git" && (task_git || GIT_HOOK_SUPPRESSION.with(|depth| depth.get() > 0)) {
         // Status queries during sync and read-only plans must not refresh the index.
         cmd.env("GIT_OPTIONAL_LOCKS", "0");
         cmd.args([
@@ -361,6 +415,45 @@ pub(crate) fn process_is_alive(pid: u32) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_git_scopes_restore_nested_environments_and_leave_other_commands_alone() {
+        let snapshot = |program| {
+            let command = command(program);
+            (
+                command
+                    .get_args()
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>(),
+                command
+                    .get_envs()
+                    .map(|(key, value)| (key.to_owned(), value.map(ToOwned::to_owned)))
+                    .collect::<Vec<_>>(),
+            )
+        };
+        let original = snapshot("git");
+        let other_command = snapshot("gh");
+        {
+            let boundary = crate::task::boundary::Boundary::new().unwrap();
+            let _git = boundary.git_scope();
+            let outer = snapshot("git");
+            assert_ne!(outer, original);
+            assert_eq!(snapshot("gh"), other_command);
+            assert_eq!(
+                std::thread::spawn(|| command("git").get_args().count())
+                    .join()
+                    .unwrap(),
+                0
+            );
+            {
+                let nested = crate::task::boundary::Boundary::new().unwrap();
+                let _git = nested.git_scope();
+                assert_ne!(snapshot("git"), outer);
+            }
+            assert_eq!(snapshot("git"), outer);
+        }
+        assert_eq!(snapshot("git"), original);
+    }
 
     #[test]
     fn timeout_capture_drains_both_pipes_without_deadlock() {

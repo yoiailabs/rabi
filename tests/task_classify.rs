@@ -411,8 +411,10 @@ fn claude_receives_empty_cwd_no_credentials_and_tool_restrictions() {
         "GH_TOKEN",
         "GITHUB_TOKEN",
         "GH_ENTERPRISE_TOKEN",
+        "GITHUB_ENTERPRISE_TOKEN",
         "SSH_AUTH_SOCK",
         "GIT_ASKPASS",
+        "SSH_ASKPASS",
     ] {
         command.env(key, "secret-fixture");
     }
@@ -424,14 +426,25 @@ fn claude_receives_empty_cwd_no_credentials_and_tool_restrictions() {
     let env = fs::read_to_string(repo.root.join("env")).unwrap();
     assert!(env.lines().any(|line| line == "RABI_AGENT=1"));
     assert!(env.lines().any(|line| line.starts_with("GH_CONFIG_DIR=")));
+    for entry in [
+        "GIT_TERMINAL_PROMPT=0",
+        "GIT_CONFIG_PARAMETERS='credential.helper=' 'core.askPass=' 'credential.interactive=false' 'core.sshCommand=ssh -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none'",
+    ] {
+        assert!(env.lines().any(|line| line == entry), "{entry}: {env}");
+    }
     for key in [
         "GH_TOKEN",
         "GITHUB_TOKEN",
         "GH_ENTERPRISE_TOKEN",
+        "GITHUB_ENTERPRISE_TOKEN",
         "SSH_AUTH_SOCK",
         "GIT_ASKPASS",
+        "SSH_ASKPASS",
         "GIT_DIR",
         "GIT_WORK_TREE",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_KEY_0",
+        "GIT_CONFIG_VALUE_0",
     ] {
         assert!(
             !env.lines().any(|line| line.starts_with(&format!("{key}="))),

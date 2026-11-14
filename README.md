@@ -85,6 +85,7 @@ Read [removal safety and retries](docs/safety.md) and [sync strategies](docs/syn
 | `rabi task list` | List non-terminal local tasks (`--all` includes terminal tasks) |
 | `rabi task show` | Show a local task and its append-only event history in text or camelCase JSON |
 | `rabi task abandon` | Abandon a non-terminal local task |
+| `rabi task implement` | Run one implementer in an existing task workspace; record commits and dirty state |
 | `rabi task risk` | Classify committed changes using the base commit risk policy |
 | `rabi task classify` | Assess committed diffs using the written policy and record an exact-head verdict |
 | `rabi task status` | Read GitHub PR facts without writes |

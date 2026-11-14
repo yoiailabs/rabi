@@ -29,6 +29,8 @@ RUSTUP_TOOLCHAIN = "1.99.1"
 
 For Rust projects, keep `rust-toolchain.toml` as the toolchain declaration and prepend `~/.cargo/bin` so Cargo is available. Set `RUSTUP_TOOLCHAIN` only when you want to override the toolchain file. Do not store secrets in committed configuration.
 
+Task-launched providers do not apply repository `[env]`; they use the [task agent boundary](safety.md#task-agent-launch-boundary).
+
 `rabi run` (Codex, Cursor, and Claude Code) and `rabi exec` read this environment from the primary checkout on **every launch**, including resume, with or without `-R`. A linked workspace's `.rabi.toml` cannot change its next parent's environment. Branch edits take effect only once they are present in the primary checkout. Both `path-prepend` and `set` are optional; an empty `[env]` does nothing. Unknown fields are rejected.
 
 Execution environment needs the repository's common-directory trust (`rabi trust add` or `RABI_TRUST_ALL=1`). `trust add` lists declared `KEY=value` assignments and path-prepend entries alongside hooks, escaping control characters with the same visible-text rules as hook commands; its JSON data remains `{path,trustedAt}`. Run already refuses untrusted repositories. Exec never prompts: for nonempty untrusted declarations it warns with `env_untrusted`, then runs with the inherited environment and rabi's workspace variables. Use `--no-env` on run or exec to skip repository environment, its value validation, and this warning. TOML syntax and configuration structure are still checked.

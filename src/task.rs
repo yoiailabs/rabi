@@ -1,8 +1,10 @@
 //! Task bookkeeping and inspection. Policy/classification have no Git I/O.
 pub(crate) mod assessment;
+pub(crate) mod boundary;
 mod classifier_provider;
 mod classify;
 mod diff;
+pub(crate) mod implement;
 mod policy;
 mod preflight;
 pub(crate) mod store;
@@ -40,9 +42,10 @@ struct PolicySource {
     source: String,
 }
 
-// Reuse the existing byte executor without extending shared Git/process APIs.
+// Shared task reads use the boundary environment and hardened Git executor.
 // Byte output is essential: paths must never be decoded lossily for matching.
 fn capture(root: &Path, args: &[&str]) -> Result<std::process::Output> {
+    let _git = boundary::git_read_scope();
     let mut options = vec!["--no-lazy-fetch"];
     options.extend_from_slice(args);
     // GIT_NO_REPLACE_OBJECTS does not disable legacy info/grafts. A path
@@ -58,6 +61,43 @@ fn capture(root: &Path, args: &[&str]) -> Result<std::process::Output> {
         ],
         None,
     )
+}
+
+/// Inspect task worktrees without invoking attributes filters or opening nested
+/// repositories. Cached tree differences still report staged gitlink changes.
+fn dirty(root: &Path) -> Result<bool> {
+    // hash-object reads empty stdin, never worktree files or filters, and selects
+    // the repository's object format without writing an object.
+    let empty_tree = text(root, &["hash-object", "-t", "tree", "--stdin"])?;
+    let attributes = format!("--attr-source={empty_tree}");
+    let status = read(
+        root,
+        &[
+            &attributes,
+            "status",
+            "--porcelain",
+            "-z",
+            "--untracked-files=all",
+            "--ignore-submodules=all",
+        ],
+    )?;
+    let staged = read(
+        root,
+        &[
+            &attributes,
+            "diff",
+            "--cached",
+            "--raw",
+            "-z",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--ignore-submodules=none",
+            "--submodule=short",
+            "HEAD",
+            "--",
+        ],
+    )?;
+    Ok(!status.is_empty() || !staged.is_empty())
 }
 
 fn git_error(args: &[&str], stderr: &[u8]) -> Error {

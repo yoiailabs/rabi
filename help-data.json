@@ -2176,7 +2176,7 @@
     "task": {
       "name": "task",
       "description": "Manage local tasks, inspect PR facts, approve commits and gate merges",
-      "usage": "rabi task new|list|show|abandon|risk|classify|status|approve|merge [arguments] [options]",
+      "usage": "rabi task new|list|show|abandon|implement|risk|classify|status|approve|merge [arguments] [options]",
       "options": [
         {
           "name": "repo",
@@ -2692,6 +2692,66 @@
         "ID accepts a full task id or a unique prefix of at least 6 characters. Appends an event and atomically replaces the task record under its lock.",
         "Merged and abandoned tasks are terminal and cannot be abandoned again. No branch, workspace or GitHub changes.",
         "Corrupt or unreadable records/events exit 1 and name the task ID before changing the task."
+      ]
+    },
+    "task implement": {
+      "name": "task implement",
+      "description": "Launch one implementer in an existing task workspace",
+      "usage": "rabi task implement [SEL] [--provider codex|claude] [--timeout DUR] [MESSAGE|-] [options]",
+      "options": [
+        {
+          "name": "provider",
+          "type": "string",
+          "description": "Implementer provider: codex (default) or claude; starts a fresh session"
+        },
+        {
+          "name": "timeout",
+          "type": "string",
+          "description": "Positive integer with s, m or h suffix; default 60m"
+        },
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Repository to operate on; uses the shared workspace selector rules",
+          "example": "--repo owner/repo"
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "SEL is a full task ID or unique prefix of at least six characters. Without SEL, or with dot, select the unique non-terminal task on the current branch. A message requires SEL; - reads a message from stdin for the current task.",
+        "Requires repository trust and an existing linked checkout on the reserved task branch. Create it separately after task new. Primary checkouts, missing workspaces and states other than new or implementing are refused. Uncommitted work is allowed; its authorship is not inferred.",
+        "Runs once in the foreground. Instructions require implementation, project checks and local commits, and prohibit publication, GitHub calls, remote changes and unnecessary network use. Supplied context is framed as untrusted data.",
+        "All task providers share an environment boundary: GitHub token and SSH agent/askpass variables and inherited GIT_* variables are removed; GH_CONFIG_DIR is a fresh empty directory; Git credential helpers and prompts are disabled; RABI_AGENT=1. This reduces accidental credential use, not same-user access to credential files.",
+        "Codex uses workspace-write, no network and approval_policy=never, retaining default environment secret filtering. Claude uses --permission-mode auto --permission-prompts none with git push, gh, WebFetch and WebSearch disallowed. Plain rabi run retains its existing behavior.",
+        "First launch transitions new to implementing; completion only records events, never declares the task ready. Events capture launch ID, provider, status, pre/post HEAD, new commits and dirty state. Timeout terminates and reaps the process group.",
+        "Provider statuses pass through; launcher errors exit 1, invalid arguments exit 2, missing tasks exit 3, safety refusals exit 4, timeout exits 124 and SIGINT/SIGTERM received by rabi exit 130. JSON uses the schema 2 envelope; provider output goes to stderr."
+      ],
+      "examples": [
+        {
+          "command": "rabi task implement task_123456 --provider codex --timeout 60m \"Add regression coverage\"",
+          "description": "Implement an existing task with additional context"
+        }
       ]
     }
   },
