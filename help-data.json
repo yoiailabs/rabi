@@ -2960,6 +2960,7 @@
     "handoff_identity",
     "handoff_request_skipped",
     "env_untrusted",
+    "task_config_unavailable",
     "env_workspace_path_skipped",
     "record_mismatch",
     "internal"

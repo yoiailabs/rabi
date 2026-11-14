@@ -927,13 +927,25 @@ fn task_store(args: &[String], command: &str) -> Result<i32> {
         _ => store.show(argument)?,
     };
     if command == "show" {
-        view.budget = Some(crate::task::advance::Budget::new(
-            crate::task::advance::configuration(&root)?.fix_budget,
-            view.task.advance.fixes_used,
-        ));
+        match crate::task::advance::configuration(&root) {
+            Ok(config) => view.budget = Some(crate::task::advance::Budget::new(
+                config.fix_budget,
+                view.task.advance.fixes_used,
+            )),
+            Err(_) => crate::output::warning(
+                "task_config_unavailable",
+                "Task fix budget unavailable: cannot read primary-checkout .rabi.toml configuration",
+            ),
+        }
     }
     if crate::output::json() {
-        emit_json(&view)
+        let mut data =
+            serde_json::to_value(&view).map_err(|_| Error::msg("Cannot encode task view"))?;
+        if command == "show" && view.budget.is_none() {
+            data["fixBudget"] = serde_json::Value::Null;
+            data["fixesRemaining"] = serde_json::Value::Null;
+        }
+        emit_json(&data)
     } else {
         view.print();
         Ok(SUCCESS)

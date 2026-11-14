@@ -1106,6 +1106,111 @@ fn ci_fingerprint_uses_sanitized_tail_and_allows_changed_diagnostics() {
 }
 
 #[test]
+fn ci_failure_with_different_log_timestamps_repeats_before_a_second_fix() {
+    let repo = Repo::new(&["test"], "", None);
+    repo.ci();
+    repo.checks(&[vec![check(
+        42,
+        "test",
+        "completed",
+        Some("failure"),
+        "github-actions",
+    )]]);
+    fs::write(repo.root.join("failed-log"), "linux\ttest\t2026-01-02T03:04:05.123Z assertion failed\nlinux\ttest\t2026-01-02T03:04:06Z finished in 1.23s\n").unwrap();
+    decode(repo.advance().output().unwrap(), 0);
+    decode(repo.advance().output().unwrap(), 0);
+    decode(repo.advance().output().unwrap(), 0);
+    fs::write(repo.root.join("failed-log"), "linux rerun\ttest rerun\t2026-02-03T04:05:06.789Z assertion failed\nlinux rerun\ttest rerun\t2026-02-03T04:05:07Z finished in 9.87s\n").unwrap();
+    let blocked = decode(repo.advance().arg("--wait").output().unwrap(), 4);
+    assert_eq!(blocked["data"]["reason"], "repeated_failure");
+    assert_eq!(repo.launches(), 1);
+}
+
+#[test]
+fn precheck_same_command_relaunches_for_changed_output_then_blocks_normalized_repeat() {
+    let repo = Repo::with_prechecks(&["test"], "", |root| {
+        vec![format!(
+            "cat {}; exit 1",
+            root.join("precheck-output").display()
+        )]
+    });
+    fs::write(
+        repo.root.join("precheck-output"),
+        "first assertion failed\n",
+    )
+    .unwrap();
+    decode(repo.advance().output().unwrap(), 0); // Initial implementation.
+    decode(repo.advance().output().unwrap(), 0); // First failed precheck.
+    decode(repo.advance().output().unwrap(), 0); // First fix.
+    let first = repo.view()["task"]["advance"]["lastFixFingerprint"].clone();
+    fs::write(
+        repo.root.join("precheck-output"),
+        "2026-01-02T03:04:05Z second assertion failed; finished in 1.23s\n",
+    )
+    .unwrap();
+    decode(repo.advance().output().unwrap(), 0);
+    decode(repo.advance().output().unwrap(), 0); // Changed output earns another fix.
+    assert_eq!(repo.launches(), 3);
+    assert_ne!(first, repo.view()["task"]["advance"]["lastFixFingerprint"]);
+    fs::write(
+        repo.root.join("precheck-output"),
+        "2026-02-03T04:05:06Z second assertion failed; finished in 9.87s\n",
+    )
+    .unwrap();
+    let blocked = decode(repo.advance().arg("--wait").output().unwrap(), 4);
+    assert_eq!(blocked["data"]["reason"], "repeated_failure");
+    assert_eq!(blocked["data"]["fixesUsed"], 2);
+    assert_eq!(repo.launches(), 3);
+}
+
+#[test]
+fn show_with_invalid_configuration_returns_null_budgets_and_warning_without_writes() {
+    let repo = Repo::new(&["test"], "", None);
+    repo.edit(|task| {
+        task["advance"] = json!({"fixesUsed":2});
+    });
+    let before = fs::read(&repo.record).unwrap();
+    let events = repo.record.parent().unwrap().join("events.jsonl");
+    let events_before = fs::read(&events).unwrap();
+    let record_modified = fs::metadata(&repo.record).unwrap().modified().unwrap();
+    let events_modified = fs::metadata(&events).unwrap().modified().unwrap();
+    for config in ["[factory\n", "[factory]\nfix-budget='invalid'\n"] {
+        fs::write(repo.repo.join(".rabi.toml"), config).unwrap();
+        let output = repo
+            .command(&["task", "show", &repo.task, "--json"])
+            .output()
+            .unwrap();
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Task fix budget unavailable"));
+        let view = decode(output, 0);
+        assert_eq!(view["ok"], true);
+        assert_eq!(view["error"], Value::Null);
+        assert_eq!(view["data"].get("fixBudget"), Some(&Value::Null));
+        assert_eq!(view["data"].get("fixesRemaining"), Some(&Value::Null));
+        assert_eq!(view["data"]["task"]["id"], repo.task);
+        assert_eq!(view["data"]["task"]["advance"]["fixesUsed"], 2);
+        assert_eq!(view["warnings"][0]["code"], "task_config_unavailable");
+        let output = repo
+            .command(&["task", "show", &repo.task])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains(&repo.task));
+        assert!(String::from_utf8_lossy(&output.stderr).contains("Task fix budget unavailable"));
+        assert_eq!(fs::read(&repo.record).unwrap(), before);
+        assert_eq!(fs::read(&events).unwrap(), events_before);
+        assert_eq!(
+            fs::metadata(&repo.record).unwrap().modified().unwrap(),
+            record_modified
+        );
+        assert_eq!(
+            fs::metadata(&events).unwrap().modified().unwrap(),
+            events_modified
+        );
+        assert_eq!(repo.launches(), 0);
+    }
+}
+
+#[test]
 fn show_displays_current_budget_and_remaining_without_rewriting_task() {
     let repo = Repo::new(&["test"], "", None);
     repo.edit(|task| {
