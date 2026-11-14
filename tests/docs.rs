@@ -96,3 +96,27 @@ fn parent_session_guidance_and_discovery_replace_the_workflow_contract() {
         assert!(help["exitCodes"][code].is_string());
     }
 }
+
+#[test]
+fn task_implement_guidance_documents_claude_auto_mode_and_denied_prompts() {
+    let help: serde_json::Value = serde_json::from_str(include_str!("../help-data.json")).unwrap();
+    let notes = help["helps"]["task implement"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|note| note.as_str().unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for (name, document) in [
+        ("task implement help", notes.as_str()),
+        ("docs/commands.md", include_str!("../docs/commands.md")),
+    ] {
+        for setting in ["--permission-mode auto", "--permission-prompts none"] {
+            assert!(document.contains(setting), "{name} is missing {setting}");
+        }
+        assert!(
+            !document.contains("acceptEdits"),
+            "{name} has stale permissions"
+        );
+    }
+}

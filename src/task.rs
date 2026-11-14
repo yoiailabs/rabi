@@ -1,6 +1,6 @@
 //! Task bookkeeping and inspection. Policy/classification have no Git I/O.
 pub(crate) mod assessment;
-mod boundary;
+pub(crate) mod boundary;
 mod classifier_provider;
 mod classify;
 mod diff;
@@ -42,9 +42,11 @@ struct PolicySource {
     source: String,
 }
 
-// Reuse the existing byte executor without extending shared Git/process APIs.
+// Shared task reads use the boundary environment and hardened Git executor.
 // Byte output is essential: paths must never be decoded lossily for matching.
 fn capture(root: &Path, args: &[&str]) -> Result<std::process::Output> {
+    let boundary = boundary::Boundary::new()?;
+    let _git = boundary.git_scope();
     let mut options = vec!["--no-lazy-fetch"];
     options.extend_from_slice(args);
     // GIT_NO_REPLACE_OBJECTS does not disable legacy info/grafts. A path

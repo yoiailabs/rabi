@@ -428,13 +428,7 @@ fn claude_receives_empty_cwd_no_credentials_and_tool_restrictions() {
     assert!(env.lines().any(|line| line.starts_with("GH_CONFIG_DIR=")));
     for entry in [
         "GIT_TERMINAL_PROMPT=0",
-        "GIT_CONFIG_COUNT=4",
-        "GIT_CONFIG_KEY_0=credential.helper",
-        "GIT_CONFIG_VALUE_0=",
-        "GIT_CONFIG_KEY_1=core.askPass",
-        "GIT_CONFIG_KEY_2=credential.interactive",
-        "GIT_CONFIG_VALUE_2=false",
-        "GIT_CONFIG_KEY_3=core.sshCommand",
+        "GIT_CONFIG_PARAMETERS='credential.helper=' 'core.askPass=' 'credential.interactive=false' 'core.sshCommand=ssh -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none'",
     ] {
         assert!(env.lines().any(|line| line == entry), "{entry}: {env}");
     }
@@ -448,6 +442,9 @@ fn claude_receives_empty_cwd_no_credentials_and_tool_restrictions() {
         "SSH_ASKPASS",
         "GIT_DIR",
         "GIT_WORK_TREE",
+        "GIT_CONFIG_COUNT",
+        "GIT_CONFIG_KEY_0",
+        "GIT_CONFIG_VALUE_0",
     ] {
         assert!(
             !env.lines().any(|line| line.starts_with(&format!("{key}="))),

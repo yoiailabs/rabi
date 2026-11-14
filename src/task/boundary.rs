@@ -7,7 +7,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use crate::error::{Error, Result};
 
-pub(super) struct Boundary {
+pub(crate) struct Boundary {
     path: PathBuf,
 }
 impl Boundary {
@@ -66,12 +66,21 @@ impl Boundary {
                 "ssh -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none",
             ),
         ];
-        command.env("GIT_CONFIG_COUNT", settings.len().to_string());
-        for (index, (key, value)) in settings.into_iter().enumerate() {
-            command
-                .env(format!("GIT_CONFIG_KEY_{index}"), key)
-                .env(format!("GIT_CONFIG_VALUE_{index}"), value);
-        }
+        // Codex's default secret filter removes names containing KEY. Use
+        // Git's quoted parameter format so these settings reach its tool shells
+        // without disabling the provider's default environment exclusions.
+        let parameters = settings
+            .into_iter()
+            .map(|(key, value)| format!("'{}'", format!("{key}={value}").replace('\'', "'\\''")))
+            .collect::<Vec<_>>()
+            .join(" ");
+        command.env("GIT_CONFIG_PARAMETERS", parameters);
+    }
+
+    pub fn git_scope(&self) -> crate::process::TaskGitEnvironment {
+        let mut command = Command::new("git");
+        self.prepare(&mut command);
+        crate::process::task_git_environment(&command)
     }
 }
 impl Drop for Boundary {
@@ -209,7 +218,6 @@ mod tests {
             "SSH_ASKPASS",
             "GIT_DIR",
             "GIT_WORK_TREE",
-            "GIT_CONFIG_PARAMETERS",
             "GIT_CONFIG_KEY_70",
             "GIT_CONFIG_VALUE_70",
             "GIT_UNKNOWN_SELECTOR",
@@ -217,12 +225,8 @@ mod tests {
             assert_eq!(environment.get(OsStr::new(key)), Some(&None), "{key}");
         }
         assert_eq!(
-            environment.get(OsStr::new("GIT_CONFIG_KEY_0")),
-            Some(&Some(OsStr::new("credential.helper")))
-        );
-        assert_eq!(
-            environment.get(OsStr::new("GIT_CONFIG_VALUE_0")),
-            Some(&Some(OsStr::new("")))
+            environment.get(OsStr::new("GIT_CONFIG_PARAMETERS")),
+            Some(&Some(OsStr::new("'credential.helper=' 'core.askPass=' 'credential.interactive=false' 'core.sshCommand=ssh -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none'")))
         );
     }
 }
