@@ -79,6 +79,12 @@ root = pathlib.Path(os.environ['FAKE_ROOT'])
 with (root/'argv.jsonl').open('a') as f: f.write(json.dumps(args)+'\n')
 (root/'input').write_text(sys.stdin.read())
 (root/'cwd').write_text(os.getcwd())
+if os.environ.get('FAKE_CAPTURE_BOUNDARY'):
+    names = ['GH_TOKEN','GITHUB_TOKEN','GH_ENTERPRISE_TOKEN','GITHUB_ENTERPRISE_TOKEN','SSH_AUTH_SOCK','SSH_ASKPASS','GH_CONFIG_DIR','RABI_AGENT','OPENAI_API_KEY','ANTHROPIC_API_KEY','CURSOR_API_KEY']
+    captured = {k:v for k,v in os.environ.items() if k.startswith('GIT_') or k in names}
+    captured['githubEntries'] = list(pathlib.Path(os.environ['GH_CONFIG_DIR']).iterdir())
+    captured['gitConfig'] = {key:subprocess.check_output(['git','config','--get',key], text=True).rstrip('\n') for key in ['credential.helper','core.askPass','credential.interactive','core.sshCommand']}
+    (root/'boundary.json').write_text(json.dumps(captured))
 if os.environ.get('FAKE_CAPTURE_ENV'):
     (root/'env.json').write_text(json.dumps({k:os.environ[k] for k in ['RABI_AGENT','DECLARED_VALUE','EMPTY_VALUE','PRIMARY_PATH','WORKSPACE_PATH','HOME_PATH','PATH','RABI_REPO_PATH','RABI_WORKSPACE_PATH'] if k in os.environ}))
 sid = args[args.index('resume')+1] if 'resume' in args else str(uuid.uuid4())
@@ -282,7 +288,9 @@ fn parent_resumes_same_session_and_fresh_retains_old_record() {
     let argv = calls[1].as_array().unwrap();
     let index = argv.iter().position(|a| a == "resume").unwrap();
     assert_eq!(argv[index + 1], first["run"]["sessionId"]);
-    assert!(argv.contains(&Value::from("--approve-for-me")));
+    assert!(!argv.contains(&Value::from("--approve-for-me")));
+    assert!(argv.contains(&Value::from("workspace-write")));
+    assert!(argv.contains(&Value::from("sandbox_workspace_write.network_access=false")));
     assert!(!argv.contains(&Value::from("--sandbox")));
     assert!(argv.contains(&Value::from("gpt-6.1-sol")));
     assert!(argv.contains(&Value::from("model_reasoning_effort=\"high\"")));
@@ -297,6 +305,37 @@ fn parent_resumes_same_session_and_fresh_retains_old_record() {
     assert_ne!(fresh["run"]["sessionId"], first["run"]["sessionId"]);
     assert_eq!(fs::read(dir.join("state.json")).unwrap(), old_bytes);
     assert_eq!(fresh["run"]["launches"].as_array().unwrap().len(), 1);
+    f.assert_unlocked();
+}
+
+#[test]
+fn first_and_fresh_runs_allow_omitting_skill() {
+    let f = Fixture::new();
+    let first = f.json(&["run", "initial task", "--json"]);
+    assert_eq!(first["run"]["skill"], "");
+    assert_eq!(first["launch"]["skill"], "");
+    let prompt = fs::read_to_string(f.run_dir().join("launches/1/prompt.md")).unwrap();
+    assert!(!prompt.contains("Follow skill"));
+    assert!(prompt.ends_with("initial task"));
+    let resumed = f.json(&["run", "--json"]);
+    assert_eq!(resumed["run"]["id"], first["run"]["id"]);
+    assert_eq!(
+        fs::read_to_string(f.run_dir().join("launches/2/prompt.md")).unwrap(),
+        "Continue."
+    );
+    f.json(&["run", "--skill", "verbatim instruction", "--json"]);
+    let old_dir = f.run_dir();
+    let old_record = fs::read(old_dir.join("state.json")).unwrap();
+    let fresh = f.json(&["run", "--fresh", "--json"]);
+    assert_ne!(fresh["run"]["id"], first["run"]["id"]);
+    assert_eq!(fresh["run"]["skill"], "");
+    assert_eq!(fresh["launch"]["skill"], "");
+    assert!(
+        !fs::read_to_string(f.run_dir().join("launches/1/prompt.md"))
+            .unwrap()
+            .contains("Follow skill")
+    );
+    assert_eq!(fs::read(old_dir.join("state.json")).unwrap(), old_record);
     f.assert_unlocked();
 }
 
@@ -466,7 +505,7 @@ fn mid_launch_session_mismatch_stops_and_reaps_the_child_group() {
     assert_eq!(launch["stopReason"], "error");
     assert_eq!(launch["exitCode"], 137);
     assert!(launch["message"].as_str().unwrap().contains(
-        "The recorded parent session was retained. Use `rabi run --fresh --skill <value>` to start over."
+        "The recorded parent session was retained. Use `rabi run --fresh` to start over."
     ));
     f.assert_unlocked();
 }
@@ -640,8 +679,6 @@ fn noisy_output_does_not_delay_timeout_or_interrupt() {
 #[test]
 fn validation_trust_stdin_and_removed_commands() {
     let f = Fixture::new();
-    assert_error(f.run(&["run"]), 2, "--skill");
-    assert_error(f.run(&["run", "--fresh"]), 2, "--skill");
     for duration in ["0s", "1", "-1m", "10d", "999999999999999999999h"] {
         assert_error(
             f.run(&["run", "--skill", "x", "--timeout", duration]),
@@ -675,7 +712,8 @@ fn validation_trust_stdin_and_removed_commands() {
         vec!["workflow", "check"],
         vec!["run", "start"],
         vec!["run", "show"],
-        vec!["run", "--provider", "codex"],
+        vec!["skill"],
+        vec!["skill", "list"],
         vec!["run", "--provider", "unknown", "--skill", "x"],
         vec!["run", "--provider", "Cursor", "--skill", "x"],
         vec!["run", "a", "b"],
@@ -1276,68 +1314,6 @@ print(resumed.stdout.decode(), end='')
     f.assert_unlocked();
 }
 #[test]
-fn skill_list_orders_sources_and_names_and_keeps_duplicates_without_parsing() {
-    let f = Fixture::new();
-    let sources = [
-        (f.workspace.join(".agents/skills"), "checkout:.agents"),
-        (f.workspace.join(".codex/skills"), "checkout:.codex"),
-        (f.workspace.join(".claude/skills"), "checkout:.claude"),
-        (f.home.join(".agents/skills"), "user:.agents"),
-        (f.codex.join("skills"), "user:.codex"),
-        (f.home.join(".claude/skills"), "user:.claude"),
-    ];
-    assert_eq!(
-        f.json(&["skill", "list", "--json"])["skills"],
-        serde_json::json!([])
-    );
-    for (root, _) in &sources {
-        for name in ["z", "a"] {
-            fs::create_dir_all(root.join(name)).unwrap();
-            fs::write(root.join(name).join("SKILL.md"), "--- invalid frontmatter").unwrap();
-        }
-        fs::create_dir(root.join("empty")).unwrap();
-    }
-    let data = f.json(&["skill", "list", "--json"]);
-    let skills = data["skills"].as_array().unwrap();
-    assert_eq!(skills.len(), 12);
-    for (i, (root, source)) in sources.iter().enumerate() {
-        for (j, name) in ["a", "z"].iter().enumerate() {
-            let s = &skills[i * 2 + j];
-            assert_eq!(s["name"], *name);
-            assert_eq!(s["source"], *source);
-            assert_eq!(s["path"], root.join(name).to_str().unwrap());
-        }
-    }
-    let text = f.run(&["skill", "list"]);
-    assert!(text.status.success());
-    let expected = skills
-        .iter()
-        .map(|s| {
-            format!(
-                "{}\t{}\t{}\n",
-                s["name"].as_str().unwrap(),
-                s["source"].as_str().unwrap(),
-                s["path"].as_str().unwrap()
-            )
-        })
-        .collect::<String>();
-    assert_eq!(String::from_utf8(text.stdout).unwrap(), expected);
-    // CODEX_HOME unset falls back to ~/.codex; a nested cwd uses checkout root.
-    fs::create_dir_all(f.home.join(".codex/skills/fallback")).unwrap();
-    fs::write(f.home.join(".codex/skills/fallback/SKILL.md"), "x").unwrap();
-    let nested = f.workspace.join("nested");
-    fs::create_dir(&nested).unwrap();
-    let out = f
-        .command(&["skill", "list", "--json"])
-        .current_dir(nested)
-        .env_remove("CODEX_HOME")
-        .output()
-        .unwrap();
-    assert!(String::from_utf8_lossy(&out.stdout).contains("fallback"));
-    assert_eq!(f.calls(), 0);
-}
-
-#[test]
 fn different_workspaces_keep_distinct_parents_and_long_names_fit_pointer_filenames() {
     let f = Fixture::new();
     let first = f.json(&["run", "--skill", "x", "--json"]);
@@ -1495,13 +1471,12 @@ fn new_help_and_completions_come_from_the_contract_without_retired_commands() {
             "--fresh",
             "--no-handoff",
             "--timeout",
-            "skill list",
             "handoff add",
             "--kind",
         ] {
             assert!(script.contains(expected), "{shell}: {expected}");
         }
-        for removed in ["workflow", "run start", "run show"] {
+        for removed in ["skill list", "workflow", "run start", "run show"] {
             assert!(!script.contains(removed), "{shell}: {removed}");
         }
     }
@@ -2056,6 +2031,12 @@ root = pathlib.Path(os.environ['FAKE_ROOT'])
 with (root/'argv.jsonl').open('a') as f: f.write(json.dumps(args)+'\n')
 (root/'input').write_bytes(sys.stdin.buffer.read())
 (root/'cwd').write_text(os.getcwd())
+if os.environ.get('FAKE_CAPTURE_BOUNDARY'):
+    names = ['GH_TOKEN','GITHUB_TOKEN','GH_ENTERPRISE_TOKEN','GITHUB_ENTERPRISE_TOKEN','SSH_AUTH_SOCK','SSH_ASKPASS','GH_CONFIG_DIR','RABI_AGENT','OPENAI_API_KEY','ANTHROPIC_API_KEY','CURSOR_API_KEY']
+    captured = {k:v for k,v in os.environ.items() if k.startswith('GIT_') or k in names}
+    captured['githubEntries'] = list(pathlib.Path(os.environ['GH_CONFIG_DIR']).iterdir())
+    captured['gitConfig'] = {key:subprocess.check_output(['git','config','--get',key], text=True).rstrip('\n') for key in ['credential.helper','core.askPass','credential.interactive','core.sshCommand']}
+    (root/'boundary.json').write_text(json.dumps(captured))
 if os.environ.get('FAKE_CAPTURE_ENV'):
     (root/'env.json').write_text(json.dumps({k:os.environ[k] for k in ['RABI_AGENT','DECLARED_VALUE','EMPTY_VALUE','PRIMARY_PATH','WORKSPACE_PATH','HOME_PATH','PATH','RABI_REPO_PATH','RABI_WORKSPACE_PATH'] if k in os.environ}))
 (root/'binary').write_text(pathlib.Path(sys.argv[0]).name)
@@ -2356,10 +2337,7 @@ fn cursor_sandbox_allowlist_is_excluded_idempotent_and_preserves_existing_conten
             );
         } else {
             let value: Value = serde_json::from_slice(&bytes).unwrap();
-            assert_eq!(
-                value,
-                serde_json::json!({"networkPolicy":{"allow":["github.com","*.github.com","*.githubusercontent.com"]}})
-            );
+            assert_eq!(value, serde_json::json!({"networkPolicy":{"allow":[]}}));
         }
         let exclude = fs::read(f.repo.join(".git/info/exclude")).unwrap();
         let text = String::from_utf8(exclude.clone()).unwrap();
@@ -2673,6 +2651,12 @@ root = pathlib.Path(os.environ['FAKE_ROOT'])
 with (root/'argv.jsonl').open('a') as f: f.write(json.dumps(args)+'\n')
 (root/'input').write_bytes(sys.stdin.buffer.read())
 (root/'cwd').write_text(os.getcwd())
+if os.environ.get('FAKE_CAPTURE_BOUNDARY'):
+    names = ['GH_TOKEN','GITHUB_TOKEN','GH_ENTERPRISE_TOKEN','GITHUB_ENTERPRISE_TOKEN','SSH_AUTH_SOCK','SSH_ASKPASS','GH_CONFIG_DIR','RABI_AGENT','OPENAI_API_KEY','ANTHROPIC_API_KEY','CURSOR_API_KEY']
+    captured = {k:v for k,v in os.environ.items() if k.startswith('GIT_') or k in names}
+    captured['githubEntries'] = list(pathlib.Path(os.environ['GH_CONFIG_DIR']).iterdir())
+    captured['gitConfig'] = {key:subprocess.check_output(['git','config','--get',key], text=True).rstrip('\n') for key in ['credential.helper','core.askPass','credential.interactive','core.sshCommand']}
+    (root/'boundary.json').write_text(json.dumps(captured))
 if os.environ.get('FAKE_CAPTURE_ENV'):
     (root/'env.json').write_text(json.dumps({k:os.environ[k] for k in ['RABI_AGENT','DECLARED_VALUE','EMPTY_VALUE','PRIMARY_PATH','WORKSPACE_PATH','HOME_PATH','PATH','RABI_REPO_PATH','RABI_WORKSPACE_PATH'] if k in os.environ}))
 sid = args[args.index('--resume')+1] if '--resume' in args else args[args.index('--session-id')+1]
@@ -2815,7 +2799,9 @@ fn claude_fresh_and_resume_preserve_exact_argv_prompt_answer_and_provider_summar
         "--model",
         "opus",
         "--effort",
-        "high"
+        "high",
+        "--disallowedTools",
+        "Bash(git push:*),Bash(gh:*),WebFetch,WebSearch"
     ]);
     let calls = || {
         fs::read_to_string(f.root.join("argv.jsonl"))
@@ -3914,7 +3900,11 @@ if os.environ.get('ADD_HANDOFF'):
                 .unwrap(),
         )
         .unwrap();
-        assert!(!last.as_array().unwrap().contains(&Value::from("--add-dir")));
+        assert!(!last.as_array().unwrap().windows(2).any(|pair| pair
+            == [
+                Value::from("--add-dir"),
+                Value::from(memory.to_str().unwrap())
+            ]));
         let env: Value =
             serde_json::from_slice(&fs::read(f.root.join("run-env.json")).unwrap()).unwrap();
         assert!(env["RABI_BIN"].is_null());
@@ -4258,7 +4248,7 @@ fn handoff_cross_provider_switch_stdin_and_no_handoff_exact_prompt() {
         "--json",
     ]);
     assert!(fresh["launch"]["handoff"].is_null());
-    assert_eq!(fs::read_to_string(f.root.join("input")).unwrap(), format!("You are the parent agent for this rabi run in workspace {} on branch feat/parent. You manage progress: delegate implementation and review to your own subagents, gather the information you need yourself (git, gh, tests), give follow-up instructions until the work is really done, and decide completion.\n\nFollow skill `legacy`.\n\ntask", f.workspace.display()));
+    assert_eq!(fs::read_to_string(f.root.join("input")).unwrap(), format!("You are the parent agent for this rabi run in workspace {} on branch feat/parent. You manage progress: delegate implementation and review to your own subagents, gather the information you need yourself (git, tests), give follow-up instructions until the work is really done, and decide completion. Do not push or call GitHub; leave publication to rabi task commands.\n\nFollow skill `legacy`.\n\ntask", f.workspace.display()));
 }
 
 #[test]
@@ -5715,7 +5705,7 @@ fn repository_env_diagnostics_escape_control_characters_and_keep_json_values() {
 }
 
 #[test]
-fn agent_marker_all_providers_fresh_and_resume_with_and_without_handoff() {
+fn agent_boundary_all_providers_fresh_and_resume_with_and_without_handoff() {
     for provider in ["codex", "cursor", "claude"] {
         for handoff in [true, false] {
             let f = Fixture::new();
@@ -5726,8 +5716,13 @@ fn agent_marker_all_providers_fresh_and_resume_with_and_without_handoff() {
             }
             f.record_workspace();
             f.declared_env("marker fixture");
+            let config_path = f.repo.join(".rabi.toml");
+            let mut config = fs::read_to_string(&config_path).unwrap();
+            config.push_str("GH_TOKEN = \"repository fixture\"\nSSH_AUTH_SOCK = \"repository fixture\"\nGIT_SSH_COMMAND = \"repository fixture\"\nGIT_UNKNOWN_SELECTOR = \"repository fixture\"\n");
+            fs::write(&config_path, config).unwrap();
+            let mut previous_github = None;
             for resume in [false, true] {
-                let mut args = vec!["run", "--json"];
+                let mut args = vec!["run"];
                 if !resume {
                     args.extend(["--fresh", "--provider", provider, "--skill", "x"]);
                 }
@@ -5737,6 +5732,23 @@ fn agent_marker_all_providers_fresh_and_resume_with_and_without_handoff() {
                 let output = f
                     .command(&args)
                     .env("RABI_AGENT", "inherited-other-value")
+                    .env("GH_TOKEN", "inherited fixture")
+                    .env("GITHUB_TOKEN", "inherited fixture")
+                    .env("GH_ENTERPRISE_TOKEN", "inherited fixture")
+                    .env("GITHUB_ENTERPRISE_TOKEN", "inherited fixture")
+                    .env("SSH_AUTH_SOCK", "inherited fixture")
+                    .env("GIT_ASKPASS", "inherited fixture")
+                    .env("SSH_ASKPASS", "inherited fixture")
+                    .env("GIT_UNKNOWN_SELECTOR", "inherited fixture")
+                    .env(
+                        "GIT_CONFIG_PARAMETERS",
+                        "'credential.helper=inherited fixture'",
+                    )
+                    .env("GH_CONFIG_DIR", f.root.join("inherited-github"))
+                    .env("OPENAI_API_KEY", "provider fixture")
+                    .env("ANTHROPIC_API_KEY", "provider fixture")
+                    .env("CURSOR_API_KEY", "provider fixture")
+                    .env("FAKE_CAPTURE_BOUNDARY", "1")
                     .env("FAKE_CAPTURE_ENV", "1")
                     .output()
                     .unwrap();
@@ -5746,11 +5758,107 @@ fn agent_marker_all_providers_fresh_and_resume_with_and_without_handoff() {
                     String::from_utf8_lossy(&output.stdout),
                     String::from_utf8_lossy(&output.stderr)
                 );
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                assert!(stderr.contains("env applied:"));
+                for key in [
+                    "GH_TOKEN",
+                    "SSH_AUTH_SOCK",
+                    "GIT_SSH_COMMAND",
+                    "GIT_UNKNOWN_SELECTOR",
+                ] {
+                    assert!(
+                        !stderr.contains(key),
+                        "filtered key appeared in env summary: {key}"
+                    );
+                }
                 assert_eq!(
                     f.captured_env()["RABI_AGENT"],
                     "1",
                     "{provider} handoff={handoff} resume={resume}"
                 );
+                let captured: Value =
+                    serde_json::from_slice(&fs::read(f.root.join("boundary.json")).unwrap())
+                        .unwrap();
+                for key in [
+                    "GH_TOKEN",
+                    "GITHUB_TOKEN",
+                    "GH_ENTERPRISE_TOKEN",
+                    "GITHUB_ENTERPRISE_TOKEN",
+                    "SSH_AUTH_SOCK",
+                    "GIT_ASKPASS",
+                    "SSH_ASKPASS",
+                    "GIT_UNKNOWN_SELECTOR",
+                    "GIT_SSH_COMMAND",
+                    "GIT_CONFIG_NOSYSTEM",
+                ] {
+                    assert!(captured.get(key).is_none(), "{provider}: leaked {key}");
+                }
+                let git_keys: Vec<_> = captured
+                    .as_object()
+                    .unwrap()
+                    .keys()
+                    .filter(|key| key.starts_with("GIT_"))
+                    .map(String::as_str)
+                    .collect();
+                assert_eq!(git_keys, ["GIT_CONFIG_PARAMETERS", "GIT_TERMINAL_PROMPT"]);
+                assert_eq!(captured["GIT_TERMINAL_PROMPT"], "0");
+                assert_eq!(captured["githubEntries"], serde_json::json!([]));
+                assert_eq!(
+                    captured["gitConfig"],
+                    serde_json::json!({
+                        "credential.helper":"", "core.askPass":"", "credential.interactive":"false",
+                        "core.sshCommand":"ssh -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none"
+                    })
+                );
+                for key in ["OPENAI_API_KEY", "ANTHROPIC_API_KEY", "CURSOR_API_KEY"] {
+                    assert_eq!(captured[key], "provider fixture");
+                }
+                let github = captured["GH_CONFIG_DIR"].as_str().unwrap().to_owned();
+                assert!(
+                    !Path::new(&github).exists(),
+                    "temporary configuration must be cleaned after reap"
+                );
+                assert_ne!(previous_github.as_ref(), Some(&github));
+                previous_github = Some(github);
+                let calls: Vec<Value> = fs::read_to_string(f.root.join("argv.jsonl"))
+                    .unwrap()
+                    .lines()
+                    .map(|line| serde_json::from_str(line).unwrap())
+                    .collect();
+                let argv = calls.last().unwrap().as_array().unwrap();
+                match provider {
+                    "codex" => {
+                        for arg in [
+                            "workspace-write",
+                            "approval_policy=\"never\"",
+                            "sandbox_workspace_write.network_access=false",
+                            "web_search=\"disabled\"",
+                        ] {
+                            assert!(argv.contains(&Value::from(arg)), "{arg}");
+                        }
+                        assert!(!argv.contains(&Value::from("--approve-for-me")));
+                        for directory in [
+                            f.repo.join(".git/worktrees/workspace"),
+                            f.repo.join(".git/objects"),
+                            f.repo.join(".git/refs"),
+                            f.repo.join(".git/logs"),
+                        ] {
+                            assert!(argv.windows(2).any(|pair| pair
+                                == [
+                                    Value::from("--add-dir"),
+                                    Value::from(directory.to_str().unwrap())
+                                ]));
+                        }
+                    }
+                    "claude" => assert!(argv.windows(2).any(|pair| pair
+                        == [
+                            Value::from("--disallowedTools"),
+                            Value::from("Bash(git push:*),Bash(gh:*),WebFetch,WebSearch")
+                        ])),
+                    _ => assert!(argv
+                        .windows(2)
+                        .any(|pair| pair == [Value::from("--sandbox"), Value::from("enabled")])),
+                }
             }
         }
     }

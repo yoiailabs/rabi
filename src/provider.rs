@@ -100,7 +100,14 @@ impl Provider {
         memory: Option<&Path>,
     ) -> Result<Command> {
         match self {
-            Self::Codex => codex_command(resolve_codex_binary()?, workspace, dir, session, memory),
+            Self::Codex => codex_command(
+                resolve_codex_binary()?,
+                workspace,
+                dir,
+                session,
+                memory,
+                &crate::task::implement::git_write_dirs(workspace)?,
+            ),
             Self::Cursor => cursor::command(workspace, dir, session, memory),
             Self::Claude => claude::command(workspace, dir, session, memory),
         }
@@ -205,16 +212,22 @@ fn codex_command(
     dir: &Path,
     session: Session<'_>,
     memory: Option<&Path>,
+    git_directories: &[PathBuf],
 ) -> Result<Command> {
     let mut command = Command::new(binary);
+    command.arg("exec");
+    crate::task::boundary::codex_local_policy(&mut command);
     command
-        .args(["exec", "--json", "-C"])
+        .args(["--json", "-C"])
         .arg(workspace)
-        .args(["--approve-for-me", "-m", MODEL, "-c", EFFORT])
+        .args(["-m", MODEL, "-c", EFFORT])
         .arg("-o")
         .arg(dir.join("answer.md"));
     if let Some(memory) = memory {
         command.arg("--add-dir").arg(memory);
+    }
+    for directory in git_directories {
+        command.arg("--add-dir").arg(directory);
     }
     match session {
         Session::New { requested } => {
@@ -451,8 +464,15 @@ mod tests {
             Session::New { requested: None },
             Session::Resume { id: "session" },
         ] {
-            let command =
-                codex_command("codex", &root, &root, session, Some(Path::new("/memory"))).unwrap();
+            let command = codex_command(
+                "codex",
+                &root,
+                &root,
+                session,
+                Some(Path::new("/memory")),
+                &[],
+            )
+            .unwrap();
             let args: Vec<_> = command.get_args().collect();
             let grant = args.iter().position(|a| a == &"--add-dir").unwrap();
             assert_eq!(args[grant + 1], "/memory");
@@ -495,7 +515,7 @@ mod tests {
     }
 
     #[test]
-    fn codex_command_matches_existing_new_and_resume_argv_and_prompt_stdin() {
+    fn codex_command_new_and_resume_share_local_policy_and_prompt_stdin() {
         use std::ffi::OsString;
 
         let root = std::env::temp_dir().join(format!("rabi-command-{}", uuid::Uuid::new_v4()));
@@ -505,20 +525,39 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         fs::write(dir.join("prompt.md"), b"saved prompt\nwith a second line\n").unwrap();
         // Execution only verifies the configured stdin; argv is checked directly
-        // against the literal pre-boundary invocation before adding a local PATH.
+        // against the local-agent invocation before adding a local PATH.
         test_support::write_executable(root.join("codex"), "#!/bin/sh\n/bin/cat\n").unwrap();
         for session in [
             Session::New { requested: None },
             Session::Resume { id: "thread-id" },
         ] {
-            let mut expected: Vec<OsString> = ["exec", "--json", "-C"]
-                .into_iter()
-                .map(OsString::from)
-                .collect();
+            let mut expected: Vec<OsString> = [
+                "exec",
+                "--ignore-user-config",
+                "--ignore-rules",
+                "-s",
+                "workspace-write",
+                "-c",
+                "approval_policy=\"never\"",
+                "-c",
+                "sandbox_workspace_write.network_access=false",
+                "-c",
+                "web_search=\"disabled\"",
+                "-c",
+                "shell_environment_policy.inherit=\"all\"",
+                "-c",
+                "shell_environment_policy.include_only=[]",
+                "-c",
+                "shell_environment_policy.set={}",
+                "--json",
+                "-C",
+            ]
+            .into_iter()
+            .map(OsString::from)
+            .collect();
             expected.push(workspace.as_os_str().to_owned());
             expected.extend(
                 [
-                    "--approve-for-me",
                     "-m",
                     "gpt-6.1-sol",
                     "-c",
@@ -534,7 +573,7 @@ mod tests {
             }
             expected.push(OsString::from("-"));
             let mut command =
-                codex_command(root.join("codex"), &workspace, &dir, session, None).unwrap();
+                codex_command(root.join("codex"), &workspace, &dir, session, None, &[]).unwrap();
             assert_eq!(command.get_program(), root.join("codex"));
             assert_eq!(command.get_args().collect::<Vec<_>>(), expected);
             assert_eq!(command.get_current_dir(), Some(workspace.as_path()));

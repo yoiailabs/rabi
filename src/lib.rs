@@ -41,7 +41,6 @@ mod runtime;
 mod selectors;
 pub mod setup;
 mod shell;
-mod skill;
 pub mod sync;
 mod task;
 mod tracking;

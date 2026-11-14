@@ -57,6 +57,7 @@ fn command_with_binary(
         "--effort",
         "high",
     ]);
+    crate::task::boundary::claude_local_policy(&mut command);
     if let Some(memory) = memory {
         command.arg("--add-dir").arg(memory);
     }
@@ -289,7 +290,9 @@ mod tests {
                     "--model",
                     "opus",
                     "--effort",
-                    "high"
+                    "high",
+                    "--disallowedTools",
+                    "Bash(git push:*),Bash(gh:*),WebFetch,WebSearch",
                 ]
             );
             assert_eq!(command.get_current_dir(), Some(workspace.as_path()));

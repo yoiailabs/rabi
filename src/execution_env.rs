@@ -77,6 +77,18 @@ pub(crate) struct Resolved {
 }
 
 impl Resolved {
+    /// Keep only declarations still present after the caller's final overrides.
+    pub fn retain_applied(&mut self, command: &std::process::Command) {
+        self.values.retain(|key, value| {
+            command.get_envs().any(|(applied_key, applied_value)| {
+                applied_key == std::ffi::OsStr::new(key) && applied_value == Some(value.as_os_str())
+            })
+        });
+        if !self.values.contains_key("PATH") {
+            self.path_count = 0;
+        }
+    }
+
     pub fn summary(&self) -> String {
         let mut keys = Vec::new();
         if self.path_count > 0 {

@@ -231,7 +231,7 @@ fn validate_common_dirs(common: &Path) -> Result<()> {
     Ok(())
 }
 
-fn git_write_dirs(workspace: &Path) -> Result<Vec<PathBuf>> {
+pub(crate) fn git_write_dirs(workspace: &Path) -> Result<Vec<PathBuf>> {
     let workspace =
         fs::canonicalize(workspace).map_err(|_| Error::msg("Cannot resolve task workspace"))?;
     let (git_dir, common) = git_metadata(&workspace)?;
@@ -260,25 +260,8 @@ fn command(provider: Provider, binary: &Path, workspace: &Path) -> Result<Comman
     let mut command = Command::new(binary);
     match provider {
         Provider::Codex => {
-            command.args([
-                "exec",
-                "--ignore-user-config",
-                "--ignore-rules",
-                "-s",
-                "workspace-write",
-                "-c",
-                "approval_policy=\"never\"",
-                "-c",
-                "sandbox_workspace_write.network_access=false",
-                "-c",
-                "web_search=\"disabled\"",
-                "-c",
-                "shell_environment_policy.inherit=\"all\"",
-                "-c",
-                "shell_environment_policy.include_only=[]",
-                "-c",
-                "shell_environment_policy.set={}",
-            ]);
+            command.arg("exec");
+            super::boundary::codex_local_policy(&mut command);
             for directory in git_write_dirs(workspace)? {
                 command.arg("--add-dir").arg(directory);
             }
@@ -291,8 +274,6 @@ fn command(provider: Provider, binary: &Path, workspace: &Path) -> Result<Comman
                 "auto",
                 "--permission-prompts",
                 "none",
-                "--disallowedTools",
-                "Bash(git push:*),Bash(gh:*),WebFetch,WebSearch",
                 "--strict-mcp-config",
                 "--mcp-config",
                 "{\"mcpServers\":{}}",
@@ -302,6 +283,7 @@ fn command(provider: Provider, binary: &Path, workspace: &Path) -> Result<Comman
                 "{\"disableAllHooks\":true}",
                 "--no-session-persistence",
             ]);
+            super::boundary::claude_local_policy(&mut command);
         }
     }
     command

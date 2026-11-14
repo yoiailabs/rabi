@@ -10,7 +10,7 @@
 
 - `rabi task publish [SEL]` runs trusted committed `[precheck]` commands with stripped credentials, blocks changed checks and base-policy floor paths, then pushes to the recorded URL and creates or reuses a draft PR. Publication disables repository hooks/configuration, never forces, reconciles interrupted pushes/PR creation, and advances to `ci` only for the verified HEAD.
 
-- `rabi task implement [SEL] [--provider codex|claude] [--timeout DUR] [MESSAGE|-]` runs one foreground implementer in an existing linked task workspace, records launch and Git outcomes, and advances only `new` to `implementing`. Task implementers and the tool-less classifier share credential stripping, empty GitHub CLI configuration, disabled Git credential helpers/prompts and `RABI_AGENT=1`; `rabi run` keeps its existing behavior.
+- `rabi task implement [SEL] [--provider codex|claude] [--timeout DUR] [MESSAGE|-]` runs one foreground implementer in an existing linked task workspace, records launch and Git outcomes, and advances only `new` to `implementing`. Task implementers and the tool-less classifier share credential stripping, empty GitHub CLI configuration, disabled Git credential helpers/prompts and `RABI_AGENT=1`; plain `rabi run` uses the same shared boundary (see breaking changes below).
 
 - `rabi task classify [SEL] [--base REF] [--provider claude]` applies the base-commit written policy to committed diffs using one fresh Claude session with all tools disabled (`--tools ""`) and safe flags. Claude is the default and only classifier provider. Deterministic safeguards and classifier failures escalate to high. Exact-head records bind policy/document blobs and are consumed by merge preflight; missing or stale records retain external-review behavior. Repository policies accept `[classifier] doc` and an optional provider.
 - Local `rabi task new|list|show|abandon` bookkeeping stores private task records and append-only transition events outside the repository. Branch reservations, ID prefixes, read-only branch/state mismatch reporting and credential-free push URLs require no GitHub calls, agents or workspace creation. Records use camelCase fields, are published from complete staged directories, and share repository identity validation with handoff memory; unreadable records fail closed with exit 1 and name the task.
@@ -35,6 +35,13 @@
 - Task Git reads ignore replace refs and default/inherited grafts. Merge preflight refuses approval when the current base-branch policy differs from the PR base policy or cannot be verified, including auto tiers. Facts expose `baseTipSha`; approval documentation clarifies that statuses bind to commits, not PRs or bases.
 
 ### Changed (Breaking)
+
+- Removed `rabi skill` and `rabi skill list`, including discovery JSON and completions. Migration: inspect provider skill directories directly; `rabi run --skill VALUE` still accepts verbatim instructions.
+- `rabi run --skill` is optional on first and `--fresh` launches; an omitted skill is recorded as an empty string and adds no skill instruction. Migration: omit `--skill` when no additional instruction is needed; resume retains any previously supplied value.
+- Plain `rabi run` parents now share the task credential boundary after repository environment: GitHub tokens, SSH agent/askpass and inherited `GIT_*` are removed, gh configuration is empty, Git credentials/prompts are disabled and environment summaries include only surviving declarations. Migration: run publication through deterministic rabi task commands outside the agent.
+- Codex run parents now use task implement workspace-write restrictions with network/web disabled, approval never, ignored user configuration/rules and narrow local Git metadata grants; Claude run parents disallow push, gh and web tools. Migration: perform remote operations outside parent sessions; keep local edits, checks and commits inside them.
+- Codex run launches verify linked Git metadata before granting write access and refuse redirected pointers or symlinked grant directories. Migration: repair Git worktree registration and metadata directories before retrying.
+- New Cursor sandbox policies have an empty network allowlist instead of GitHub host entries; existing user policies remain unchanged. Migration: review an existing `.cursor/sandbox.json` to remove prior allow entries when desired; use rabi for publication.
 
 - Older binaries reject repository `.rabi.toml` containing `[review]`; upgrade before declaring reviewer preferences.
 

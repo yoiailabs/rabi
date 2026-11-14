@@ -154,7 +154,9 @@ fn save(dir: &Path, record: &Record) -> Result<()> {
 }
 
 fn broken(reason: impl std::fmt::Display) -> Error {
-    Error::msg(format!("Cannot resume current run: {reason}. Start a new parent with `rabi run --fresh --skill <value>`."))
+    Error::msg(format!(
+        "Cannot resume current run: {reason}. Start a new parent with `rabi run --fresh`."
+    ))
 }
 
 fn observe_session(
@@ -177,9 +179,9 @@ fn observe_session(
     if mismatch {
         if launch.message.is_none() {
             launch.message = Some(if provider == Provider::Claude {
-                format!("Claude reported a different session id ({id}); expected {}. The recorded parent session was retained. Use `rabi run --fresh --provider claude --skill <value>` to start over.", expected.unwrap_or_default())
+                format!("Claude reported a different session id ({id}); expected {}. The recorded parent session was retained. Use `rabi run --fresh --provider claude` to start over.", expected.unwrap_or_default())
             } else {
-                format!("{} resumed a different thread id ({id}); expected {}. The recorded parent session was retained. Use `rabi run --fresh --skill <value>` to start over.", provider.display_name(), record.session_id.as_deref().unwrap_or_default())
+                format!("{} resumed a different thread id ({id}); expected {}. The recorded parent session was retained. Use `rabi run --fresh` to start over.", provider.display_name(), record.session_id.as_deref().unwrap_or_default())
             });
         }
     } else if validated {
@@ -274,8 +276,9 @@ fn read_previous(
     let provider = record.provider.parse::<Provider>().map_err(broken)?;
     if let Some(requested) = requested_provider.filter(|requested| *requested != provider) {
         return Err(Error::validation(format!(
-            "Current parent uses {}; start a new parent with `rabi run --fresh --provider {} --skill <value>`",
-            provider.name(), requested.name()
+            "Current parent uses {}; start a new parent with `rabi run --fresh --provider {}`",
+            provider.name(),
+            requested.name()
         )));
     }
     Ok(Some(record))
@@ -320,7 +323,7 @@ pub(crate) fn execute(
     task: Option<&str>,
     options: Options,
 ) -> Result<Report> {
-    let environment = if options.no_env {
+    let mut environment = if options.no_env {
         Default::default()
     } else {
         crate::execution_env::load(root)?.for_provider(root, Path::new(&tree.path))?
@@ -365,8 +368,6 @@ pub(crate) fn execute(
         }
         record
     } else {
-        let skill = skill
-            .ok_or_else(|| Error::validation("--skill is required for a first run or --fresh"))?;
         Record {
             schema: 2,
             id: format!("run_{}", uuid::Uuid::new_v4()),
@@ -378,7 +379,7 @@ pub(crate) fn execute(
             },
             provider: requested_provider.unwrap_or(Provider::Codex).name().into(),
             session_id: None,
-            skill: skill.into(),
+            skill: skill.unwrap_or_default().into(),
             state: State::Idle,
             launches: Vec::new(),
         }
@@ -397,7 +398,10 @@ pub(crate) fn execute(
         }
         message
     } else {
-        format!("You are the parent agent for this rabi run in workspace {} on branch {}. You manage progress: delegate implementation and review to your own subagents, gather the information you need yourself (git, gh, tests), give follow-up instructions until the work is really done, and decide completion.\n\nFollow skill `{}`.\n\n{}", tree.path, tree.branch, record.skill, task.unwrap_or_default())
+        let instruction = skill
+            .map(|s| format!("Follow skill `{s}`.\n\n"))
+            .unwrap_or_default();
+        format!("You are the parent agent for this rabi run in workspace {} on branch {}. You manage progress: delegate implementation and review to your own subagents, gather the information you need yourself (git, tests), give follow-up instructions until the work is really done, and decide completion. Do not push or call GitHub; leave publication to rabi task commands.\n\n{}{}", tree.path, tree.branch, instruction, task.unwrap_or_default())
     };
     // Fail provider preflight before memory capture, while retaining the normal
     // failed-launch record and error reporting below.
@@ -503,14 +507,8 @@ pub(crate) fn execute(
             session,
             memory.as_ref().map(|m| m.path.as_path()),
         )?;
-        command.envs(&environment.values).env("RABI_AGENT", "1");
+        command.envs(&environment.values);
         environment.warn_skipped();
-        if !environment.values.is_empty() && !crate::output::json() {
-            crate::output::stderr(format_args!(
-                "rabi: env applied: {}\n",
-                environment.summary()
-            ));
-        }
         if memory.is_some() {
             let n = record.launches.last().map_or(0, |l| l.n);
             command
@@ -532,6 +530,15 @@ pub(crate) fn execute(
                 .env_remove("RABI_RUN_ID")
                 .env_remove("RABI_RUN_LAUNCH")
                 .env_remove("RABI_RUN_PROVIDER");
+        }
+        let boundary = crate::task::boundary::Boundary::new()?;
+        boundary.prepare(&mut command);
+        environment.retain_applied(&command);
+        if !environment.values.is_empty() && !crate::output::json() {
+            crate::output::stderr(format_args!(
+                "rabi: env applied: {}\n",
+                environment.summary()
+            ));
         }
         lifecycle::launch(
             provider,

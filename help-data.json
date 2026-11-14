@@ -78,11 +78,7 @@
     },
     {
       "name": "run",
-      "description": "Launch or resume one Codex parent session in the current workspace"
-    },
-    {
-      "name": "skill",
-      "description": "Discover available skills"
+      "description": "Launch or resume one Codex, Cursor, or Claude Code parent session in a workspace"
     },
     {
       "name": "handoff",
@@ -1882,7 +1878,7 @@
         {
           "name": "skill",
           "type": "string",
-          "description": "Verbatim skill instruction for the parent; required on first run and with --fresh. No file lookup."
+          "description": "Optional verbatim skill instruction for the parent, including first/fresh runs. No file lookup."
         },
         {
           "name": "fresh",
@@ -1925,22 +1921,24 @@
         "Uses the checkout containing cwd, or SEL before an explicit --. -R/--repo requires SEL. Primary and orphaned checkouts are refused. The selected repository must be trusted, without prompting, before status inspection.",
         "SEL uses the shared workspace selector rules. At most one positional may precede -- (SEL), and one may follow (TASK). Without --, a single positional remains TASK. Option values, including --skill --, are not separators. Parent cwd and session identity use the selected checkout path.",
         "TASK is optional text; - reads stdin. Later launches resume the recorded parent session; with no message, send Continue. Missing sessions stop with a --fresh hint.",
+        "All parent providers use the shared task agent boundary: GitHub tokens, SSH agent/askpass and inherited GIT_* variables are stripped after repository env, GH_CONFIG_DIR is a fresh empty temporary directory, Git credentials/prompts are disabled, and RABI_AGENT=1. Parents must not push or call GitHub; use deterministic rabi task publication commands outside the agent. --no-env and --no-handoff do not bypass this boundary.",
+        "Codex uses workspace-write with approval_policy=never, sandbox_workspace_write.network_access=false and web_search=disabled, including resume. User configuration/rules are ignored; protected child Git environment overrides are retained. Local Git metadata receives the same narrow --add-dir grants and pre-launch registration/symlink validation as task implement. Repair redirected metadata before retrying. Claude disallows Bash(git push:*), Bash(gh:*), WebFetch and WebSearch.",
         "The parent manages progress and its own subagents. Parent exit 0 returns 0 without claiming task completion; Cursor and Claude also require a valid non-error result. Other parent statuses pass through. Timeout exits 124; SIGINT/SIGTERM exits 130. The process group is terminated and reaped. Codex uses TERM then KILL; Cursor and Claude use INT, TERM, KILL and best-effort Linux descendant cleanup; Claude waits 2s after INT and 1s after TERM. Detached Cursor workers may remain; macOS cleanup covers the process group.",
         "Cursor requires cursor-agent (or agent) on PATH and login. It uses --trust --sandbox enabled --auto-review with grok-4.7-high and stdin prompts. Resume requires local chat metadata with hasConversation:true under HOME/.cursor/chats/md5(workspace)/ID/meta.json; missing sessions fail safely with --fresh guidance.",
-        "Cursor creates .cursor/sandbox.json with GitHub network domains only when absent, preserves existing user files, and excludes the path through the repository common directory info/exclude. Completed TYPE_INSECURE_NONE tool calls add an audit message and launch.insecureToolCalls count without failing the run. Cursor CLI commit attribution settings are preserved.",
+        "Cursor creates .cursor/sandbox.json with an empty network allowlist only when absent, preserves existing user files, and excludes the path through the repository common directory info/exclude. Completed TYPE_INSECURE_NONE tool calls add an audit message and launch.insecureToolCalls count without failing the run. Cursor CLI commit attribution settings are preserved.",
         "Claude Code requires claude on PATH and login (run claude). It uses opus with high effort, stdin prompts, --permission-mode auto --permission-prompts none, and validates init permissionMode as auto. New sessions use a generated UUID recorded as requestedSessionId; resume uses the observed id. No workspace settings are written. Local transcript absence is unknown and still attempts resume. Timeout/interrupt retain 124/130 even for exit-0 error results with null answers.",
         "Text prints the final parent answer. JSON data is {run,launch,answer}; raw stdout and stderr are saved per launch.",
-        "Handoff is enabled by default for recorded workspaces. First/fresh launches carry original intent and bounded notes (24 KiB); resume carries only new foreign notes since the last delivered snapshot (8 KiB), or the full first/fresh snapshot if none exists in the run. Delivery requires an observed launch session id or exit code 0. Later TASKs are request entries unless they match intent or the previous request after trimming trailing whitespace from both texts; storage remains verbatim. All providers receive --add-dir for only the memory directory and RABI_BIN, RABI_RUN_ID, RABI_RUN_LAUNCH, RABI_RUN_PROVIDER, RABI, RABI_REPO_PATH, RABI_WORKSPACE, RABI_WORKSPACE_ID and RABI_WORKSPACE_PATH. Memory failures stop before spawn; --no-handoff bypasses them. Unrecorded workspaces warn and continue without memory.",
+        "Handoff is enabled by default for recorded workspaces. First/fresh launches carry original intent and bounded notes (24 KiB); resume carries only new foreign notes since the last delivered snapshot (8 KiB), or the full first/fresh snapshot if none exists in the run. Delivery requires an observed launch session id or exit code 0. Later TASKs are request entries unless they match intent or the previous request after trimming trailing whitespace from both texts; storage remains verbatim. All providers receive --add-dir for the memory directory and RABI_BIN, RABI_RUN_ID, RABI_RUN_LAUNCH, RABI_RUN_PROVIDER, RABI, RABI_REPO_PATH, RABI_WORKSPACE, RABI_WORKSPACE_ID and RABI_WORKSPACE_PATH. Memory failures stop before spawn; --no-handoff bypasses them. Unrecorded workspaces warn and continue without memory.",
         "Repository [env] is read from the primary checkout's .rabi.toml on every launch. Trusted repositories apply set variables and PATH prefixes; --no-env skips application and environment-value validation; TOML/schema errors still fail. Run skips workspace-referencing set values and PATH entries inside or referencing its workspace, warning with env_workspace_path_skipped. Declared PATH also selects provider script interpreters; use directories agents cannot write. Hooks do not receive [env]. Provider binaries are resolved before applying env; exec command lookup uses the resulting PATH."
       ],
       "examples": [
         {
-          "command": "rabi run --provider cursor --fresh --skill my-skill \"Fix issue #123\"",
+          "command": "rabi run --provider cursor --fresh \"Fix issue #123\"",
           "description": "Start a new Cursor parent in a trusted workspace"
         },
         {
-          "command": "rabi run --skill my-skill \"Fix issue #123\"",
-          "description": "Start a parent session in a trusted workspace"
+          "command": "rabi run \"Fix issue #123\"",
+          "description": "Start a parent session without a skill in a trusted workspace"
         },
         {
           "command": "rabi run",
@@ -1954,66 +1952,6 @@
           "command": "rabi -R /path/to/repo run task/auth --",
           "description": "Resume a selected workspace from outside the repository"
         }
-      ]
-    },
-    "skill": {
-      "name": "skill",
-      "description": "Discover available skills",
-      "usage": "rabi skill list",
-      "options": [
-        {
-          "name": "json",
-          "type": "boolean",
-          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
-        },
-        {
-          "name": "output",
-          "type": "string",
-          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
-        },
-        {
-          "name": "no-input",
-          "type": "boolean",
-          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
-        },
-        {
-          "name": "help",
-          "short": "h",
-          "type": "boolean",
-          "description": "Show text help"
-        }
-      ]
-    },
-    "skill list": {
-      "name": "skill list",
-      "description": "List direct child directories containing SKILL.md",
-      "usage": "rabi skill list [--json]",
-      "options": [
-        {
-          "name": "json",
-          "type": "boolean",
-          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
-        },
-        {
-          "name": "output",
-          "type": "string",
-          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
-        },
-        {
-          "name": "no-input",
-          "type": "boolean",
-          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
-        },
-        {
-          "name": "help",
-          "short": "h",
-          "type": "boolean",
-          "description": "Show text help"
-        }
-      ],
-      "notes": [
-        "Scan checkout .agents/skills, .codex/skills, .claude/skills, then ~/.agents/skills, $CODEX_HOME/skills (default ~/.codex/skills), ~/.claude/skills. Skip missing directories; sort names within each source; list duplicates. No parsing of skill contents.",
-        "Text is name<TAB>source<TAB>path; JSON data is {skills:[{name,source,path}]}. Run does not use this discovery command."
       ]
     },
     "handoff": {
@@ -2743,7 +2681,7 @@
         "Requires repository trust and an existing linked checkout on the reserved task branch. Create it separately after task new. Primary checkouts, missing workspaces and states other than new or implementing are refused. Uncommitted work is allowed; its authorship is not inferred.",
         "Runs once in the foreground. Instructions require implementation, project checks and local commits, and prohibit publication, GitHub calls, remote changes and unnecessary network use. Supplied context is framed as untrusted data.",
         "All task providers share an environment boundary: GitHub token and SSH agent/askpass variables and inherited GIT_* variables are removed; GH_CONFIG_DIR is a fresh empty directory; Git credential helpers and prompts are disabled; RABI_AGENT=1. This reduces accidental credential use, not same-user access to credential files.",
-        "Codex uses workspace-write, no network and approval_policy=never, retaining default environment secret filtering. Claude uses --permission-mode auto --permission-prompts none with git push, gh, WebFetch and WebSearch disallowed. Plain rabi run retains its existing behavior.",
+        "Codex uses workspace-write, no network and approval_policy=never, retaining default environment secret filtering. Claude uses --permission-mode auto --permission-prompts none with git push, gh, WebFetch and WebSearch disallowed. Plain rabi run shares this credential boundary and the same local-agent provider restrictions.",
         "First launch transitions new to implementing; completion only records events, never declares the task ready. Events capture launch ID, provider, status, pre/post HEAD, new commits and dirty state. Timeout terminates and reaps the process group.",
         "Provider statuses pass through; launcher errors exit 1, invalid arguments exit 2, missing tasks exit 3, safety refusals exit 4, timeout exits 124 and SIGINT/SIGTERM received by rabi exit 130. JSON uses the schema 2 envelope; provider output goes to stderr."
       ],
