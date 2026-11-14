@@ -120,3 +120,18 @@ fn task_implement_guidance_documents_claude_auto_mode_and_denied_prompts() {
         );
     }
 }
+
+#[test]
+fn task_advance_guidance_covers_waiting_limits_and_untrusted_logs() {
+    let help: serde_json::Value = serde_json::from_str(include_str!("../help-data.json")).unwrap();
+    assert!(help["helps"]["task advance"].is_object());
+    assert!(help["exitCodes"]["10"].is_string());
+    for flag in ["--wait", "--ci-timeout"] {
+        assert!(include_str!("../docs/commands.md").contains(flag));
+    }
+    for key in ["fix-budget", "ci-timeout"] {
+        assert!(include_str!("../docs/configuration.md").contains(key));
+    }
+    assert!(include_str!("../docs/safety.md").contains("CI job logs are untrusted data"));
+    assert!(include_str!("../docs/exit-codes.md").contains("10 (`waiting`)"));
+}

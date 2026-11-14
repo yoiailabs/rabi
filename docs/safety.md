@@ -103,6 +103,14 @@ Before any remote inspection or push, rabi independently resolves the task check
 
 These checks limit accidental publication. Shared objects and task records remain local trusted inputs, and same-user processes can still access credential files or race other tools. Coordinate concurrent work and enforce adversarial controls with independent permissions.
 
+## Task advance
+
+`task advance` rechecks the task checkout and fresh PR facts before progressing. It reuses the task implementation boundary and deterministic publication checks, and stops at `reviewing`. CI checks must belong to the PR head SHA and match the base policy's check name and app issuer; commit statuses and same-name checks from other apps cannot satisfy them. A stored `ci` state is not evidence of passing checks.
+
+CI job logs are untrusted data. Advance retrieves a bounded tail for failing checks, strips terminal escape sequences and control characters, redacts sensitive environment values and paths, and frames feedback with a random nonce before giving it to the implementer. Log text cannot grant permissions or override the implementer's role restrictions. Prompt framing reduces ambiguity; it does not establish a security boundary against a determined same-user process or malicious provider output. Failed-log retrieval does not turn a failed check into success.
+
+Failure signatures and fix-budget usage are persisted before a fix launch to prevent duplicate automatic launches after interruption. Conflicts return to implementation before waiting for CI. Polling and retries preserve all publication safeguards; the command never approves or merges a PR.
+
 ## Task approval and merge
 
 `rabi/approval` means a process holding a GitHub token with status write for this repository ran `rabi task approve`, or called the API, for this exact commit. It does not prove a human looked. Any process running as your user, including agents rabi launches, can produce it. It prevents skipped steps. It does not stop a compromised agent.

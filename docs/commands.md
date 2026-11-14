@@ -54,7 +54,7 @@ Allowed transitions are defined in one data table in the implementation:
 | `blocked` | Any non-terminal state (including itself), or `abandoned` |
 | `merged`, `abandoned` | None (terminal) |
 
-Creation and abandonment mutate the store directly. `task implement` records launches and advances `new` to `implementing`. `task publish` executes prechecks and publication through `ci`; the later states and edges describe the local model without executing a workflow.
+Creation and abandonment mutate the store directly. `task implement` records launches and advances `new` to `implementing`. `task publish` executes prechecks and publication through `ci`. `task advance` drives implementation and publication, observes CI, and stops at `reviewing`; later states describe the local model without executing a workflow.
 
 ## Task implement
 
@@ -87,6 +87,25 @@ Rabi looks for an open same-repository PR for the branch, reusing it or creating
 ```sh
 rabi task publish
 rabi task publish task_<uuid> --json
+```
+
+## Task advance
+
+`rabi task advance [SEL] [--wait] [--ci-timeout DUR] [--json|--output text|json]` drives one task from `implementing` through CI. Selectors and repository trust match `task implement`; this command creates no workspace. Start a `new` task with `task implement` first. Without `--wait`, each invocation performs one step. With `--wait`, it continues after progress and polls pending CI every 30 seconds until `reviewing`, a blocked or terminal state, or an error. It stops at `reviewing` without launching a reviewer, approving, or merging.
+
+In `implementing`, advance inspects the linked checkout again. A clean HEAD that has advanced beyond the last evaluated commit can enter `prechecking` without another provider launch. Otherwise it launches the existing implementer with the last recorded provider (Codex when none is recorded), using the task credential boundary. A successful attempt must produce a new commit and a clean tree; no new commit blocks as `no_progress`. In `prechecking` or `publishing`, advance runs `task publish`, preserving its precheck, floor, destination and reconciliation protections.
+
+In `ci`, fresh GitHub facts must match the task branch, repository and local HEAD. Conflicts take priority over pending or failed checks: advance returns to `implementing` with a request to sync with the base. Required check names and app issuers come from the PR base commit's `.rabi/policy.toml` `[ci] required`. For each name and configured app, only the latest run counts. Only completed `success` passes; `skipped`, `neutral` and other completed conclusions fail. Missing, expected, queued and in-progress checks wait. Incomplete check snapshots also wait; they cannot prove which run is latest. An empty required set blocks as `no_ci`. All required successes move to `reviewing`.
+
+A CI failure returns to `implementing` with bounded sanitized job-log evidence for that head SHA. The next implementation step frames that evidence as untrusted data with a random nonce. Advance records the head SHA plus sorted failing names before launching a fix, so the same signature never launches twice. Precheck failures also supply feedback for the next attempt. `[factory] fix-budget` limits failure-driven implementer relaunches (default 3); exhaustion blocks as `budget`. Initial implementation and conflict recovery do not consume this budget.
+
+Pending CI beyond `[factory] ci-timeout` (default `60m`) blocks as `ci_timeout`. `--ci-timeout DUR` overrides it; DUR is a positive integer followed by `s`, `m` or `h`. The deadline survives separate invocations and resets for a new published head. See [factory configuration](configuration.md#task-advance-settings), [JSON](json.md#task-advance), and [untrusted CI logs](safety.md#task-advance).
+
+Exit 0 means progress, reached `reviewing`, or an already merged task. Exit 10 means CI is waiting; exit 4 means blocked, abandoned, or an unsupported task state. Ordinary provider failures block as `provider_failed` with exit 4; provider timeout/interruption retain 124/130. SIGINT/SIGTERM during polling, prechecks or log retrieval stops the wait loop with 130. Other failures retain existing command codes. Every transition records a reason in the task events. If fresh facts show an externally merged PR, advance stops successfully with reason `merged`, retaining the recorded state because the CI stage does not authorize a merge transition.
+
+```sh
+rabi task advance task_<uuid> --json
+rabi task advance --wait --ci-timeout 30m
 ```
 
 ## Task risk

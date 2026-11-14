@@ -6,6 +6,7 @@ pub const NOT_REPOSITORY: i32 = NOT_FOUND;
 pub const REFUSED: i32 = 4;
 pub const CONFLICT: i32 = 5;
 pub const PARTIAL: i32 = 6;
+pub const WAITING: i32 = 10;
 
 /// Version of the common machine-readable envelope.
 pub const JSON_VERSION: u32 = 2;
@@ -146,6 +147,7 @@ pub fn exit_for_code(code: &str) -> i32 {
         | "destination_not_github" => REFUSED,
         "conflict" => CONFLICT,
         "partial" => PARTIAL,
+        "waiting" => WAITING,
         _ => GENERAL,
     }
 }
@@ -157,6 +159,7 @@ pub fn status_code(exit: i32) -> &'static str {
         REFUSED => "refused",
         CONFLICT => "conflict",
         PARTIAL => "partial",
+        WAITING => "waiting",
         _ => "failed",
     }
 }

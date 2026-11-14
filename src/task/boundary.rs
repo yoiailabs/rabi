@@ -3,7 +3,7 @@ use std::fs;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use crate::error::{Error, Result};
 
@@ -103,6 +103,7 @@ impl Drop for Boundary {
 }
 
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);
+static SIGNAL_GUARDS: AtomicUsize = AtomicUsize::new(0);
 extern "C" fn interrupted(_: i32) {
     INTERRUPTED.store(true, Ordering::Relaxed);
 }
@@ -112,11 +113,16 @@ pub(super) struct Signals {
 }
 impl Signals {
     pub fn install() -> Result<Self> {
-        INTERRUPTED.store(false, Ordering::Relaxed);
+        // Nested task operations share one cancellation. In particular, a log
+        // collector or a provider must never clear its advance caller's signal.
+        if SIGNAL_GUARDS.fetch_add(1, Ordering::Relaxed) == 0 {
+            INTERRUPTED.store(false, Ordering::Relaxed);
+        }
         // SAFETY: handlers only store to a lock-free atomic; restore on drop.
         let int =
             unsafe { libc::signal(libc::SIGINT, interrupted as *const () as libc::sighandler_t) };
         if int == libc::SIG_ERR {
+            SIGNAL_GUARDS.fetch_sub(1, Ordering::Relaxed);
             return Err(Error::msg("Cannot install task agent signal handler"));
         }
         let term = unsafe {
@@ -129,11 +135,15 @@ impl Signals {
             unsafe {
                 libc::signal(libc::SIGINT, int);
             }
+            SIGNAL_GUARDS.fetch_sub(1, Ordering::Relaxed);
             return Err(Error::msg("Cannot install task agent signal handler"));
         }
         Ok(Self { int, term })
     }
     pub fn interrupted(&self) -> bool {
+        Self::pending()
+    }
+    pub fn pending() -> bool {
         INTERRUPTED.load(Ordering::Relaxed)
     }
 }
@@ -144,6 +154,7 @@ impl Drop for Signals {
             libc::signal(libc::SIGINT, self.int);
             libc::signal(libc::SIGTERM, self.term);
         }
+        SIGNAL_GUARDS.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -197,6 +208,18 @@ mod tests {
     use super::*;
     use std::collections::BTreeMap;
     use std::ffi::OsStr;
+
+    #[test]
+    fn nested_signal_guards_preserve_outer_cancellation() {
+        let outer = Signals::install().unwrap();
+        interrupted(libc::SIGINT);
+        {
+            let nested = Signals::install().unwrap();
+            assert!(nested.interrupted());
+            assert!(outer.interrupted());
+        }
+        assert!(outer.interrupted());
+    }
 
     #[test]
     fn boundary_overrides_explicit_credentials_and_git_configuration() {

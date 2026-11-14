@@ -87,6 +87,7 @@ Read [removal safety and retries](docs/safety.md) and [sync strategies](docs/syn
 | `rabi task abandon` | Abandon a non-terminal local task |
 | `rabi task implement` | Run one implementer in an existing task workspace; record commits and dirty state |
 | `rabi task publish` | Run prechecks, push the task branch and create or reuse a draft PR |
+| `rabi task advance` | Drive implementation and publication through CI; stop at reviewing |
 | `rabi task risk` | Classify committed changes using the base commit risk policy |
 | `rabi task classify` | Assess committed diffs using the written policy and record an exact-head verdict |
 | `rabi task status` | Read GitHub PR facts without writes |
@@ -125,6 +126,7 @@ Use `--json` or `--output json` for one schema 2 envelope: `schema`, `command`, 
 | 4 | Safety refusal |
 | 5 | Sync conflict |
 | 6 | Partial persistent changes |
+| 10 | Task advance waiting for required CI |
 | 124 | Run timed out |
 | 130 | Run interrupted |
 

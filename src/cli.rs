@@ -1007,6 +1007,46 @@ fn task_publish(args: &[String]) -> Result<i32> {
     Ok(SUCCESS)
 }
 
+fn task_advance(args: &[String]) -> Result<i32> {
+    let parsed = args::parse(args, &command_options("task advance"), true)?;
+    if parsed.positionals.len() > 1 {
+        return Err(Error::validation(
+            "Usage: rabi task advance [SEL] [--wait] [--ci-timeout DUR]",
+        ));
+    }
+    let timeout = single_value(&parsed, "ci-timeout")?
+        .map(crate::run::timeout)
+        .transpose()?;
+    let _git = crate::task::boundary::git_read_scope();
+    let repository = selected_repository(&parsed)?;
+    let cwd = std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?;
+    let root = repository.as_deref().unwrap_or(&cwd);
+    crate::git::git_root(root)?;
+    let report = crate::task::advance::execute(
+        root,
+        parsed.positionals.first().map(String::as_str),
+        parsed.flag("wait"),
+        timeout,
+    )?;
+    emit_json(&report)?;
+    if !crate::output::json() {
+        outln!(
+            "Task {}: {} ({})",
+            report.task_id,
+            report.state.name(),
+            report.reason
+        );
+    }
+    if report.exit_code != 0 {
+        crate::output::failure(
+            Error::status(report.exit_code, format!("Task advance: {}", report.reason))
+                .to_json(report.exit_code)
+                .error,
+        );
+    }
+    Ok(report.exit_code)
+}
+
 fn task_status(args: &[String]) -> Result<i32> {
     task_github(args, "task status")
 }
@@ -2204,6 +2244,11 @@ fn command_options(key: &str) -> Vec<Opt> {
             value_flag("base", None),
         ],
         "task list" => vec![repo_flag(), flag("all", None)],
+        "task advance" => vec![
+            repo_flag(),
+            flag("wait", None),
+            value_flag("ci-timeout", None),
+        ],
         "task show" | "task publish" => vec![repo_flag()],
         "task abandon" => vec![repo_flag(), value_flag("reason", None)],
         "task risk" => vec![repo_flag(), value_flag("base", None)],
@@ -2805,6 +2850,12 @@ static COMMANDS: &[Command] = &[
         help_key: "task",
         run: task_root,
         children: &[
+            Command {
+                name: "advance",
+                help_key: "task advance",
+                run: task_advance,
+                children: &[],
+            },
             Command {
                 name: "publish",
                 help_key: "task publish",

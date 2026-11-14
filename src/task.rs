@@ -1,4 +1,5 @@
 //! Task bookkeeping and inspection. Policy/classification have no Git I/O.
+pub(crate) mod advance;
 pub(crate) mod assessment;
 pub(crate) mod boundary;
 mod classifier_provider;

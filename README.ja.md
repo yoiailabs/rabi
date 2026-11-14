@@ -87,6 +87,7 @@ rabi remove task/auth
 | `rabi task abandon` | 未完了のローカルタスクを中止 |
 | `rabi task implement` | Run one implementer in an existing task workspace; record commits and dirty state |
 | `rabi task publish` | Run prechecks, push the task branch and create or reuse a draft PR |
+| `rabi task advance` | Drive implementation and publication through CI; stop at reviewing |
 | `rabi task risk` | ベースコミットのリスクポリシーでコミット済みの変更を分類 |
 | `rabi task classify` | Assess committed diffs using the written policy and record an exact-head verdict |
 | `rabi task status` | 書き込みなしで GitHub の PR 情報を表示 |
@@ -125,6 +126,7 @@ rabi remove task/auth
 | 4 | 安全上の拒否 |
 | 5 | 同期の競合 |
 | 6 | 永続的な変更後の部分的な完了 |
+| 10 | Task advance waiting for required CI |
 | 124 | run の制限時間超過 |
 | 130 | run の中断 |
 
