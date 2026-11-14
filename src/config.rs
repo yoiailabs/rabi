@@ -14,6 +14,7 @@ pub struct RabiConfig {
     pub env: crate::execution_env::Environment,
     pub precheck: Option<Precheck>,
     pub factory: Factory,
+    pub review: Review,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -28,6 +29,13 @@ pub struct Hooks {
 pub struct Precheck {
     pub commands: Vec<String>,
     pub timeout: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Review {
+    pub provider: Option<String>,
+    pub model: Option<String>,
 }
 
 /// Local orchestration limits; zero fixes explicitly disables automatic retries.
@@ -111,12 +119,57 @@ pub(crate) fn parse_config(content: &str) -> Result<RabiConfig> {
     crate::run::timeout(&config.factory.ci_timeout).map_err(|_| {
         Error::msg("Invalid factory.ci-timeout: expected a positive duration with s, m or h suffix")
     })?;
+    if config
+        .review
+        .provider
+        .as_deref()
+        .is_some_and(|value| !matches!(value, "codex" | "claude"))
+    {
+        return Err(Error::msg(
+            "Invalid review.provider: expected codex or claude",
+        ));
+    }
+    if config.review.model.as_deref().is_some_and(|model| {
+        model.trim().is_empty() || model.starts_with('-') || model.contains('\0')
+    }) {
+        return Err(Error::msg(
+            "Invalid review.model: must be nonempty, contain no NUL and must not start with '-'",
+        ));
+    }
     Ok(config)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reviewer_settings_are_optional_and_validated() {
+        assert_eq!(parse_config("").unwrap().review, Review::default());
+        for provider in ["codex", "claude"] {
+            let review = parse_config(&format!(
+                "[review]\nprovider='{provider}'\nmodel='model-name'"
+            ))
+            .unwrap()
+            .review;
+            assert_eq!(review.provider.as_deref(), Some(provider));
+            assert_eq!(review.model.as_deref(), Some("model-name"));
+        }
+        for declaration in [
+            "provider='cursor'",
+            "provider=1",
+            "model='--unsafe'",
+            "model=' '",
+            "model=1",
+            "model=\"a\\u0000b\"",
+            "unknown=true",
+        ] {
+            assert!(
+                parse_config(&format!("[review]\n{declaration}")).is_err(),
+                "{declaration}"
+            );
+        }
+    }
 
     #[test]
     fn factory_defaults_and_limits_are_validated() {

@@ -9,6 +9,8 @@ pub(crate) mod implement;
 mod policy;
 mod preflight;
 pub(crate) mod publish;
+pub(crate) mod review;
+mod reviewer_provider;
 pub(crate) mod store;
 
 use std::path::Path;

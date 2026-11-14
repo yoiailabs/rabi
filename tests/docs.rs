@@ -135,3 +135,44 @@ fn task_advance_guidance_covers_waiting_limits_and_untrusted_logs() {
     assert!(include_str!("../docs/safety.md").contains("CI job logs are untrusted data"));
     assert!(include_str!("../docs/exit-codes.md").contains("10 (`waiting`)"));
 }
+
+#[test]
+fn task_review_guidance_covers_boundary_and_deterministic_outcomes() {
+    let help: serde_json::Value = serde_json::from_str(include_str!("../help-data.json")).unwrap();
+    let review = &help["helps"]["task review"];
+    assert_eq!(review["usage"], "rabi task review [SEL] [options]");
+    let notes = review["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|note| note.as_str().unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for (name, document) in [
+        ("review help", notes.as_str()),
+        ("commands", include_str!("../docs/commands.md")),
+        ("safety", include_str!("../docs/safety.md")),
+    ] {
+        for requirement in [
+            "read-only",
+            "--add-dir",
+            "review_invalid",
+            "review_diff_too_large",
+            "review_pass_invalid",
+            "never an approval",
+            "nonce",
+        ] {
+            assert!(document.contains(requirement), "{name}: {requirement}");
+        }
+    }
+    assert!(include_str!("../docs/configuration.md").contains("[review]"));
+    assert!(include_str!("../docs/json.md").contains("rabi/reviews/"));
+    for document in [README, README_JA] {
+        assert!(document.contains("stop at classifying"));
+    }
+    let advance = help["helps"]["task advance"]["notes"].as_array().unwrap();
+    assert!(advance.iter().any(|note| {
+        let note = note.as_str().unwrap();
+        note.contains("--wait") && note.contains("until classifying")
+    }));
+}

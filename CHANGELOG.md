@@ -4,7 +4,9 @@
 
 ### Added
 
-- `rabi task advance [SEL] [--wait] [--ci-timeout DUR]` drives implementation, prechecks and publication through required CI, stopping at `reviewing`. Fresh head-bound checks, conflict recovery, sanitized nonce-framed CI feedback, durable failure deduplication, `[factory]` fix budgets and CI deadlines bound retries. Pending CI returns exit 10.
+- `rabi task review [SEL]` reviews the exact verified PR head in a fresh detached checkout with a restricted Codex or Claude reviewer. Primary-checkout `[review]` preferences select provider/model; the default provider is the opposite of the implementer. Strict nonce-framed answers bind atomic records to head/base/merge-base. Passing reviews mark the PR ready and upsert one sanitized findings comment before `classifying`; revisions share the fix budget, signature deduplication and repeated-failure stop. Review output never approves or merges.
+
+- `rabi task advance [SEL] [--wait] [--ci-timeout DUR]` drives implementation, prechecks and publication through required CI and review, stopping at `classifying`. Fresh head-bound checks, conflict recovery, sanitized nonce-framed CI feedback, durable failure deduplication, `[factory]` fix budgets and CI deadlines bound retries. Pending CI returns exit 10.
 
 - `rabi task publish [SEL]` runs trusted committed `[precheck]` commands with stripped credentials, blocks changed checks and base-policy floor paths, then pushes to the recorded URL and creates or reuses a draft PR. Publication disables repository hooks/configuration, never forces, reconciles interrupted pushes/PR creation, and advances to `ci` only for the verified HEAD.
 
@@ -22,9 +24,13 @@
 
 ### Fixed
 
+- Failure-output normalization preserves plain decimal numbers and hex-letter words; unprefixed hex identifiers require both digits and letters.
+
 - Task Git reads ignore replace refs and default/inherited grafts. Merge preflight refuses approval when the current base-branch policy differs from the PR base policy or cannot be verified, including auto tiers. Facts expose `baseTipSha`; approval documentation clarifies that statuses bind to commits, not PRs or bases.
 
 ### Changed (Breaking)
+
+- Older binaries reject repository `.rabi.toml` containing `[review]`; upgrade before declaring reviewer preferences.
 
 - Older binaries reject repository `.rabi.toml` containing `[factory]`; upgrade before declaring task retry and CI limits.
 
