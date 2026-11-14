@@ -101,7 +101,7 @@ pub(crate) fn inspect(
     base: Option<&str>,
     provider: Option<Provider>,
 ) -> Result<super::Report> {
-    let mut report = super::inspect_for_classifier(root, base)?;
+    let mut report = super::inspect(root, base)?;
     let policy_bytes = super::policy_blob(root, &report.base.sha)?;
     let policy = Policy::load(policy_bytes.as_deref())?;
     let policy_blob_sha =

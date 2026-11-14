@@ -185,6 +185,17 @@ fn missing_policy_uses_defaults_and_explicit_base_needs_no_origin() {
 }
 
 #[test]
+fn whitespace_only_base_policy_uses_defaults_like_every_policy_reader() {
+    let repo = Repo::new(Some(" \n\t\r\n"));
+    repo.write("docs/new.md", "new\n");
+    repo.commit();
+    let json = repo.json(&["task", "risk", "--output", "json"]);
+    assert_eq!(json["data"]["policy"]["present"], true);
+    assert_eq!(json["data"]["tier"], "high");
+    assert_eq!(json["data"]["files"][0]["reasons"][0], "default-tier");
+}
+
+#[test]
 fn invalid_base_policy_is_an_error_not_a_fallback() {
     for policy in [
         "schema = 2",

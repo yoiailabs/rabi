@@ -736,6 +736,21 @@ fn no_ci_no_progress_and_budget_are_durable_blocks() {
 }
 
 #[test]
+fn whitespace_only_base_policy_uses_defaults_and_blocks_without_ci() {
+    let repo = Repo::new(&["test"], "", None);
+    fs::write(repo.repo.join(".rabi/policy.toml"), " \n\t\n").unwrap();
+    repo.git(&["add", ".rabi/policy.toml"]);
+    repo.git(&["commit", "-m", "chore: blank policy"]);
+    repo.ci();
+    fs::write(repo.root.join("provider-mode"), "commit").unwrap();
+    decode(repo.advance().output().unwrap(), 4);
+    assert_eq!(
+        repo.view()["task"]["state"],
+        json!({"name":"blocked","reason":"no_ci"})
+    );
+}
+
+#[test]
 fn ci_timeout_uses_recorded_clock_across_invocations_and_flag_override() {
     let repo = Repo::new(&["test"], "[factory]\nci-timeout='1h'\n", None);
     repo.ci();
