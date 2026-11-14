@@ -928,9 +928,15 @@ fn attach_task_workspace(
             &logger_for(crate::output::json()),
         )
     })()
-    .map_err(|error| Error::Status {
-        code: error.json_code(GENERAL),
-        message: format!("Task {} was recorded but workspace creation failed: {error}. Recover with `{recovery}`.", view.task.id),
+    .map_err(|error| {
+        let detail = error.to_string().trim_end_matches('.').to_string();
+        Error::Status {
+            code: error.json_code(GENERAL),
+            message: format!(
+                "Task {} was recorded but workspace creation failed: {detail}. Recover with `{recovery}`.",
+                view.task.id
+            ),
+        }
     })?;
     let binding_error =
         match store.bind_workspace(&view.task.id, Path::new(&allocation.workspace.path)) {

@@ -383,6 +383,35 @@ fn creation_refusal_table_writes_nothing() {
 }
 
 #[test]
+fn remote_tracking_branch_is_refused_before_the_task_record() {
+    let repo = Repo::new();
+    repo.git(&["update-ref", "refs/remotes/origin/reserved", "HEAD"]);
+    let before = repo.tasks().exists().then(|| inventory(&repo.tasks()));
+    let git_before = inventory(&repo.repo.join(".git"));
+    let error = repo.error(
+        &[
+            "task", "new", "Intent", "--branch", "reserved", "--base", "main", "--json",
+        ],
+        4,
+        "exists_remote",
+    );
+    let message = error["error"]["message"].as_str().unwrap();
+    assert!(
+        message.contains("already exists as a remote-tracking branch"),
+        "{message}"
+    );
+    assert!(
+        !message.contains("was recorded") && !message.contains("Recover with"),
+        "{message}"
+    );
+    assert_eq!(
+        repo.tasks().exists().then(|| inventory(&repo.tasks())),
+        before
+    );
+    assert_eq!(inventory(&repo.repo.join(".git")), git_before);
+}
+
+#[test]
 fn stdin_slug_and_explicit_repository_selection() {
     let repo = Repo::new();
     let mut child = repo

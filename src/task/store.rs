@@ -1,6 +1,6 @@
 //! Local bookkeeping claims, independent of GitHub evidence and workspace records.
 use crate::error::{Error, Result};
-use crate::{git, output};
+use crate::{git, output, tracking};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Write};
@@ -425,6 +425,7 @@ impl Store {
                 "Task branch already exists or is checked out in a checkout",
             ));
         }
+        tracking::reject_remote_create(&self.root, branch)?;
         Ok(())
     }
 
