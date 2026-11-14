@@ -297,7 +297,8 @@ Task file schema 1 and command data both use camelCase field names:
 | `id` | `task_<UUID v4>`, matching its directory |
 | `createdAt`, `updatedAt` | UTC RFC3339 timestamps |
 | `state` | `{name: STATE}`, or `{name: "blocked", reason: CODE}` |
-| `intent` | Nonempty text, preserved verbatim |
+| `intent` | Nonempty text; local input preserved verbatim, issue title/body sanitized and bounded |
+| `issue` | `{number, author, url}` for imported issues; null for local tasks, absent in older records |
 | `branch` | Reserved branch name; creation does not create the branch |
 | `baseRef` | Locally resolvable base ref captured at creation |
 | `pushRemoteUrl` | Push URL captured once; userinfo, query and fragment stripped |
@@ -319,6 +320,12 @@ For non-terminal tasks other than `blocked`, output derives `blocked(record_mism
 Implementation appends `implementation_started` and `implementation_finished` events. Their optional `agent` object carries launch details: the start event includes `launchId`, `provider`, `preHead` and pre-launch `dirty`; the finished event carries the command result fields. Only the first start changes state, from `new` to `implementing`; subsequent events preserve the current state, including concurrent abandonment. A separate nonblocking `.implement.lock` excludes concurrent implementers for the same task and remains held through process cleanup and outcome recording. It does not lock out plain `rabi run` or unrelated workspace commands.
 
 `task publish` returns `data: {taskId, head, prNumber, state}` on success. Precheck events add `precheck: {head, passed, failingCommand, outputTail}`; command events also include a `reason` and `failingCommandHash` (SHA-256 of the original failing command, null on success). The displayed command and output tail are sanitized, and output tails are bounded to 4096 bytes. The hash distinguishes commands whose sanitized display is identical without recording their original text. Older events may omit it. An absent declaration still records a successful precheck for HEAD. Publication records transitions through `prechecking`, `publishing` and `ci`, saves `prNumber`, and shares `.implement.lock` with implementation attempts. An interrupted `publishing` task rechecks the current HEAD and reconciles its saved destination before writing again. A failed precheck returns directly from `publishing` to `implementing` without a blocked or `record_mismatch` event. Task records still do not authorize merge preflight.
+
+## Task intake
+
+`task new --issue N` returns the same `{task, recordedState, events}` as local creation. `task.issue` stores the positive issue `number`, `author` login and canonical `url`. The title and body are sanitized and redacted before truncation; each keeps its beginning and is capped at 4096 UTF-8 bytes, including a trailing `[truncated]` marker when cut at a character boundary, then combined with the URL into `task.intent`. Both commands create tasks in `new`; they never launch agents. Local task records keep schema 1, and older records without `issue` remain readable.
+
+`task intake` returns `{plan, items: [{issueNumber, action, taskId, reason}]}`. `plan` equals `--dry-run`; actions are `created`, `would_create` and `skipped`. `taskId` is nonnull only for a created task. Skips use `already_linked`, `label_actor_unknown` (no matching label event, or a missing or non-user actor such as a bot), or `intake_not_permitted` (known actor or author lacks permission); otherwise `reason` is null. Label names match case-insensitively. Both label actor and issue author require write/maintain/admin permission. HTTP 404 from a collaborator-permission lookup means no permission for that issue, so bulk intake skips it and continues. `--limit` counts examined issues including skips, excluding PRs. Direct unauthorized imports, including permission-lookup HTTP 404, return `error.code: "intake_not_permitted"` (exit 4); duplicate direct imports use `exists` (4). Bulk unauthorized skips are successful results (0). Other unavailable API evidence uses `failed` (1), never grants permission, and evidence reads finish before local creation. Retrying a local creation failure skips issue links already saved, including terminal tasks.
 
 ## Task advance
 

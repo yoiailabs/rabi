@@ -141,6 +141,8 @@ pub(crate) struct Task {
     pub workspace_path: Option<PathBuf>,
     pub pr_number: Option<u64>,
     #[serde(default)]
+    pub issue: Option<super::intake::IssueSource>,
+    #[serde(default)]
     pub advance: super::advance::Progress,
 }
 
@@ -290,6 +292,7 @@ impl Store {
         if record.schema != 1
             || record.id != id
             || record.intent.trim().is_empty()
+            || record.issue.as_ref().is_some_and(|issue| !issue.valid())
             || !match expected_branch {
                 Some(branch) => record.branch == branch,
                 None => valid_branch(&self.root, &record.branch)?,
@@ -434,7 +437,41 @@ impl Store {
         Ok(())
     }
 
+    pub fn linked_issue(&self, number: u64) -> Result<bool> {
+        for id in self.ids()? {
+            if self
+                .load(&id)?
+                .issue
+                .is_some_and(|issue| issue.number == number)
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub fn create(&self, intent: String, branch: Option<&str>, base: Option<&str>) -> Result<View> {
+        self.create_inner(intent, branch, base, None)?
+            .ok_or_else(|| Error::msg("Unexpected duplicate local task"))
+    }
+
+    pub fn create_issue(
+        &self,
+        intent: String,
+        branch: Option<&str>,
+        base: Option<&str>,
+        issue: super::intake::IssueSource,
+    ) -> Result<Option<View>> {
+        self.create_inner(intent, branch, base, Some(issue))
+    }
+
+    fn create_inner(
+        &self,
+        intent: String,
+        branch: Option<&str>,
+        base: Option<&str>,
+        issue: Option<super::intake::IssueSource>,
+    ) -> Result<Option<View>> {
         if intent.trim().is_empty() {
             return Err(Error::validation("Task intent must not be empty"));
         }
@@ -461,9 +498,30 @@ impl Store {
         private_dir(&self.path)?;
         let _creation = lock(&self.path.join(".lock"))?;
         self.available(&branch)?;
+        if let Some(issue) = &issue {
+            if self.linked_issue(issue.number)? {
+                return Ok(None);
+            }
+        }
         let directory = self.path.join(format!(".staging-{}", uuid::Uuid::new_v4()));
         io(fs::DirBuilder::new().mode(0o700).create(&directory))?;
-        let published = self.publish(&directory, id, intent, branch, base_ref, push_remote_url);
+        let at = now();
+        let task = Task {
+            schema: 1,
+            id,
+            created_at: at.clone(),
+            updated_at: at,
+            state: TaskState::New,
+            intent,
+            branch,
+            base_ref,
+            push_remote_url,
+            workspace_path: None,
+            pr_number: None,
+            issue,
+            advance: Default::default(),
+        };
+        let published = self.publish(&directory, task).map(Some);
         if published.is_err() {
             // Best effort: a crash can still leave an ignored staging directory.
             let _ = fs::remove_dir_all(&directory);
@@ -472,31 +530,9 @@ impl Store {
     }
 
     // Caller holds the creation lock and has created the private staging directory.
-    fn publish(
-        &self,
-        directory: &Path,
-        id: String,
-        intent: String,
-        branch: String,
-        base_ref: String,
-        push_remote_url: String,
-    ) -> Result<View> {
+    fn publish(&self, directory: &Path, task: Task) -> Result<View> {
         let _lock = lock(&directory.join(".lock"))?;
-        let at = now();
-        let task = Task {
-            schema: 1,
-            id,
-            created_at: at.clone(),
-            updated_at: at.clone(),
-            state: TaskState::New,
-            intent,
-            branch,
-            base_ref,
-            push_remote_url,
-            workspace_path: None,
-            pr_number: None,
-            advance: Default::default(),
-        };
+        let at = task.created_at.clone();
         let event = Event {
             at,
             from: None,
@@ -981,6 +1017,7 @@ mod tests {
                     push_remote_url: "example.invalid:repo".into(),
                     workspace_path: None,
                     pr_number: None,
+                    issue: None,
                     advance: Default::default(),
                 };
                 let result = transition(&mut task, to, "test transition");

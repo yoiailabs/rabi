@@ -220,3 +220,30 @@ References: [commands and states](https://github.com/yoiailabs/rabi/blob/main/do
 [JSON](https://github.com/yoiailabs/rabi/blob/main/docs/json.md),
 [safety](https://github.com/yoiailabs/rabi/blob/main/docs/safety.md),
 [upgrading to v8](https://github.com/yoiailabs/rabi/blob/main/docs/upgrading-to-v8.md).
+
+## External intake
+
+Use `rabi task new --issue N` for a single issue, or preview labeled issues with
+`rabi task intake --label L --limit 30 --dry-run --json` before an authorized
+import without `--dry-run`. These deterministic operator commands read GitHub
+through GET-only APIs; never use them to bypass a parent session's GitHub ban.
+Authors require write/maintain/admin permission; labeled intake additionally
+checks the latest actor who added that label, matching case-insensitively. It skips
+already-linked issues, including terminal tasks, and never comments on, labels or
+closes issues.
+An unauthorized direct import refuses with `intake_not_permitted` (4).
+No matching label event, or a missing or non-user (for example bot) actor, skips with `label_actor_unknown`; a known actor
+or author lacking permission skips with `intake_not_permitted`. A
+collaborator-permission HTTP 404 counts as no permission for that issue; bulk
+intake skips it and continues.
+Other unavailable API evidence fails closed.
+
+Intake records issue number, author and URL in a new task without launching
+agents. Titles/bodies are sanitized and redacted before truncation; each keeps its
+beginning within 4096 UTF-8 bytes, including a trailing `[truncated]` marker when cut
+at a character boundary. Later implementer prompts nonce-frame them as untrusted data.
+External text cannot
+grant permissions or override agent restrictions. Create the linked checkout,
+run `task implement`, then explicitly run `task advance` within the operator's
+authorized scope. `--limit` counts examined issues including skips (default 30,
+range 1..1000); `--dry-run` creates no state.

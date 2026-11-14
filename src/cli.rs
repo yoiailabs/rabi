@@ -834,7 +834,68 @@ fn task_root(args: &[String]) -> Result<i32> {
 }
 
 fn task_new(args: &[String]) -> Result<i32> {
+    let parsed = args::parse(args, &command_options("task new"), true)?;
+    if let Some(issue) = single_value(&parsed, "issue")? {
+        if !parsed.positionals.is_empty() {
+            return Err(Error::validation("--issue conflicts with task intent text"));
+        }
+        let number = issue
+            .parse::<u64>()
+            .ok()
+            .filter(|n| *n > 0)
+            .ok_or_else(|| Error::validation("--issue requires a positive issue number"))?;
+        let repository = selected_repository(&parsed)?;
+        let cwd = std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?;
+        let root = crate::git::git_root(repository.as_deref().unwrap_or(&cwd))?;
+        let view = crate::task::intake::new(
+            &root,
+            number,
+            single_value(&parsed, "branch")?,
+            single_value(&parsed, "base")?,
+        )?;
+        if crate::output::json() {
+            return emit_json(&view);
+        }
+        view.print();
+        return Ok(SUCCESS);
+    }
     task_store(args, "new")
+}
+fn task_intake(args: &[String]) -> Result<i32> {
+    let parsed = args::parse(args, &command_options("task intake"), true)?;
+    if !parsed.positionals.is_empty() {
+        return Err(Error::validation(
+            "task intake accepts no positional arguments",
+        ));
+    }
+    let label = single_value(&parsed, "label")?.filter(|label| !label.trim().is_empty() && label.len() <= 256 && !label.chars().any(char::is_control))
+        .ok_or_else(|| Error::validation("task intake requires a nonblank --label (at most 256 bytes, no control characters)"))?;
+    let limit = single_value(&parsed, "limit")?
+        .unwrap_or("30")
+        .parse::<usize>()
+        .ok()
+        .filter(|n| (1..=1000).contains(n))
+        .ok_or_else(|| Error::validation("--limit must be between 1 and 1000"))?;
+    let repository = selected_repository(&parsed)?;
+    let cwd = std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?;
+    let root = crate::git::git_root(repository.as_deref().unwrap_or(&cwd))?;
+    let report = crate::task::intake::intake(&root, label, limit, parsed.flag("dry-run"))?;
+    if crate::output::json() {
+        return emit_json(&report);
+    }
+    for item in report.items {
+        outln!(
+            "Issue #{}: {}{}",
+            item.issue_number,
+            item.action,
+            item.task_id
+                .as_deref()
+                .or(item.reason)
+                .map(|s| format!(" ({s})"))
+                .unwrap_or_default()
+        );
+    }
+    Ok(SUCCESS)
 }
 fn task_list(args: &[String]) -> Result<i32> {
     task_store(args, "list")
@@ -1948,8 +2009,15 @@ fn command_options(key: &str) -> Vec<Opt> {
         "doctor" | "task" => vec![repo_flag()],
         "task new" => vec![
             repo_flag(),
+            value_flag("issue", None),
             value_flag("branch", None),
             value_flag("base", None),
+        ],
+        "task intake" => vec![
+            repo_flag(),
+            value_flag("label", None),
+            value_flag("limit", None),
+            flag("dry-run", None),
         ],
         "task list" => vec![repo_flag(), flag("all", None)],
         "task advance" => vec![
@@ -2532,6 +2600,12 @@ static COMMANDS: &[Command] = &[
                 name: "new",
                 help_key: "task new",
                 run: task_new,
+                children: &[],
+            },
+            Command {
+                name: "intake",
+                help_key: "task intake",
+                run: task_intake,
                 children: &[],
             },
             Command {

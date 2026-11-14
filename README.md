@@ -62,6 +62,8 @@ rabi task show "$task_id" --json
 
 `task new` only records intent and reserves an unused branch. `create` supplies the linked checkout; `--no-setup` skips copies and setup hooks. `task implement` starts the first local implementation attempt. `advance` then progresses one step per invocation, or continues and polls with `--wait`: implement → precheck → publish (draft PR) → CI → review → ready → classify → approval/auto-merge → cleanup. Review findings can return to implementation within a shared fix budget (default 3). For each required check name and app, the newest run must have succeeded.
 
+`rabi task new --issue N` imports an issue only after checking author write/maintain/admin permission. `rabi task intake --label L [--limit N] [--dry-run]` matches labels case-insensitively, checks the latest label actor and skips linked issues. Missing or non-user (for example bot) label actors use `label_actor_unknown`; permission refusals, including collaborator-permission HTTP 404, use `intake_not_permitted`. Intake records tasks without launching agents; external text is sanitized, keeps its beginning within a size cap with a trailing truncation marker, and is nonce-framed as untrusted data in later prompts. Continue with the checkout, `task implement` and explicit `task advance` steps above. See [external intake](docs/commands.md#external-issue-intake).
+
 Exit 10 means waiting for CI or maintainer approval; exit 4 means blocked/refused. Read `task.state.reason` and events in `task show --json`; an exit-0 step does not by itself mean merged. See the [state and recovery tables](docs/commands.md#task-lifecycle) and [exit codes](docs/exit-codes.md).
 
 `task implement` also exits 4 with `stopReason: "metadata_changed"` if its post-launch Git metadata recheck fails. Inspect and repair Git registration before retrying; see [implementation outcomes](docs/json.md#local-task-store).
@@ -112,7 +114,7 @@ Use `rabi help` for syntax or `rabi help --json` for the full command/flag contr
 
 | Area | Commands |
 |---|---|
-| Task records | `rabi task`, `rabi task new`, `rabi task list`, `rabi task show`, `rabi task abandon` |
+| Task records | `rabi task`, `rabi task new`, `rabi task intake`, `rabi task list`, `rabi task show`, `rabi task abandon` |
 | Factory steps | `rabi task implement`, `rabi task advance`, `rabi task publish`, `rabi task review` |
 | Gates | `rabi task risk`, `rabi task classify`, `rabi task status`, `rabi task approve`, `rabi task merge` |
 | Workspaces | `rabi create`, `rabi list`, `rabi show`, `rabi path`, `rabi set`, `rabi exec` |

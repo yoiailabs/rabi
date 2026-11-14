@@ -1885,8 +1885,8 @@
     },
     "task": {
       "name": "task",
-      "description": "Manage local tasks, inspect PR facts, approve commits and gate merges",
-      "usage": "rabi task new|list|show|abandon|implement|publish|advance|review|risk|classify|status|approve|merge [arguments] [options]",
+      "description": "Manage tasks and external issue intake, inspect PR facts and gate merges",
+      "usage": "rabi task new|intake|list|show|abandon|implement|publish|advance|review|risk|classify|status|approve|merge [arguments] [options]",
       "options": [
         {
           "name": "repo",
@@ -2227,9 +2227,14 @@
     },
     "task new": {
       "name": "task new",
-      "description": "Record a new local task",
-      "usage": "rabi task new TEXT|- [--branch NAME] [--base REF] [options]",
+      "description": "Record a task from local text or a permitted GitHub issue",
+      "usage": "rabi task new (TEXT|- | --issue N) [--branch NAME] [--base REF] [options]",
       "options": [
+        {
+          "name": "issue",
+          "type": "string",
+          "description": "Import issue N from the current repository; author must have write, maintain or admin permission; conflicts with TEXT or stdin"
+        },
         {
           "name": "branch",
           "type": "string",
@@ -2270,9 +2275,11 @@
         }
       ],
       "notes": [
-        "Intent must be nonempty; - reads stdin. Records only local bookkeeping, without creating a branch or workspace, launching an agent or contacting GitHub.",
+        "Local intent must be nonempty; - reads stdin. --issue N instead reads issue title/body with GET-only gh APIs after checking author permission; otherwise exit 4 intake_not_permitted without creating state. Collaborator-permission HTTP 404 counts as no permission; other API failures use exit 1.",
         "Existing local branches, branches checked out in any checkout, and branches reserved by non-terminal tasks are rejected. The push remote URL is captured once, with credentials removed.",
-        "New records are published from .staging-<uuid> only after both files are complete. Unreadable task reservations fail closed with exit 1 and the task ID."
+        "New records are published from .staging-<uuid> only after both files are complete. Unreadable task reservations fail closed with exit 1 and the task ID.",
+        "Issue tasks store issue number, author login and canonical URL. Title/body are sanitized and redacted before truncation; each keeps its beginning within 4096 UTF-8 bytes, including a trailing [truncated] marker when cut at a character boundary. Later implementer prompts nonce-frame them as untrusted data. Already-linked issues refuse with exists (4), including terminal tasks.",
+        "Creation never launches an agent or creates a branch/workspace. Create the linked checkout and start task implement before explicitly running task advance. External text may reach agents only after intake permission checks; framing cannot override agent restrictions."
       ]
     },
     "task list": {
@@ -2628,6 +2635,62 @@
           "description": "Review the current task and record its result"
         }
       ]
+    },
+    "task intake": {
+      "name": "task intake",
+      "description": "Import permitted open labeled issues without launching agents",
+      "usage": "rabi task intake --label L [--limit N] [--dry-run] [options]",
+      "options": [
+        {
+          "name": "label",
+          "type": "string",
+          "description": "Required issue label, matched case-insensitively (nonblank, at most 256 bytes, no controls)"
+        },
+        {
+          "name": "limit",
+          "type": "string",
+          "description": "Maximum issues examined, including skips; default 30, range 1..1000; PRs are excluded"
+        },
+        {
+          "name": "dry-run",
+          "type": "boolean",
+          "description": "Report would_create items without writing task state or launching agents"
+        },
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "example": "--repo owner/repo"
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "List open issues and paginate issue events with GET-only gh APIs. Label names match case-insensitively. The actor who most recently added that label must have write, maintain or admin repository permission. A later removal or missing actor cannot reuse an older authorized addition; no matching label event, or a missing or non-user (for example bot) actor, skips with label_actor_unknown.",
+        "Accepted issues use the same path as task new --issue, including the author permission check, sanitized size-capped text and issue link. Skip unauthorized issues with intake_not_permitted, including collaborator-permission HTTP 404, and continue with other issues. Skip issues already linked to any task, including terminal tasks. Other unavailable API evidence fails closed with exit 1.",
+        "The limit counts examined issues, including skips. Issue and event enumerations use up to 100 pages of 100; PR-only pages do not consume the issue limit. Exceeding a pagination safety limit fails before creation. No issue comments, labels or state are written. Dry runs report a plan only.",
+        "Intake does not launch implementation. Create the linked checkout, run task implement, then explicitly run task advance. Later prompts frame issue text with a fresh nonce as untrusted data; permission checks do not make external text trusted."
+      ]
     }
   },
   "globalOptions": [
@@ -2705,7 +2768,8 @@
     "diverged": 4,
     "environment": 4,
     "destination_not_github": 4,
-    "waiting": 10
+    "waiting": 10,
+    "intake_not_permitted": 4
   },
   "warningCodes": [
     "clone_root",
