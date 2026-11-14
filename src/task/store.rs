@@ -250,6 +250,12 @@ impl Store {
     }
 
     fn load_record(&self, id: &str) -> Result<Task> {
+        self.load_record_with_branch(id, None)
+    }
+
+    // A launch already validated its branch. Finishing must be filesystem-only
+    // when the implementer has invalidated the checkout's Git metadata.
+    fn load_record_with_branch(&self, id: &str, expected_branch: Option<&str>) -> Result<Task> {
         if !io(fs::symlink_metadata(self.path.join(id)))?.is_dir() {
             return Err(Error::validation(
                 "Task directory is not a regular directory",
@@ -260,7 +266,10 @@ impl Store {
         if record.schema != 1
             || record.id != id
             || record.intent.trim().is_empty()
-            || !valid_branch(&self.root, &record.branch)?
+            || !match expected_branch {
+                Some(branch) => record.branch == branch,
+                None => valid_branch(&self.root, &record.branch)?,
+            }
             || record.base_ref.trim().is_empty()
             || record.push_remote_url != strip_credentials(&record.push_remote_url)
         {
@@ -537,17 +546,18 @@ impl Store {
 
     pub fn implementation_event(
         &self,
-        id: &str,
+        original: &Task,
         workspace: &Path,
         start: bool,
         data: serde_json::Value,
     ) -> Result<()> {
+        let id = &original.id;
         let directory = self.path.join(id);
         if !io(fs::symlink_metadata(&directory))?.is_dir() {
             return Err(Error::msg("Task directory must not be a symlink"));
         }
         let _lock = lock(&directory.join(".lock"))?;
-        let mut task = self.load(id)?;
+        let mut task = self.load_record_with_branch(id, Some(&original.branch))?;
         self.events(id)?;
         let mut event = if start {
             match task.state {

@@ -17,7 +17,7 @@ thread_local! {
 type GitEnvironment = Vec<(OsString, Option<OsString>)>;
 
 /// Apply task credentials and hardening to shared Git helpers on this thread.
-/// The boundary owning the temporary GH_CONFIG_DIR must outlive this guard.
+/// A launch boundary owning any temporary GH_CONFIG_DIR must outlive this guard.
 pub(crate) struct TaskGitEnvironment {
     previous: Option<GitEnvironment>,
     _thread: PhantomData<Rc<()>>,
@@ -74,7 +74,14 @@ fn command(program: &str) -> Command {
                 }
             }
         });
-        cmd.args(["-c", "core.untrackedCache=false"]);
+        cmd.args([
+            "-c",
+            "core.untrackedCache=false",
+            "-c",
+            "core.attributesFile=/dev/null",
+            // Committed policy diffs may override this default with their base.
+            "--attr-source=4b825dc642cb6eb9a060e54bf8d69288fbee4904",
+        ]);
     }
     if program == "git" && (task_git || GIT_HOOK_SUPPRESSION.with(|depth| depth.get() > 0)) {
         // Status queries during sync and read-only plans must not refresh the index.

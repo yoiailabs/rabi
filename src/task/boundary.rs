@@ -29,60 +29,73 @@ impl Boundary {
 
     /// Apply last, after any caller environment. The owner must outlive the child.
     pub fn prepare(&self, command: &mut Command) {
-        let explicit: Vec<_> = command
-            .get_envs()
-            .map(|(key, _)| key.to_os_string())
-            .collect();
-        for key in std::env::vars_os().map(|(key, _)| key).chain(explicit) {
-            if key.to_string_lossy().starts_with("GIT_") {
-                command.env_remove(key);
-            }
-        }
-        for key in [
-            "GH_TOKEN",
-            "GITHUB_TOKEN",
-            "GH_ENTERPRISE_TOKEN",
-            "GITHUB_ENTERPRISE_TOKEN",
-            "SSH_AUTH_SOCK",
-            "GIT_ASKPASS",
-            "SSH_ASKPASS",
-        ] {
-            command.env_remove(key);
-        }
-        command
-            .env("GH_CONFIG_DIR", self.path.join("github"))
-            .env("GIT_TERMINAL_PROMPT", "0")
-            .env("RABI_AGENT", "1");
-        // Command-scoped config takes precedence over system, user and repository
-        // config. Empty helper resets the complete accumulated helper list.
-        let settings = [
-            ("credential.helper", ""),
-            ("core.askPass", ""),
-            ("credential.interactive", "false"),
-            // OpenSSH options supported on Linux and macOS. No agents or prompts;
-            // on-disk keys remain accessible, as do all other same-user files.
-            (
-                "core.sshCommand",
-                "ssh -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none",
-            ),
-        ];
-        // Codex's default secret filter removes names containing KEY. Use
-        // Git's quoted parameter format so these settings reach its tool shells
-        // without disabling the provider's default environment exclusions.
-        let parameters = settings
-            .into_iter()
-            .map(|(key, value)| format!("'{}'", format!("{key}={value}").replace('\'', "'\\''")))
-            .collect::<Vec<_>>()
-            .join(" ");
-        command.env("GIT_CONFIG_PARAMETERS", parameters);
+        prepare_environment(command);
+        command.env("GH_CONFIG_DIR", self.path.join("github"));
     }
 
+    #[cfg(test)]
     pub fn git_scope(&self) -> crate::process::TaskGitEnvironment {
         let mut command = Command::new("git");
         self.prepare(&mut command);
         crate::process::task_git_environment(&command)
     }
 }
+
+/// Rabi reads need credential isolation, but never invoke gh or need temporary files.
+pub(crate) fn git_read_scope() -> crate::process::TaskGitEnvironment {
+    let mut command = Command::new("git");
+    prepare_environment(&mut command);
+    crate::process::task_git_environment(&command)
+}
+
+fn prepare_environment(command: &mut Command) {
+    let explicit: Vec<_> = command
+        .get_envs()
+        .map(|(key, _)| key.to_os_string())
+        .collect();
+    for key in std::env::vars_os().map(|(key, _)| key).chain(explicit) {
+        if key.to_string_lossy().starts_with("GIT_") {
+            command.env_remove(key);
+        }
+    }
+    for key in [
+        "GH_TOKEN",
+        "GITHUB_TOKEN",
+        "GH_ENTERPRISE_TOKEN",
+        "GITHUB_ENTERPRISE_TOKEN",
+        "SSH_AUTH_SOCK",
+        "GIT_ASKPASS",
+        "SSH_ASKPASS",
+    ] {
+        command.env_remove(key);
+    }
+    command
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("RABI_AGENT", "1");
+    // Command-scoped config takes precedence over system, user and repository
+    // config. Empty helper resets the complete accumulated helper list.
+    let settings = [
+        ("credential.helper", ""),
+        ("core.askPass", ""),
+        ("credential.interactive", "false"),
+        // OpenSSH options supported on Linux and macOS. No agents or prompts;
+        // on-disk keys remain accessible, as do all other same-user files.
+        (
+            "core.sshCommand",
+            "ssh -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none",
+        ),
+    ];
+    // Codex's default secret filter removes names containing KEY. Use
+    // Git's quoted parameter format so these settings reach its tool shells
+    // without disabling the provider's default environment exclusions.
+    let parameters = settings
+        .into_iter()
+        .map(|(key, value)| format!("'{}'", format!("{key}={value}").replace('\'', "'\\''")))
+        .collect::<Vec<_>>()
+        .join(" ");
+    command.env("GIT_CONFIG_PARAMETERS", parameters);
+}
+
 impl Drop for Boundary {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);

@@ -963,8 +963,7 @@ fn task_implement(args: &[String]) -> Result<i32> {
         Some(message) => Some(message.to_owned()),
         None => None,
     };
-    let boundary = crate::task::boundary::Boundary::new()?;
-    let _git = boundary.git_scope();
+    let _git = crate::task::boundary::git_read_scope();
     let repository = selected_repository(&parsed)?;
     let cwd = std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?;
     let root = repository.as_deref().unwrap_or(&cwd);
