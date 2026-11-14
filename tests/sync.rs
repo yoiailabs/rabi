@@ -1767,7 +1767,14 @@ fn git_hooks_can_run_rabi() {
 # Bound the nested command so a regression cannot leave orphaned child processes.
 '{bin}' gc --json > '{output}' 2>&1 &
 nested=$!
-(sleep {guard_secs}; kill "$nested" 2>/dev/null) >/dev/null 2>&1 &
+(
+  # Install the trap before spawning so early cancellation cannot orphan sleep.
+  trap 'kill "$!" 2>/dev/null; wait "$!" 2>/dev/null; exit' TERM
+  sleep {guard_secs} &
+  s=$!
+  wait "$s"
+  kill "$nested" 2>/dev/null
+) >/dev/null 2>&1 &
 watcher=$!
 wait "$nested"
 result=$?

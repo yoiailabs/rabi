@@ -17,7 +17,8 @@ const DOCUMENT: &str = "Base policy: behavior-neutral changes are low; other cha
 const FAKE: &str = r#"#!/bin/sh
 set -eu
 if [ "${RABI_CLASSIFIER_FIXTURE_MODE:-}" = timeout ] || [ "${RABI_CLASSIFIER_FIXTURE_MODE:-}" = descendants ]; then
-  sleep 30 &
+  # Stay alive until rabi kills us; root removal releases failed-test orphans.
+  (while [ -d "$RABI_CLASSIFIER_FIXTURE" ] && [ ! -e "$RABI_CLASSIFIER_FIXTURE/release-processes" ]; do sleep .01; done) &
   printf '%s\n' "$!" > "$RABI_CLASSIFIER_FIXTURE/descendant"
 fi
 printf 'launch\n' >> "$RABI_CLASSIFIER_FIXTURE/launches"
@@ -158,6 +159,7 @@ impl Repo {
 
 impl Drop for Repo {
     fn drop(&mut self) {
+        // Release every fixture gate, including when a death assertion panics.
         let _ = fs::remove_dir_all(&self.root);
     }
 }

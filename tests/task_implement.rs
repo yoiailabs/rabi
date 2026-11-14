@@ -16,7 +16,8 @@ use std::time::{Duration, Instant};
 const FAKE: &str = r#"#!/bin/sh
 set -eu
 if [ "${RABI_IMPLEMENT_MODE:-}" = wait ]; then
-  sleep 30 &
+  # Stay alive until rabi kills us; root removal releases failed-test orphans.
+  (while [ -d "$RABI_IMPLEMENT_FIXTURE" ] && [ ! -e "$RABI_IMPLEMENT_FIXTURE/release-processes" ]; do sleep .01; done) &
   printf '%s\n' "$!" > "$RABI_IMPLEMENT_FIXTURE/descendant"
   printf '%s\n' "$$" > "$RABI_IMPLEMENT_FIXTURE/leader"
   wait
@@ -170,6 +171,7 @@ impl Repo {
 }
 impl Drop for Repo {
     fn drop(&mut self) {
+        // Release every fixture gate, including when a death assertion panics.
         let _ = fs::remove_dir_all(&self.root);
     }
 }

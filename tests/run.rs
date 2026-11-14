@@ -97,12 +97,20 @@ if os.environ.get('FAKE_BLOCK'):
         def capture_term_state(signum, frame):
             (root/'term-state.json').write_bytes(pathlib.Path(os.environ['FAKE_TERM_STATE']).read_bytes())
         signal.signal(signal.SIGTERM, capture_term_state)
-    child = subprocess.Popen([sys.executable, '-c', 'import os,signal,time; signal.signal(signal.SIGTERM, signal.SIG_IGN); os.write(1,b"ready\\n"); time.sleep(600)'], stdout=subprocess.PIPE)
+    child_code = """
+import os, pathlib, signal, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+root = pathlib.Path(os.environ['FAKE_ROOT'])
+os.write(1, b"ready\\n")
+# Only the test gate or root teardown can release a surviving descendant.
+while root.exists() and not (root/'release-processes').exists(): time.sleep(.01)
+"""
+    child = subprocess.Popen([sys.executable, '-c', child_code], stdout=subprocess.PIPE)
     assert child.stdout.readline() == b'ready\n'
     (root/'pids').write_text(str(os.getpid())+' '+str(child.pid))
 if os.environ.get('FAKE_WAIT_THREAD'):
     (root/'thread-ready').write_text('ready')
-    while not (root/'emit-thread').exists(): time.sleep(.01)
+    while root.exists() and not (root/'emit-thread').exists(): time.sleep(.01)
 if os.environ.get('FAKE_SESSION_DELAY'):
     time.sleep(float(os.environ['FAKE_SESSION_DELAY']))
 if os.environ.get('FAKE_BAD_BYTES'):
@@ -121,7 +129,6 @@ if os.environ.get('FAKE_NOISE'):
     # Only the test can release this gate after observing cancellation. Root
     # removal also releases an orphan during failed-test fixture cleanup.
     while root.exists() and not (root/'finish-noise').exists(): time.sleep(.01)
-    (root/'noise-ended').write_text('done')
 if not os.environ.get('FAKE_NO_THREAD'):
     event = {'type':'thread.started','thread_id':sid}
     if os.environ.get('FAKE_PADDED_THREAD'):
@@ -131,7 +138,7 @@ if not os.environ.get('FAKE_NO_THREAD'):
         middle = len(event)//2
         print(event[:middle], end='', flush=True)
         (root/'partial-thread').write_text('ready')
-        while not (root/'complete-thread').exists(): time.sleep(.01)
+        while root.exists() and not (root/'complete-thread').exists(): time.sleep(.01)
         event = event[middle:]
     print(event, end='' if os.environ.get('FAKE_NO_NEWLINE') else '\n', flush=True)
     if os.environ.get('FAKE_SECOND_ID'):
@@ -143,10 +150,11 @@ if not os.environ.get('FAKE_NO_THREAD'):
 pathlib.Path(args[args.index('-o')+1]).write_text(os.environ.get('FAKE_ANSWER', 'Parent final answer.\n'))
 print('fake stderr', file=sys.stderr, flush=True)
 if os.environ.get('FAKE_BLOCK'):
-    time.sleep(600)
+    # No elapsed-time escape: cancellation must kill this parent.
+    while root.exists() and not (root/'release-processes').exists(): time.sleep(.01)
 if os.environ.get('FAKE_WAIT_FINISH'):
     (root/'waiting-finish').write_text('ready')
-    while not (root/'finish').exists(): time.sleep(.01)
+    while root.exists() and not (root/'finish').exists(): time.sleep(.01)
 (root/'completed').write_text('done')
 sys.exit(int(os.environ.get('FAKE_EXIT','0')))
 "#).unwrap();
@@ -248,6 +256,7 @@ sys.exit(int(os.environ.get('FAKE_EXIT','0')))
 }
 impl Drop for Fixture {
     fn drop(&mut self) {
+        // Release every fixture gate, including when a death assertion panics.
         let _ = fs::remove_dir_all(&self.root);
     }
 }
@@ -629,10 +638,8 @@ fn noisy_output_does_not_delay_timeout_or_interrupt() {
                 "{}",
                 String::from_utf8_lossy(&out.stdout)
             );
-            // The fixture cannot finish while this gate is closed. Cancellation
-            // must stop it first; reader unit tests prove per-poll work limits.
-            assert!(!f.root.join("noise-ended").exists());
-            fs::write(f.root.join("finish-noise"), "release").unwrap();
+            // Keep the fixture gates closed through the death assertions so
+            // only cancellation can stop it. Fixture teardown releases orphans.
             for pid in pids.split_whitespace() {
                 assert_dead(pid.parse().unwrap());
             }
@@ -2006,7 +2013,16 @@ if os.environ.get('CURSOR_BLOCK'):
         with (root/'signals').open('a') as f: f.write(str(signum)+'\n')
     signal.signal(signal.SIGINT, capture_signal)
     signal.signal(signal.SIGTERM, capture_signal)
-    child = subprocess.Popen([sys.executable,'-c','import os,signal,time; signal.signal(signal.SIGINT,signal.SIG_IGN); signal.signal(signal.SIGTERM,signal.SIG_IGN); os.write(1,b"ready\\n"); time.sleep(600)'], start_new_session=True, stdout=subprocess.PIPE)
+    child_code = """
+import os, pathlib, signal, time
+signal.signal(signal.SIGINT, signal.SIG_IGN)
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+root = pathlib.Path(os.environ['FAKE_ROOT'])
+os.write(1, b"ready\\n")
+# Only the test gate or root teardown can release a surviving descendant.
+while root.exists() and not (root/'release-processes').exists(): time.sleep(.01)
+"""
+    child = subprocess.Popen([sys.executable, '-c', child_code], start_new_session=True, stdout=subprocess.PIPE)
     assert child.stdout.readline() == b'ready\n'
     (root/'pids').write_text(str(os.getpid())+' '+str(child.pid))
 if not os.environ.get('CURSOR_NO_INIT'):
@@ -2015,7 +2031,8 @@ if not os.environ.get('CURSOR_NO_INIT'):
 if os.environ.get('CURSOR_AUDIT'):
     for subtype, policy in [('started','TYPE_INSECURE_NONE'), ('completed','TYPE_WORKSPACE_READWRITE'), ('completed','TYPE_INSECURE_NONE'), ('completed','TYPE_INSECURE_NONE')]:
         print(json.dumps({'type':'tool_call','subtype':subtype,'session_id':sid,'tool_call':{'shellToolCall':{'args':{'command':'curl https://example.com','requestedSandboxPolicy':{'type':policy},'skipApproval':True},'result':{'success':{'exitCode':0,'stdout':'200'}}}}}), flush=True)
-if os.environ.get('CURSOR_BLOCK'): time.sleep(600)
+if os.environ.get('CURSOR_BLOCK'):
+    while root.exists() and not (root/'release-processes').exists(): time.sleep(.01)
 if os.environ.get('CURSOR_FIRST_RESULT'):
     print(json.dumps({'type':'result','result':'Superseded result','is_error':False,'session_id':sid}), flush=True)
 if not os.environ.get('CURSOR_NO_RESULT'):
@@ -2626,7 +2643,16 @@ if os.environ.get('CLAUDE_BLOCK'):
             sys.exit(0)
     signal.signal(signal.SIGINT, capture_signal)
     signal.signal(signal.SIGTERM, capture_signal)
-    child = subprocess.Popen([sys.executable,'-c','import os,signal,time; signal.signal(signal.SIGINT,signal.SIG_IGN); signal.signal(signal.SIGTERM,signal.SIG_IGN); os.write(1,b"ready\\n"); time.sleep(600)'], start_new_session=True, stdout=subprocess.PIPE)
+    child_code = """
+import os, pathlib, signal, time
+signal.signal(signal.SIGINT, signal.SIG_IGN)
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+root = pathlib.Path(os.environ['FAKE_ROOT'])
+os.write(1, b"ready\\n")
+# Only the test gate or root teardown can release a surviving descendant.
+while root.exists() and not (root/'release-processes').exists(): time.sleep(.01)
+"""
+    child = subprocess.Popen([sys.executable, '-c', child_code], start_new_session=True, stdout=subprocess.PIPE)
     assert child.stdout.readline() == b'ready\n'
     (root/'pids').write_text(str(os.getpid())+' '+str(child.pid))
 if os.environ.get('CLAUDE_EARLY_ID'):
@@ -2643,7 +2669,8 @@ if not os.environ.get('CLAUDE_NO_INIT'):
     if os.environ.get('CLAUDE_INIT_PADDING'): event['padding'] = 'x'*int(os.environ['CLAUDE_INIT_PADDING'])
     print(json.dumps(event), flush=True)
 (root/'session-ready').write_text(str(os.getpid()))
-if os.environ.get('CLAUDE_BLOCK'): time.sleep(600)
+if os.environ.get('CLAUDE_BLOCK'):
+    while root.exists() and not (root/'release-processes').exists(): time.sleep(.01)
 if os.environ.get('CLAUDE_FIRST_RESULT'):
     print(json.dumps({'type':'result','result':'Superseded result','is_error':False,'session_id':sid}), flush=True)
 if not os.environ.get('CLAUDE_NO_RESULT'):
@@ -4536,9 +4563,14 @@ fn handoff_busy_lock_refuses_with_bounded_wait_and_run_preserves_status() {
             .stdin(Stdio::null()),
     )
     .finish();
-    // This is a behavior assertion: refusing a held lock must honor the full
-    // ten-second retry budget. The shared hang guard bounds eventual refusal.
-    assert!(started.elapsed() >= Duration::from_secs(10));
+    // The lock retries for ten seconds. Allow fifty more for scheduling and
+    // startup, while still detecting a refusal that retries indefinitely.
+    let elapsed = started.elapsed();
+    assert!(elapsed >= Duration::from_secs(10));
+    assert!(
+        elapsed < Duration::from_secs(60),
+        "lock refusal took {elapsed:?}"
+    );
     assert_eq!(out.status.code(), Some(4));
     let envelope: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(envelope["error"]["code"], "refused");
