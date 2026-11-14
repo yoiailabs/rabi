@@ -2,10 +2,12 @@
 
 ## Unreleased
 
+## v8.2.0 (2026-11-15)
+
 ### Added
 
-- `rabi task new` now creates the reserved branch and linked workspace after publishing the task record, for local text, stdin and `--issue`. Setup, hooks and trust match `rabi create`; matching live workspaces are reused, partial setup retains its retry command, and allocation failures retain the task for recovery with `rabi create <branch> --base <base>`. A remote-tracking branch of the reserved name is refused with `exists_remote` before the record is written. Bulk `task intake` still records tasks only.
-- `[ci] required` in `.rabi/policy.toml` accepts `{ name, creator }` to require a GitHub commit status from an explicit creator login. Advance and merge preflight evaluate the latest matching status on the current PR head; existing string and `{ name, app }` Check Run requirements keep their behavior.
+- `[ci] required` in `.rabi/policy.toml` accepts `{ name, creator }` to require a GitHub commit status from an explicit creator login. Advance and merge preflight evaluate the latest matching status on the current PR head; existing string and `{ name, app }` Check Run requirements keep their behavior. (#972)
+- `rabi task new` now creates the reserved branch and linked workspace after publishing the task record, for local text, stdin and `--issue`. Setup, hooks and trust match `rabi create`; matching live workspaces are reused, partial setup retains its retry command, and allocation failures retain the task for recovery with `rabi create <branch> --base <base>`. A remote-tracking branch of the reserved name is refused with `exists_remote` before the record is written. Bulk `task intake` still records tasks only. (#973)
 
 ## v8.1.0 (2026-11-14)
 
