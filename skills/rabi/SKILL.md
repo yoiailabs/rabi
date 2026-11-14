@@ -148,7 +148,8 @@ a sanitized observation with classified/treated tiers and SHA, changing no state
 approval or merge. Never unset the marker to record an override.
 
 For an authorized proposal, use `rabi task tune [--since DUR|DATE] --dry-run --json`
-to inspect evidence, proposed replacements and the would-be diff. No evidence
+to inspect evidence, proposed replacements and the would-be unified diff with
+three context lines per hunk. No evidence
 means `nothing to propose`. Tune uses a fresh tool-less Claude session, nonce-frames
 untrusted evidence, validates strict JSON, retries malformed output once, and
 allows only the base `[classifier] doc` and `AGENTS.md`. Rabi applies replacements
@@ -156,7 +157,8 @@ itself, requiring each find text exactly once and rejecting oversize edits.
 
 Without `--dry-run`, tune creates a normal task and linked workspace, commits the
 proposal with evidence and publishes a draft PR through `task publish`. Its body
-lists sanitized rationale and evidence. This requires authorization to publish.
+lists each edit's sanitized path, rationale and evidence as readable Markdown
+within a 24 KiB section cap. This requires authorization to publish.
 Tune never runs review, classify, approve or merge; inspect the task and continue
 with ordinary `task advance` gates. Policy-document changes may auto-merge only
 if those gates allow it. Override observations never authorize bypassing gates.

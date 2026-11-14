@@ -194,7 +194,9 @@ text can still be harmful or misleading; inspect the diff and its evidence.
 Dry runs create no task, workspace, commit or publication. An applied proposal
 becomes a normal task and linked workspace; rabi applies exact text replacements,
 commits with evidence and publishes a draft PR through the existing publication
-path. Rationale and evidence are sanitized for the PR body. Tune stops there: it
+path. Each edit's path, rationale and evidence are sanitized before Markdown
+escaping and rendered as a list within the 24 KiB section cap. Supplied Markdown
+link syntax, HTML and mentions render as literal text. Tune stops there: it
 never runs review, classify, approve or merge. Ordinary publication floors and
 `task advance` gates decide whether the proposal can proceed. Policy-document
 changes may still auto-merge only if the policy's gates allow it; tuning itself

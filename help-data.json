@@ -2907,7 +2907,7 @@
         "At most 16 edits; each find and replace is limited to 8 KiB, total replacement text to 64 KiB. Summary is limited to 512 bytes. Trusted execution is required when evidence exists.",
         "Without --dry-run, creates a normal task and linked workspace from the current base, applies replacements deterministically, commits evidence and publishes a draft PR through task publish. Preparation skips setup hooks and copying.",
         "Stops at publication: never runs review, classify, approve or merge. Continue through task advance gates. Policy-document changes may auto-merge only when the policy gates allow it.",
-        "Rationale and evidence in the draft body are limited to 24 KiB; oversized proposals are rejected."
+        "Dry runs show a unified diff with three context lines per hunk. The draft body lists each edit's sanitized path, rationale and evidence as readable Markdown, limited to 24 KiB; oversized proposals are rejected."
       ]
     }
   },

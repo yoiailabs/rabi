@@ -849,6 +849,146 @@ fn tune_empty_document_replacement_diff_can_be_applied() {
 }
 
 #[test]
+fn tune_one_line_edit_has_a_small_deterministic_context_hunk() {
+    let mut repo = Repo::new();
+    let original: String = (1..=80)
+        .map(|line| format!("Policy line {line}\n"))
+        .collect();
+    fs::write(repo.repo.join("risk-tiers.md"), &original).unwrap();
+    repo.git(&["add", "risk-tiers.md"]);
+    repo.git(&["commit", "-m", "fixture policy lines"]);
+    repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    repo.head = repo.git(&["rev-parse", "HEAD"]);
+    let evidence = repo.classification();
+    let mut proposal = repo.proposal(&evidence);
+    proposal["edits"][0]["find"] = json!("Policy line 40\n");
+    proposal["edits"][0]["replace"] = json!("Clarified line 40\n");
+    repo.answer(&proposal);
+    let report = repo.json(&["task", "tune", "--dry-run", "--json"], 0);
+    let diff = report["data"]["diff"].as_str().unwrap();
+    assert!(diff.contains("@@ -37,7 +37,7 @@"), "{diff}");
+    assert_eq!(diff.lines().count(), 12, "{diff}");
+    assert!(!diff.contains("Policy line 1\n"));
+    assert!(!diff.contains("Policy line 80\n"));
+    let global = repo.root.join("home/.gitconfig");
+    let mut config = fs::OpenOptions::new().append(true).open(&global).unwrap();
+    writeln!(config, "[diff]\n algorithm = histogram\n indentHeuristic = true\n interHunkContext = 200\n context = 200\n mnemonicPrefix = true\n suppressBlankEmpty = true\n wordRegex = .\n[core]\n quotePath = true").unwrap();
+    drop(config);
+    repo.git(&["config", "diff.suppressBlankEmpty", "true"]);
+    repo.git(&["config", "diff.interHunkContext", "200"]);
+    repo.git(&["config", "diff.context", "200"]);
+    let temporary = repo.repo.join("temporary");
+    fs::create_dir(&temporary).unwrap();
+    let repeated = decode(
+        Repo::run(
+            repo.command(
+                env!("CARGO_BIN_EXE_rabi"),
+                &["task", "tune", "--dry-run", "--json"],
+            )
+            .env("TMPDIR", &temporary),
+        ),
+        0,
+    );
+    assert_eq!(repeated["data"]["diff"], diff);
+    let patch = repo.root.join("proposal.patch");
+    fs::write(&patch, diff).unwrap();
+    repo.git(&["apply", "--check", patch.to_str().unwrap()]);
+    repo.git(&["apply", patch.to_str().unwrap()]);
+    assert_eq!(
+        fs::read_to_string(repo.repo.join("risk-tiers.md")).unwrap(),
+        original.replace("Policy line 40\n", "Clarified line 40\n")
+    );
+    repo.assert_no_gate_calls();
+}
+
+#[test]
+fn tune_separates_distant_hunks_and_preserves_missing_final_newlines() {
+    let mut repo = Repo::new();
+    let original = (1..=80)
+        .map(|line| format!("Policy line {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    fs::write(repo.repo.join("risk-tiers.md"), &original).unwrap();
+    repo.git(&["add", "risk-tiers.md"]);
+    repo.git(&["commit", "-m", "fixture policy without final newline"]);
+    repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    repo.head = repo.git(&["rev-parse", "HEAD"]);
+    let evidence = repo.classification();
+    let mut proposal = repo.proposal(&evidence);
+    proposal["edits"] = json!([10, 80].map(|line| json!({
+        "path": "risk-tiers.md", "find": format!("Policy line {line}"),
+        "replace": format!("Clarified line {line}"), "rationale": "Clarify this rule",
+        "evidence": [&evidence]
+    })));
+    repo.answer(&proposal);
+    let report = repo.json(&["task", "tune", "--dry-run", "--json"], 0);
+    let diff = report["data"]["diff"].as_str().unwrap();
+    assert_eq!(
+        diff.lines().filter(|line| line.starts_with("@@ ")).count(),
+        2,
+        "{diff}"
+    );
+    assert_eq!(
+        diff.matches("\\ No newline at end of file").count(),
+        2,
+        "{diff}"
+    );
+    let patch = repo.root.join("proposal.patch");
+    fs::write(&patch, diff).unwrap();
+    repo.git(&["apply", "--check", patch.to_str().unwrap()]);
+    repo.git(&["apply", patch.to_str().unwrap()]);
+    assert_eq!(
+        fs::read_to_string(repo.repo.join("risk-tiers.md")).unwrap(),
+        original
+            .replace("Policy line 10", "Clarified line 10")
+            .replace("Policy line 80", "Clarified line 80")
+    );
+    repo.assert_no_gate_calls();
+}
+
+#[test]
+fn tune_and_override_load_whitespace_policy_as_defaults() {
+    let mut repo = Repo::new();
+    fs::write(repo.repo.join(".rabi/policy.toml"), " \t\r\n").unwrap();
+    repo.git(&["add", ".rabi/policy.toml"]);
+    repo.git(&["commit", "-m", "fixture whitespace policy"]);
+    repo.git(&["update-ref", "refs/remotes/origin/main", "HEAD"]);
+    repo.head = repo.git(&["rev-parse", "HEAD"]);
+    let evidence = repo.classification();
+    let mut proposal = repo.proposal(&evidence);
+    proposal["edits"][0]["path"] = json!("AGENTS.md");
+    proposal["edits"][0]["find"] = json!("Existing instructions.");
+    proposal["edits"][0]["replace"] = json!("Clarified instructions.");
+    repo.answer(&proposal);
+    let report = repo.json(&["task", "tune", "--dry-run", "--json"], 0);
+    assert_eq!(report["data"]["proposal"], proposal);
+    assert_eq!(repo.calls(), 1);
+    let task = repo.new_task();
+    let before = inventory(&repo.tasks());
+    let refused = repo.json(
+        &[
+            "task",
+            "override",
+            &task,
+            "--tier",
+            "low",
+            "--note",
+            "Safe wording",
+            "--sha",
+            &repo.head,
+            "--json",
+        ],
+        4,
+    );
+    assert!(refused["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("approval.approvers"));
+    assert_eq!(inventory(&repo.tasks()), before);
+    repo.assert_no_gate_calls();
+}
+
+#[test]
 fn tune_holds_operation_locks_before_its_task_becomes_discoverable() {
     let repo = Repo::new();
     let evidence = repo.classification();

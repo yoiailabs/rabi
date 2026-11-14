@@ -382,14 +382,17 @@ Tune returns `data: {plan, proposal, diff, taskId, prNumber}`. `plan` reflects
 Applied tuning tasks retain an optional `proposal` with that shape in their
 schema-1 task record so publication retries preserve rationale and evidence;
 ordinary tasks omit it.
-`diff` is the would-be diff; `taskId` and `prNumber` are null until a task and
+`diff` is the would-be unified diff with three context lines per hunk;
+`taskId` and `prNumber` are null until a task and
 PR exist. The allowed paths are the base `[classifier] doc` and `AGENTS.md`.
 Evidence references use override IDs, `task_<uuid>:event:N` (one-based append
 position), `classification:<sha>`, `finding:<path>:<bodyHash>`, or `pr:N`.
 They identify only collected source evidence; unrecognized
 references are rejected. A valid dry run returns the proposal and diff without
 creating tasks, workspaces, commits or publication. A full run returns the normal
-task ID and draft PR number after `task publish`; it never reviews, classifies,
+task ID and draft PR number after `task publish`; the body lists each edit's
+sanitized path, rationale and evidence as readable Markdown, capped at 24 KiB.
+Tune never reviews, classifies,
 approves or merges.
 
 No evidence succeeds with exit 0 and a null proposal. Invalid proposals receive

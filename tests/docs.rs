@@ -554,4 +554,30 @@ fn task_override_and_tune_guidance_matches_proposal_only_help_contract() {
     assert!(include_str!("../docs/json.md").contains("classifiedTier"));
     assert!(include_str!("../docs/json.md").contains("plan, proposal, diff, taskId, prNumber"));
     assert!(include_str!("../CHANGELOG.md").contains("rabi task tune"));
+    for document in [
+        include_str!("../help-data.json"),
+        include_str!("../docs/commands.md"),
+        include_str!("../docs/json.md"),
+        include_str!("../skills/rabi/SKILL.md"),
+    ] {
+        for text in [
+            "unified diff",
+            "three context lines per hunk",
+            "readable Markdown",
+        ] {
+            assert!(document.contains(text), "missing {text}");
+        }
+    }
+    assert!(include_str!("../docs/configuration.md")
+        .contains("absent or whitespace-only policy files as defaults"));
+    let changelog = include_str!("../CHANGELOG.md");
+    let added = changelog
+        .split("### Added\n")
+        .nth(1)
+        .unwrap()
+        .split("### Fixed")
+        .next()
+        .unwrap()
+        .trim();
+    assert!(!added.contains("\n\n- "));
 }

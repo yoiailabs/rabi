@@ -77,12 +77,7 @@ impl Report {
 }
 
 fn policy(root: &Path, sha: &str) -> Result<Policy> {
-    match super::policy_blob(root, sha)? {
-        Some(bytes) => Policy::parse(
-            std::str::from_utf8(&bytes).map_err(|_| Error::msg("Base policy must be UTF-8"))?,
-        ),
-        None => Ok(Policy::default()),
-    }
+    Policy::load(super::policy_blob(root, sha)?.as_deref())
 }
 fn tier(value: &Value) -> Option<Tier> {
     serde_json::from_value(value.clone()).ok()
@@ -418,50 +413,151 @@ fn validate(
     if !proposal.edits.is_empty() && result == *documents {
         return Err(Error::msg("tune: proposal has no resulting change"));
     }
-    if publication_body(&proposal, root)?.len() > 24 * 1024 {
-        return Err(Error::msg("tune: rationale and evidence exceed 24 KiB"));
-    }
+    publication_body(&proposal, root)?;
     Ok((proposal, result))
 }
-fn diff(before: &BTreeMap<String, String>, after: &BTreeMap<String, String>) -> String {
+fn diff(before: &BTreeMap<String, String>, after: &BTreeMap<String, String>) -> Result<String> {
+    let temporary = super::boundary::Boundary::new()?;
+    let _git = super::boundary::git_read_scope();
+    // Shared hardened Git reads set --attr-source, which requires metadata even
+    // for no-index. Keep that metadata private and independent of all checkouts.
+    let environment = [
+        ("GIT_CONFIG_NOSYSTEM", "1"),
+        ("GIT_CONFIG_GLOBAL", "/dev/null"),
+        ("GIT_CONFIG_SYSTEM", "/dev/null"),
+        ("GIT_DIR", "repository"),
+    ];
+    let initialized = crate::process::raw_bytes(
+        "git",
+        &[
+            "init",
+            "--bare",
+            "--template=",
+            "--object-format=sha1",
+            "--quiet",
+            "repository",
+        ],
+        Some(temporary.path()),
+        &environment,
+        None,
+    )?;
+    if !initialized.status.success() {
+        return Err(Error::msg("Cannot prepare tuning diff"));
+    }
     let mut output = String::new();
     for (path, old) in before {
         let new = &after[path];
         if old == new {
             continue;
         }
-        let old_count = old.lines().count();
-        let new_count = new.lines().count();
+        fs::write(temporary.path().join("old"), old)
+            .and_then(|()| fs::write(temporary.path().join("new"), new))
+            .map_err(|_| Error::msg("Cannot prepare tuning diff"))?;
+        // No repository or user diff configuration may alter the patch. Git's
+        // no-index diff supplies bounded-memory line matching and EOF markers.
+        let result = crate::process::raw_bytes(
+            "git",
+            &[
+                "--no-lazy-fetch",
+                "diff",
+                "--no-index",
+                "--no-ext-diff",
+                "--no-textconv",
+                "--no-color",
+                "--text",
+                "--no-renames",
+                "--no-relative",
+                "--no-prefix",
+                "--diff-algorithm=myers",
+                "--no-indent-heuristic",
+                "--unified=3",
+                "--inter-hunk-context=0",
+                "--no-function-context",
+                "--word-diff=none",
+                "--output-indicator-new=+",
+                "--output-indicator-old=-",
+                "--output-indicator-context= ",
+                "--",
+                "old",
+                "new",
+            ],
+            Some(temporary.path()),
+            &environment,
+            None,
+        )?;
+        if result.status.code() != Some(1) {
+            return Err(Error::msg("Cannot generate tuning diff"));
+        }
+        let patch = std::str::from_utf8(&result.stdout)
+            .map_err(|_| Error::msg("Tuning diff must be UTF-8"))?;
+        let hunk = patch
+            .find("\n@@ ")
+            .ok_or_else(|| Error::msg("Tuning diff has no hunks"))?;
+        let source = patch_path("a", path);
+        let destination = patch_path("b", path);
         output.push_str(&format!(
-            "diff --git a/{path} b/{path}\n--- a/{path}\n+++ b/{path}\n@@ -{},{} +{},{} @@\n",
-            usize::from(old_count > 0),
-            old_count,
-            usize::from(new_count > 0),
-            new_count,
+            "diff --git {source} {destination}\n--- {source}\n+++ {destination}\n"
         ));
-        for (prefix, text) in [("-", old), ("+", new)] {
-            for line in text.split_inclusive('\n') {
-                output.push_str(prefix);
-                output.push_str(line);
-                if !line.ends_with('\n') {
-                    output.push_str("\n\\ No newline at end of file\n");
-                }
+        output.push_str(&patch[hunk + 1..]);
+    }
+    Ok(output)
+}
+
+fn patch_path(prefix: &str, path: &str) -> String {
+    let path = format!("{prefix}/{path}");
+    if path.contains([' ', '"', '\\']) {
+        format!("\"{}\"", path.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        path
+    }
+}
+
+fn markdown_text(value: &str, workspace: &Path) -> String {
+    let text = super::publish::sanitized_text(value.as_bytes(), workspace);
+    let mut output = String::new();
+    for character in text
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .chars()
+    {
+        match character {
+            '&' => output.push_str("&amp;"),
+            '<' => output.push_str("&lt;"),
+            '>' => output.push_str("&gt;"),
+            // Break mentions without changing their visible spelling.
+            '@' => output.push_str("@\u{200b}"),
+            '\\' | '`' | '*' | '_' | '{' | '}' | '[' | ']' | '(' | ')' | '#' | '+' | '-' | '!'
+            | '|' => {
+                output.push('\\');
+                output.push(character);
             }
+            _ => output.push(character),
         }
     }
     output
 }
 
 pub(super) fn publication_body(proposal: &Proposal, workspace: &Path) -> Result<String> {
-    let value: Vec<_> = proposal
-        .edits
-        .iter()
-        .map(|edit| json!({"path":edit.path,"rationale":edit.rationale,"evidence":edit.evidence}))
-        .collect();
-    let data =
-        serde_json::to_vec(&value).map_err(|_| Error::msg("Cannot encode proposal rationale"))?;
-    let text = super::publish::sanitized_text(&data, workspace);
-    Ok(format!("\nTuning rationale and evidence (JSON data):\n```json\n{}\n```\n\nProposal only. Continue through ordinary task advance gates. Policy-document changes may auto-merge only when the policy gates allow it.\n", serde_json::to_string(&text).map_err(|_| Error::msg("Cannot quote proposal rationale"))?))
+    let mut body = String::from("\nTuning rationale and evidence:\n");
+    for edit in &proposal.edits {
+        let evidence = edit
+            .evidence
+            .iter()
+            .map(|id| markdown_text(id, workspace))
+            .collect::<Vec<_>>()
+            .join(", ");
+        body.push_str(&format!(
+            "\n- Path: {}\n  - Rationale: {}\n  - Evidence: {evidence}\n",
+            markdown_text(&edit.path, workspace),
+            markdown_text(&edit.rationale, workspace)
+        ));
+    }
+    body.push_str("\nProposal only. Continue through ordinary task advance gates. Policy-document changes may auto-merge only when the policy gates allow it.\n");
+    if body.len() > 24 * 1024 {
+        return Err(Error::msg("tune: rationale and evidence exceed 24 KiB"));
+    }
+    Ok(body)
 }
 
 pub(crate) fn execute(root: &Path, since: &Option<DateTime<Utc>>, dry_run: bool) -> Result<Report> {
@@ -521,7 +617,7 @@ pub(crate) fn execute(root: &Path, since: &Option<DateTime<Utc>>, dry_run: bool)
     if proposal.edits.is_empty() {
         return Ok(report);
     }
-    report.diff = diff(&documents, &edited);
+    report.diff = diff(&documents, &edited)?;
     report.proposal = Some(proposal.clone());
     if dry_run {
         return Ok(report);
@@ -742,5 +838,59 @@ mod tests {
         .unwrap();
         assert_eq!(proposal.edits.len(), 1);
         assert_eq!(edited["AGENTS.md"], "aaaa\nClear policy text\n");
+    }
+
+    #[test]
+    fn publication_renders_readable_sanitized_markdown_for_each_edit() {
+        let (_, _, value) = fixture();
+        let mut proposal: Proposal = serde_json::from_value(value).unwrap();
+        let token = format!("ghp_{}", "x".repeat(40));
+        let private_path = std::env::temp_dir().join(uuid::Uuid::new_v4().to_string());
+        proposal.edits[0].rationale = format!(
+            "Use \"clear\" wording.\n\u{1b}[31mCheck\u{1b}[0m {token}\n{}\n<script> [link](target) `code` @review-team",
+            private_path.display()
+        );
+        let mut second = proposal.edits[0].clone();
+        second.path = "risk-tiers.md".into();
+        second.rationale = "Another explanation".into();
+        proposal.edits.push(second);
+        let body = publication_body(&proposal, Path::new("workspace")).unwrap();
+        assert!(body.contains("\n- Path: AGENTS.md\n  - Rationale: Use \"clear\" wording. Check"));
+        assert!(body.contains("\n  - Evidence: event:1\n"));
+        assert!(body.contains("\n- Path: risk\\-tiers.md\n  - Rationale: Another explanation"));
+        assert!(body.contains("\\[path\\]"));
+        assert!(body.contains("&lt;script&gt; \\[link\\]\\(target\\) \\`code\\`"));
+        assert!(body.contains("@\u{200b}review\\-team"));
+        assert!(!body.contains("@review-team"));
+        assert!(!body.contains(&token));
+        assert!(!body.contains(private_path.to_str().unwrap()));
+        assert!(!body.contains('\u{1b}'));
+        assert!(!body.contains("```json"));
+        assert!(!body.contains("\\\"clear\\\""));
+    }
+
+    #[test]
+    fn validation_bounds_the_sanitized_markdown_section() {
+        let (_, evidence, _) = fixture();
+        let documents = BTreeMap::from([(
+            "AGENTS.md".into(),
+            (0..4).map(|index| format!("Policy {index}\n")).collect(),
+        )]);
+        let proposal = json!({
+            "summary": "Clarify policy",
+            "edits": (0..4).map(|index| json!({
+                "path": "AGENTS.md", "find": format!("Policy {index}"),
+                "replace": format!("Clear policy {index}"),
+                "rationale": "<".repeat(2048), "evidence": ["event:1"]
+            })).collect::<Vec<_>>()
+        });
+        let error = validate(
+            &proposal.to_string(),
+            &documents,
+            &evidence,
+            Path::new("workspace"),
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("24 KiB"));
     }
 }

@@ -321,14 +321,12 @@ fn inspect_inner(root: &Path, base: Option<&str>, classifier: bool) -> Result<Re
     let source = format!("{base_sha}:.rabi/policy.toml");
     let blob = policy_blob(root, &base_sha)?;
     let present = blob.is_some();
-    let policy = if let Some(bytes) = blob {
+    let policy = if classifier {
+        Policy::load(blob.as_deref())?
+    } else if let Some(bytes) = blob {
         let contents = std::str::from_utf8(&bytes)
             .map_err(|_| Error::msg("Invalid .rabi/policy.toml: policy must be UTF-8"))?;
-        if classifier && contents.trim().is_empty() {
-            Policy::default()
-        } else {
-            Policy::parse(contents)?
-        }
+        Policy::parse(contents)?
     } else {
         Policy::default()
     };

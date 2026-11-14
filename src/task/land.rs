@@ -26,12 +26,7 @@ fn policy(root: &Path, client: &Client<'_>, sha: &str) -> Result<(Policy, Option
     } else {
         client.policy(sha)?
     };
-    let policy = match bytes.as_deref() {
-        Some(bytes) if !bytes.iter().all(u8::is_ascii_whitespace) => Policy::parse(
-            std::str::from_utf8(bytes).map_err(|_| Error::msg("Base risk policy must be UTF-8"))?,
-        )?,
-        _ => Policy::default(),
-    };
+    let policy = Policy::load(bytes.as_deref())?;
     Ok((policy, bytes))
 }
 
