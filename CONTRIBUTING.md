@@ -153,7 +153,7 @@ When contributing documentation:
 
 ### Versioning
 
-During the v7 beta, minor releases (7.x) may contain breaking changes, following the same rule as SemVer 0.x; patch releases (7.x.y) contain fixes only. List breaking changes in [CHANGELOG.md](CHANGELOG.md) under `Changed (Breaking)` in the `Unreleased` section.
+From v8.0.0, rabi follows Semantic Versioning (SemVer): breaking changes occur only in major releases, minor releases add backward-compatible functionality, and patch releases contain backward-compatible fixes. List breaking changes in [CHANGELOG.md](CHANGELOG.md) under `Changed (Breaking)` in the `Unreleased` section.
 
 To release a new version of rabi:
 
