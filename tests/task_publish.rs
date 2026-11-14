@@ -118,6 +118,7 @@ impl Repo {
         }
         fixture.git(&["add", "."]);
         fixture.git(&["commit", "-m", "fixture base"]);
+        fixture.git(&["push", fixture.remote.to_str().unwrap(), "main"]);
         fixture.git(&["remote", "add", "origin", url]);
         fs::write(
             fixture.root.join("repository.json"),
@@ -295,7 +296,10 @@ set -eu
 printf '%s\000' "$@" > "$RABI_PUBLISH_FIXTURE/git-calls/args.$$"
 for arg in "$@"; do
   case "$arg" in
-    push|ls-remote) export GIT_CONFIG_GLOBAL="$RABI_PUBLISH_FIXTURE/push.gitconfig" ;;
+    push|ls-remote|fetch) export GIT_CONFIG_GLOBAL="$RABI_PUBLISH_FIXTURE/push.gitconfig" ;;
+  esac
+  case "$arg" in
+    fetch) [ ! -f "$RABI_PUBLISH_FIXTURE/fail-fetch" ] || exit 1 ;;
   esac
 done
 exec '{}' "$@"
@@ -357,7 +361,12 @@ fn non_github_and_mismatched_destinations_block_before_any_push() {
         );
         assert!(repo.pushes().is_empty(), "{url}: destination was pushed");
         assert!(repo
-            .git(&["--git-dir", repo.remote.to_str().unwrap(), "for-each-ref"])
+            .git(&[
+                "--git-dir",
+                repo.remote.to_str().unwrap(),
+                "for-each-ref",
+                "refs/heads/topic"
+            ])
             .is_empty());
         assert_eq!(repo.creates(), 0);
     }
@@ -382,23 +391,33 @@ fn github_https_and_ssh_destinations_match_the_resolved_repository() {
 }
 
 #[test]
-fn unresolved_github_identity_blocks_before_any_push() {
+fn unresolved_github_identity_is_retryable_without_changing_task_state() {
     for response in [
         "not JSON",
         "{}",
         "{\"url\":\"file:///tmp/repository\"}",
         "fail",
     ] {
-        let repo = Repo::new(None, None);
-        if response == "fail" {
-            fs::write(repo.root.join("fail-repository"), "armed").unwrap();
-        } else {
-            fs::write(repo.root.join("repository.json"), response).unwrap();
+        for state in ["implementing", "prechecking", "publishing"] {
+            let repo = Repo::new(None, None);
+            repo.state(state);
+            let before = repo.view();
+            let identity = fs::read(repo.root.join("repository.json")).unwrap();
+            if response == "fail" {
+                fs::write(repo.root.join("fail-repository"), "armed").unwrap();
+            } else {
+                fs::write(repo.root.join("repository.json"), response).unwrap();
+            }
+            decode(repo.publish().output().unwrap(), 1);
+            assert_eq!(repo.view(), before, "{response}: {state}");
+            assert!(repo.pushes().is_empty());
+            assert_eq!(repo.creates(), 0);
+            if response == "fail" {
+                fs::remove_file(repo.root.join("fail-repository")).unwrap();
+            }
+            fs::write(repo.root.join("repository.json"), identity).unwrap();
+            decode(repo.publish().output().unwrap(), 0);
         }
-        let output = decode(repo.publish().output().unwrap(), 4);
-        assert_eq!(output["error"]["code"], "destination_not_github");
-        assert!(repo.pushes().is_empty());
-        assert_eq!(repo.creates(), 0);
     }
 }
 
@@ -899,6 +918,10 @@ fn resumed_publishing_precheck_failure_returns_to_implementing() {
     assert_eq!(view["task"]["state"]["name"], "implementing");
     assert_eq!(precheck(&view)["head"], repo.head);
     assert_eq!(precheck(&view)["passed"], false);
+    let events = view["events"].as_array().unwrap();
+    assert!(events.iter().all(|event| event["to"]["name"] != "blocked"));
+    assert_eq!(events.last().unwrap()["from"]["name"], "publishing");
+    assert_eq!(events.last().unwrap()["to"]["name"], "implementing");
     assert!(repo.pushes().is_empty());
 }
 
@@ -1064,6 +1087,10 @@ fn precheck_timeout_and_interruption_record_failure_without_publication() {
         fs::write(repo.repo.join(".rabi.toml"), &config).unwrap();
         repo.git(&["add", ".rabi.toml"]);
         repo.git(&["commit", "-m", "shorten fixture timeout"]);
+        repo.git(&["push", repo.remote.to_str().unwrap(), "main"]);
+        for entry in fs::read_dir(repo.root.join("git-calls")).unwrap() {
+            fs::remove_file(entry.unwrap().path()).unwrap();
+        }
         // Create a matching table at HEAD without including .rabi.toml in the
         // merge-base diff, so only timeout/interruption is under test.
         repo.git(&[
@@ -1084,6 +1111,9 @@ fn precheck_timeout_and_interruption_record_failure_without_publication() {
 #[test]
 fn missing_precheck_shell_records_environment_block() {
     let repo = Repo::new(Some(&["true"]), None);
+    // Repository resolution now precedes checks; let the gh fixture read its
+    // identity while keeping the precheck shell unavailable on PATH.
+    std::os::unix::fs::symlink("/bin/cat", repo.root.join("bin/cat")).unwrap();
     let output = decode(
         repo.publish()
             .env("PATH", repo.root.join("bin"))
@@ -1144,4 +1174,271 @@ fn non_utf8_inherited_environment_does_not_panic_during_publication() {
         .unwrap();
     decode(output, 0);
     assert_eq!(repo.view()["task"]["state"]["name"], "ci");
+}
+
+#[test]
+fn moving_local_base_refs_cannot_hide_floor_or_precheck_changes() {
+    for (path, expected) in [
+        (".github/example.txt", "floor_changed"),
+        (".rabi/policy.toml", "floor_changed"),
+        ("protected/file", "floor_changed"),
+        (".rabi.toml", "precheck_changed"),
+    ] {
+        for base_ref in ["main", "refs/remotes/origin/main"] {
+            let mut repo = Repo::new(
+                Some(&["true"]),
+                Some("schema = 1\n[[rule]]\npaths = ['protected/**']\nfloor = true\n"),
+            );
+            let target = repo.workspace.join(path);
+            fs::create_dir_all(target.parent().unwrap()).unwrap();
+            fs::write(
+                &target,
+                if path == ".rabi.toml" {
+                    "[precheck]\ncommands = ['false']\n"
+                } else if path == ".rabi/policy.toml" {
+                    "schema = 1\n"
+                } else {
+                    "protected change\n"
+                },
+            )
+            .unwrap();
+            repo.commit("change protected task inputs");
+            repo.git(&["update-ref", "refs/heads/main", &repo.head]);
+            repo.git(&["update-ref", "refs/remotes/origin/main", &repo.head]);
+            let mut task: Value = serde_json::from_slice(&fs::read(&repo.record).unwrap()).unwrap();
+            task["baseRef"] = json!(base_ref);
+            fs::write(&repo.record, serde_json::to_vec(&task).unwrap()).unwrap();
+            let output = decode(repo.publish().output().unwrap(), 4);
+            assert_eq!(output["error"]["code"], expected, "{path}: {base_ref}");
+            assert!(repo.pushes().is_empty());
+            assert_eq!(repo.creates(), 0);
+        }
+    }
+}
+
+#[test]
+fn unavailable_verified_base_is_retryable_without_changing_task_state() {
+    for mode in ["fetch", "missing", "unrelated"] {
+        let repo = Repo::new(
+            Some(&["touch \"$RABI_PUBLISH_FIXTURE/precheck-ran\""]),
+            None,
+        );
+        if mode == "fetch" {
+            fs::write(repo.root.join("fail-fetch"), "armed").unwrap();
+        } else if mode == "missing" {
+            repo.git(&[
+                "--git-dir",
+                repo.remote.to_str().unwrap(),
+                "update-ref",
+                "-d",
+                "refs/heads/main",
+            ]);
+        } else {
+            repo.git(&["checkout", "--orphan", "unrelated"]);
+            repo.git(&["rm", "-rf", "."]);
+            fs::write(repo.repo.join("unrelated"), "independent root\n").unwrap();
+            repo.git(&["add", "."]);
+            repo.git(&["commit", "-m", "independent root"]);
+            repo.git(&[
+                "push",
+                "--force",
+                repo.remote.to_str().unwrap(),
+                "HEAD:refs/heads/main",
+            ]);
+            for entry in fs::read_dir(repo.root.join("git-calls")).unwrap() {
+                fs::remove_file(entry.unwrap().path()).unwrap();
+            }
+        }
+        let before = repo.view();
+        decode(repo.publish().output().unwrap(), 1);
+        assert_eq!(repo.view(), before, "{mode}");
+        assert!(!repo.root.join("precheck-ran").exists());
+        assert!(repo.pushes().is_empty());
+        assert_eq!(repo.creates(), 0);
+    }
+}
+
+#[test]
+fn remote_base_missing_locally_is_fetched_and_may_advance_independently() {
+    let repo = Repo::new(None, None);
+    let writer = repo.root.join("base-writer");
+    repo.git(&[
+        "clone",
+        "--no-local",
+        "--branch",
+        "main",
+        repo.remote.to_str().unwrap(),
+        writer.to_str().unwrap(),
+    ]);
+    repo.git(&[
+        "-C",
+        writer.to_str().unwrap(),
+        "config",
+        "user.name",
+        "fixture",
+    ]);
+    repo.git(&[
+        "-C",
+        writer.to_str().unwrap(),
+        "config",
+        "user.email",
+        "fixture",
+    ]);
+    fs::write(writer.join("remote-only"), "remote base update\n").unwrap();
+    repo.git(&["-C", writer.to_str().unwrap(), "add", "."]);
+    repo.git(&[
+        "-C",
+        writer.to_str().unwrap(),
+        "commit",
+        "-m",
+        "advance remote base",
+    ]);
+    repo.git(&["-C", writer.to_str().unwrap(), "push", "origin", "main"]);
+    let remote_base = repo.git(&["-C", writer.to_str().unwrap(), "rev-parse", "HEAD"]);
+    let missing = repo
+        .base_command("git")
+        .args(["cat-file", "-e", &remote_base])
+        .output()
+        .unwrap();
+    assert!(!missing.status.success());
+    for entry in fs::read_dir(repo.root.join("git-calls")).unwrap() {
+        fs::remove_file(entry.unwrap().path()).unwrap();
+    }
+    decode(repo.publish().output().unwrap(), 0);
+    assert_eq!(repo.git(&["cat-file", "-t", &remote_base]), "commit");
+    assert_eq!(repo.pushes().len(), 1);
+    assert_eq!(repo.view()["task"]["state"]["name"], "ci");
+}
+
+#[test]
+fn symbolic_base_refs_cannot_redirect_the_remote_base_branch() {
+    for (recorded, reference) in [
+        ("main", "refs/heads/main"),
+        ("refs/heads/main", "refs/heads/main"),
+        ("origin/main", "refs/remotes/origin/main"),
+        ("refs/remotes/origin/main", "refs/remotes/origin/main"),
+    ] {
+        let mut repo = Repo::new(None, None);
+        fs::create_dir_all(repo.workspace.join(".github")).unwrap();
+        fs::write(
+            repo.workspace.join(".github/example.txt"),
+            "protected change\n",
+        )
+        .unwrap();
+        repo.commit("change protected task input");
+        // Seed an existing remote branch, then let the agent redirect only
+        // the local alias. The recorded main spelling must select remote main.
+        repo.git(&["update-ref", "refs/heads/weaker", &repo.head]);
+        repo.git(&[
+            "push",
+            repo.remote.to_str().unwrap(),
+            "refs/heads/weaker:refs/heads/weaker",
+        ]);
+        repo.git(&["symbolic-ref", reference, "refs/heads/weaker"]);
+        let mut task: Value = serde_json::from_slice(&fs::read(&repo.record).unwrap()).unwrap();
+        task["baseRef"] = json!(recorded);
+        fs::write(&repo.record, serde_json::to_vec(&task).unwrap()).unwrap();
+        for entry in fs::read_dir(repo.root.join("git-calls")).unwrap() {
+            fs::remove_file(entry.unwrap().path()).unwrap();
+        }
+        let output = decode(repo.publish().output().unwrap(), 4);
+        assert_eq!(output["error"]["code"], "floor_changed", "{recorded}");
+        assert!(repo.pushes().is_empty());
+        assert_eq!(repo.creates(), 0);
+    }
+}
+
+#[test]
+fn replacing_tracking_base_with_local_branch_cannot_choose_an_ambiguous_remote_base() {
+    let mut repo = Repo::new(None, None);
+    fs::create_dir_all(repo.workspace.join(".github")).unwrap();
+    fs::write(
+        repo.workspace.join(".github/example.txt"),
+        "protected change\n",
+    )
+    .unwrap();
+    repo.commit("change protected task input");
+    // Seed both remote candidates, with the hierarchical branch already
+    // containing the protected change, before simulating local ref tampering.
+    repo.git(&[
+        "push",
+        repo.remote.to_str().unwrap(),
+        "refs/heads/topic:refs/heads/origin/main",
+    ]);
+    repo.git(&["update-ref", "-d", "refs/remotes/origin/main"]);
+    repo.git(&["update-ref", "refs/heads/origin/main", &repo.head]);
+    let mut task: Value = serde_json::from_slice(&fs::read(&repo.record).unwrap()).unwrap();
+    task["baseRef"] = json!("origin/main");
+    fs::write(&repo.record, serde_json::to_vec(&task).unwrap()).unwrap();
+    for entry in fs::read_dir(repo.root.join("git-calls")).unwrap() {
+        fs::remove_file(entry.unwrap().path()).unwrap();
+    }
+    let before = repo.view();
+    let output = decode(repo.publish().output().unwrap(), 1);
+    assert!(output["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("refs/heads/"));
+    assert_eq!(repo.view(), before);
+    assert!(repo.pushes().is_empty());
+    assert_eq!(repo.creates(), 0);
+}
+
+#[test]
+fn unambiguous_hierarchical_and_explicit_hex_bases_do_not_need_local_refs() {
+    for (recorded, branch) in [
+        ("release/stable".to_owned(), "release/stable".to_owned()),
+        (
+            "refs/heads/release/stable".to_owned(),
+            "release/stable".to_owned(),
+        ),
+        (format!("refs/heads/{}", "a".repeat(40)), "a".repeat(40)),
+    ] {
+        let repo = Repo::new(None, None);
+        repo.git(&[
+            "push",
+            repo.remote.to_str().unwrap(),
+            &format!("refs/heads/main:refs/heads/{branch}"),
+        ]);
+        let mut task: Value = serde_json::from_slice(&fs::read(&repo.record).unwrap()).unwrap();
+        task["baseRef"] = json!(recorded);
+        fs::write(&repo.record, serde_json::to_vec(&task).unwrap()).unwrap();
+        for entry in fs::read_dir(repo.root.join("git-calls")).unwrap() {
+            fs::remove_file(entry.unwrap().path()).unwrap();
+        }
+        decode(repo.publish().output().unwrap(), 0);
+        let create = fs::read_dir(repo.root.join("gh-calls"))
+            .unwrap()
+            .map(|entry| fs::read(entry.unwrap().path()).unwrap())
+            .find(|args| args.starts_with(b"pr\0create\0"))
+            .unwrap();
+        let args: Vec<_> = create.split(|byte| *byte == 0).collect();
+        assert!(args
+            .windows(2)
+            .any(|pair| pair == [b"--base".as_slice(), branch.as_bytes()]));
+        assert_eq!(repo.pushes().len(), 1);
+    }
+}
+
+#[test]
+fn invalid_or_commit_only_base_spellings_refuse_without_task_changes() {
+    for recorded in [
+        "a".repeat(40),
+        "a".repeat(64),
+        "refs/tags/main".into(),
+        "refs/remotes/origin".into(),
+        "main~1".into(),
+        "feature//invalid".into(),
+        "refs/heads/".into(),
+    ] {
+        let repo = Repo::new(None, None);
+        let mut task: Value = serde_json::from_slice(&fs::read(&repo.record).unwrap()).unwrap();
+        task["baseRef"] = json!(recorded);
+        fs::write(&repo.record, serde_json::to_vec(&task).unwrap()).unwrap();
+        let before = repo.view();
+        decode(repo.publish().output().unwrap(), 2);
+        assert_eq!(repo.view(), before, "{recorded}");
+        assert!(repo.pushes().is_empty());
+        assert_eq!(repo.creates(), 0);
+    }
 }

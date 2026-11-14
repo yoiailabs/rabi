@@ -508,10 +508,10 @@ impl Repository {
     }
 }
 
-fn destination(workspace: &Path, url: &str) -> Result<String> {
-    let recorded = Repository::parse(url).ok_or_else(|| {
-        Error::msg("Push destination must be an HTTPS or SSH GitHub repository URL")
-    })?;
+fn destination(workspace: &Path, url: &str) -> Result<Option<String>> {
+    let Some(recorded) = Repository::parse(url) else {
+        return Ok(None);
+    };
     // Do not pass the recorded host as --repo: an arbitrary host must not be
     // allowed to authorize itself. gh resolves GitHub (including configured
     // Enterprise hosts) independently using the task checkout's context.
@@ -525,11 +525,9 @@ fn destination(workspace: &Path, url: &str) -> Result<String> {
         .and_then(Repository::parse)
         .ok_or_else(|| Error::msg("Cannot resolve task GitHub repository"))?;
     if recorded != resolved {
-        return Err(Error::msg(
-            "Recorded push destination does not match the task's GitHub repository",
-        ));
+        return Ok(None);
     }
-    Ok(resolved.selector())
+    Ok(Some(resolved.selector()))
 }
 
 fn gh(workspace: &Path, repo: &str, args: &[&str]) -> Result<String> {
@@ -599,6 +597,46 @@ fn pull_list(workspace: &Path, task: &Task, repository: &str) -> Result<Option<P
     Ok(pull)
 }
 
+/// Candidate names come only from the trusted record. Short names with a
+/// slash may denote a local branch or a remote-tracking spelling, so only the
+/// verified remote can disambiguate them; mutable local refs cannot choose.
+fn base_candidates(workspace: &Path, recorded: &str) -> Result<Vec<String>> {
+    let candidates = if let Some(branch) = recorded.strip_prefix("refs/heads/") {
+        vec![branch.to_owned()]
+    } else if let Some(tracking) = recorded.strip_prefix("refs/remotes/") {
+        let (remote, branch) = tracking
+            .split_once('/')
+            .ok_or_else(|| Error::validation("Task publish requires a named base branch"))?;
+        if remote.is_empty() {
+            return Err(Error::validation(
+                "Task publish requires a named base branch",
+            ));
+        }
+        vec![branch.to_owned()]
+    } else if recorded.starts_with("refs/")
+        || (matches!(recorded.len(), 40 | 64)
+            && recorded.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return Err(Error::validation(
+            "Task publish requires a named base branch; commit-only bases cannot open a PR",
+        ));
+    } else if let Some((_, branch)) = recorded.split_once('/') {
+        vec![recorded.to_owned(), branch.to_owned()]
+    } else {
+        vec![recorded.to_owned()]
+    };
+    for branch in &candidates {
+        let reference = format!("refs/heads/{branch}");
+        let valid = super::capture(workspace, &["check-ref-format", &reference])?;
+        if !valid.status.success() {
+            return Err(Error::validation(
+                "Task publish requires a valid named base branch",
+            ));
+        }
+    }
+    Ok(candidates)
+}
+
 pub(crate) fn execute(root: &Path, selector: Option<&str>) -> Result<Report> {
     crate::run::require_trust(root)?;
     let _read = super::boundary::git_read_scope();
@@ -617,30 +655,9 @@ pub(crate) fn execute(root: &Path, selector: Option<&str>) -> Result<Report> {
     }
     let workspace = super::implement::workspace(root, &task)?;
     let metadata = super::implement::git_metadata_snapshot(&workspace)?;
-    let report = super::inspect(&workspace, Some(&task.base_ref))?;
-    let head = &report.head;
-    let base_name = super::text(
-        &workspace,
-        &[
-            "rev-parse",
-            "--symbolic-full-name",
-            "--verify",
-            "--end-of-options",
-            &task.base_ref,
-        ],
-    )?;
-    let base_branch = if let Some(branch) = base_name.strip_prefix("refs/heads/") {
-        branch.to_owned()
-    } else if let Some(tracking) = base_name.strip_prefix("refs/remotes/") {
-        tracking
-            .split_once('/')
-            .map(|(_, branch)| branch.to_owned())
-            .ok_or_else(|| Error::validation("Task publish requires a named base branch"))?
-    } else {
-        return Err(Error::validation(
-            "Task publish requires a named base branch; commit-only bases cannot open a PR",
-        ));
-    };
+    let head = super::commit(&workspace, "HEAD")?;
+    let head = head.as_str();
+    let base_candidates = base_candidates(&workspace, &task.base_ref)?;
     if populated_submodules(&workspace)? {
         return Err(Error::status(REFUSED, "Task publish cannot verify a clean tree with populated submodules or retained submodule data"));
     }
@@ -649,6 +666,64 @@ pub(crate) fn execute(root: &Path, selector: Option<&str>) -> Result<Report> {
             code: "dirty",
             message: "Task publish requires a clean committed tree".into(),
         });
+    }
+    let repository = destination(&workspace, &task.push_remote_url)?.ok_or_else(|| {
+        block(
+            &store,
+            &mut task,
+            BlockReason::DestinationNotGithub,
+            "destination_not_github",
+            "Recorded push URL must match the GitHub repository resolved by gh for this task; no push performed",
+        )
+    })?;
+    let publisher = Publisher::new(&workspace, head)?;
+    let mut bases = Vec::new();
+    for branch in base_candidates {
+        let reference = format!("refs/heads/{branch}");
+        if let Some(sha) = publisher.remote_head(&task.push_remote_url, &reference)? {
+            bases.push((branch, sha));
+        }
+    }
+    if bases.is_empty() {
+        return Err(Error::msg(
+            "Cannot resolve task base at recorded push destination; retry task publish",
+        ));
+    }
+    if bases.len() != 1 {
+        return Err(Error::msg(
+            "Task base is ambiguous at recorded push destination; use a full refs/heads/ or refs/remotes/ base spelling",
+        ));
+    }
+    let (base_branch, base) = bases.remove(0);
+    // Fetch only the independently observed object ID into disposable metadata.
+    // Neither local branch/tracking refs nor agent-writable config can select
+    // the base, redirect this fetch, or change its ref destinations.
+    let fetched = publisher.git(&[
+        "fetch",
+        "--no-tags",
+        "--no-write-fetch-head",
+        "--no-recurse-submodules",
+        "--no-auto-maintenance",
+        "--",
+        &task.push_remote_url,
+        &base,
+    ])?;
+    if fetched.code != 0 {
+        return Err(Error::msg(
+            "Cannot obtain verified task base; retry task publish",
+        ));
+    }
+    let inspection = publisher.temporary.path();
+    let report = super::inspect(inspection, Some(&base))?;
+    // Allow the remote base to have advanced since the task branched, but
+    // require a verifiable common ancestor on both exact commit histories.
+    for tip in [&base, &report.head] {
+        let ancestor = publisher.git(&["merge-base", "--is-ancestor", &report.merge_base, tip])?;
+        if ancestor.code != 0 {
+            return Err(Error::msg(
+                "Cannot verify task base ancestry; retry task publish",
+            ));
+        }
     }
     if task.state == TaskState::Implementing {
         event(
@@ -660,8 +735,8 @@ pub(crate) fn execute(root: &Path, selector: Option<&str>) -> Result<Report> {
             None,
         )?;
     }
-    let head_config = configuration(&workspace, head)?;
-    let base_config = configuration(&workspace, &report.base.sha)?;
+    let head_config = configuration(inspection, head)?;
+    let base_config = configuration(inspection, &report.base.sha)?;
     if precheck_value(head_config.as_deref())? != precheck_value(base_config.as_deref())? {
         let current = task.state;
         event(
@@ -760,16 +835,6 @@ pub(crate) fn execute(root: &Path, selector: Option<&str>) -> Result<Report> {
                 "A precheck tool is missing; repair the environment",
             ));
         }
-        if task.state == TaskState::Publishing {
-            event(
-                &store,
-                &mut task,
-                TaskState::Blocked(BlockReason::RecordMismatch),
-                "precheck_failed",
-                None,
-                None,
-            )?;
-        }
         event(
             &store,
             &mut task,
@@ -810,15 +875,6 @@ pub(crate) fn execute(root: &Path, selector: Option<&str>) -> Result<Report> {
             "Task tree or HEAD changed before publication",
         ));
     }
-    let repository = destination(&workspace, &task.push_remote_url).map_err(|_| {
-        block(
-            &store,
-            &mut task,
-            BlockReason::DestinationNotGithub,
-            "destination_not_github",
-            "Recorded push URL must match the GitHub repository resolved by gh for this task; no push performed",
-        )
-    })?;
     if task.state == TaskState::Prechecking {
         event(
             &store,
@@ -829,7 +885,6 @@ pub(crate) fn execute(root: &Path, selector: Option<&str>) -> Result<Report> {
             None,
         )?;
     }
-    let publisher = Publisher::new(&workspace, head)?;
     let reference = format!("refs/heads/{}", task.branch);
     let remote = publisher.remote_head(&task.push_remote_url, &reference)?;
     if let Some(remote) = remote.as_deref().filter(|remote| *remote != head) {
@@ -957,7 +1012,7 @@ pub(crate) fn execute(root: &Path, selector: Option<&str>) -> Result<Report> {
     ).map_err(|_| Error::status(crate::error::PARTIAL, "Publication completed but task record could not advance; rerun task publish to reconcile"))?;
     Ok(Report {
         task_id: task.id,
-        head: head.clone(),
+        head: head.to_owned(),
         pr_number: number,
         state: task.state,
     })

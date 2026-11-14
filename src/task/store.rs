@@ -54,7 +54,10 @@ const TRANSITIONS: &[(&str, &[&str])] = &[
         "prechecking",
         &["publishing", "implementing", "blocked", "abandoned"],
     ),
-    ("publishing", &["ci", "blocked", "abandoned"]),
+    (
+        "publishing",
+        &["ci", "implementing", "blocked", "abandoned"],
+    ),
     ("ci", &["reviewing", "implementing", "blocked", "abandoned"]),
     (
         "reviewing",
@@ -864,6 +867,7 @@ mod tests {
             (AwaitingApproval, Merging),
             (Merging, Merged),
             (Prechecking, Implementing),
+            (Publishing, Implementing),
             (Ci, Implementing),
             (Reviewing, Implementing),
             (AwaitingApproval, Implementing),
