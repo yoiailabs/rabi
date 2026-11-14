@@ -593,6 +593,7 @@ fn post_launch_metadata_changes_are_recorded_before_any_further_git_command() {
     for provider in ["codex", "claude"] {
         for kind in [
             "gitdir",
+            "redirect",
             "commondir",
             "backlink",
             "admin-symlink",
@@ -600,6 +601,15 @@ fn post_launch_metadata_changes_are_recorded_before_any_further_git_command() {
             "pointer-symlink",
         ] {
             let repo = Repo::new();
+            if kind == "redirect" {
+                fs::create_dir(repo.root.join("elsewhere")).unwrap();
+                repo.git(&[
+                    "-C",
+                    repo.root.join("elsewhere").to_str().unwrap(),
+                    "init",
+                    "--template=",
+                ]);
+            }
             let wrapper = format!(
                 r#"#!/bin/sh
 set -eu
@@ -618,6 +628,7 @@ common="$RABI_IMPLEMENT_FIXTURE/repo/.git"
 admin="$common/worktrees/workspace"
 case "$RABI_IMPLEMENT_TAMPER" in
   gitdir) printf 'gitdir: %s\n' "$common/hooks" > .git ;;
+  redirect) printf 'gitdir: %s\n' "$RABI_IMPLEMENT_FIXTURE/elsewhere/.git" > .git ;;
   commondir) printf '%s\n' "$RABI_IMPLEMENT_FIXTURE/elsewhere" > "$admin/commondir" ;;
   backlink) printf '%s\n' "$RABI_IMPLEMENT_FIXTURE/elsewhere/.git" > "$admin/gitdir" ;;
   admin-symlink)
@@ -658,6 +669,94 @@ touch "$RABI_IMPLEMENT_FIXTURE/provider-finished"
             let view = repo.view();
             assert_eq!(view["events"][2]["agent"], report["data"]);
         }
+    }
+}
+
+#[test]
+fn post_launch_inspection_pins_metadata_even_when_pointers_change_after_validation() {
+    let real_git = Command::new("sh")
+        .args(["-c", "command -v git"])
+        .output()
+        .unwrap();
+    assert!(real_git.status.success());
+    let real_git = String::from_utf8(real_git.stdout).unwrap();
+    for provider in ["codex", "claude"] {
+        let repo = Repo::new();
+        let original = repo.git(&["rev-parse", "HEAD"]);
+        let elsewhere = repo.root.join("elsewhere");
+        fs::create_dir(&elsewhere).unwrap();
+        repo.git(&["-C", elsewhere.to_str().unwrap(), "init", "--template="]);
+        repo.git(&[
+            "-C",
+            elsewhere.to_str().unwrap(),
+            "-c",
+            "user.name=fixture",
+            "-c",
+            "user.email=fixture",
+            "commit",
+            "--allow-empty",
+            "-m",
+            "Unrelated repository",
+        ]);
+        let wrapper = format!(
+            r#"#!/bin/sh
+set -eu
+if [ -e "$RABI_IMPLEMENT_FIXTURE/provider-finished" ]; then
+  if [ ! -e "$RABI_IMPLEMENT_FIXTURE/inspection-started" ]; then
+    touch "$RABI_IMPLEMENT_FIXTURE/inspection-started"
+    printf 'gitdir: %s\n' "$RABI_IMPLEMENT_FIXTURE/elsewhere/.git" > "$RABI_IMPLEMENT_FIXTURE/workspace/.git"
+  fi
+  printf '%s\000' "$@" >> "$RABI_IMPLEMENT_FIXTURE/post-git-argv"
+  printf '%s\n' "${{GIT_COMMON_DIR:-missing}}" >> "$RABI_IMPLEMENT_FIXTURE/post-git-common"
+  '{}' "$@" > "$RABI_IMPLEMENT_FIXTURE/inspection-output" 2>> "$RABI_IMPLEMENT_FIXTURE/inspection-error"
+  cat "$RABI_IMPLEMENT_FIXTURE/inspection-output" >> "$RABI_IMPLEMENT_FIXTURE/all-inspection-output"
+  cat "$RABI_IMPLEMENT_FIXTURE/inspection-output"
+  exit 0
+fi
+exec '{}' "$@"
+"#,
+            real_git.trim().replace('\'', "'\\''"),
+            real_git.trim().replace('\'', "'\\''"),
+        );
+        test_support::write_executable(repo.root.join("bin/git"), wrapper).unwrap();
+        test_support::write_executable(
+                repo.root.join("bin").join(provider),
+                "#!/bin/sh\nset -eu\ncat >/dev/null\ntouch \"$RABI_IMPLEMENT_FIXTURE/provider-finished\"\n",
+            )
+            .unwrap();
+        let mut command = repo.implement(provider);
+        let mut capture = test_wait::OutputCapture::new();
+        capture.apply(&mut command);
+        let mut child = command.spawn().unwrap();
+        let output = capture.finish(&mut child);
+        let report = decode(output, 4);
+        assert_eq!(report["data"]["stopReason"], "metadata_changed");
+        for field in ["postHead", "newCommits", "dirty"] {
+            assert!(report["data"][field].is_null(), "{provider}: {field}");
+        }
+        assert!(
+            repo.file("all-inspection-output")
+                .lines()
+                .any(|line| line == original),
+            "{provider}: inspection did not read the original HEAD: {}; errors: {}",
+            repo.file("all-inspection-output"),
+            repo.file("inspection-error")
+        );
+        let common = fs::canonicalize(repo.repo.join(".git")).unwrap();
+        let common_log = repo.file("post-git-common");
+        assert!(common_log.lines().all(|line| Path::new(line) == common));
+        let arguments = fs::read(repo.root.join("post-git-argv")).unwrap();
+        let arguments: Vec<_> = arguments.split(|byte| *byte == 0).collect();
+        let git_dir = common.join("worktrees/workspace");
+        use std::os::unix::ffi::OsStrExt;
+        assert!(arguments
+            .windows(2)
+            .any(|pair| pair == [b"--git-dir", git_dir.as_os_str().as_bytes()]));
+        assert!(arguments
+            .windows(2)
+            .any(|pair| pair == [b"--work-tree", repo.workspace.as_os_str().as_bytes()]));
+        let view = repo.view();
+        assert_eq!(view["events"][2]["agent"], report["data"]);
     }
 }
 

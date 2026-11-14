@@ -147,6 +147,41 @@ fn task_implement_guidance_documents_claude_auto_mode_and_denied_prompts() {
 }
 
 #[test]
+fn task_implement_guidance_pins_metadata_changed_exit_and_json_outcome() {
+    for (name, document) in [
+        ("commands", include_str!("../docs/commands.md")),
+        ("exit codes", include_str!("../docs/exit-codes.md")),
+        ("JSON", include_str!("../docs/json.md")),
+    ] {
+        for outcome in [
+            "exit 4 (`refused`)",
+            "data.exitCode: 4",
+            "data.stopReason: \"metadata_changed\"",
+            "postHead: null",
+            "newCommits: null",
+            "dirty: null",
+            "ok: false",
+            "error.code: \"refused\"",
+        ] {
+            assert!(document.contains(outcome), "{name} is missing {outcome}");
+        }
+    }
+    let help: serde_json::Value = serde_json::from_str(include_str!("../help-data.json")).unwrap();
+    let notes = help["helps"]["task implement"]["notes"].as_array().unwrap();
+    let metadata = notes
+        .iter()
+        .filter_map(serde_json::Value::as_str)
+        .find(|note| note.contains("metadata_changed"))
+        .expect("Task implement help must document metadata changes");
+    for outcome in ["exit 4 (refused)", "null postHead/newCommits/dirty"] {
+        assert!(metadata.contains(outcome), "help is missing {outcome}");
+    }
+    for document in [README, README_JA, include_str!("../skills/rabi/SKILL.md")] {
+        assert!(document.contains("stopReason: \"metadata_changed\""));
+    }
+}
+
+#[test]
 fn task_advance_guidance_covers_waiting_limits_and_untrusted_logs() {
     let help: serde_json::Value = serde_json::from_str(include_str!("../help-data.json")).unwrap();
     assert!(help["helps"]["task advance"].is_object());

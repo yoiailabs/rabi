@@ -93,6 +93,12 @@ launches one foreground Codex or Claude attempt, permits dirty work and records
 pre/post HEAD and status. Only the first launch moves `new` to `implementing`;
 provider exit 0 never means ready or merged. Advance cannot start `new`.
 
+If the post-launch Git metadata recheck fails, `task implement` exits 4 with
+`stopReason: "metadata_changed"`; JSON retains the launch outcome with null
+`postHead`, `newCommits` and `dirty`. Inspect and repair Git registration before
+retrying. Post-launch inspection pins the Git directory and common directory
+validated before launch.
+
 Advance runs one step without `--wait`. With it, the chain is implementation →
 precheck → publish (draft PR) → CI → review → ready → classify → approval/auto-merge
 → safe cleanup. Failed checks/review can return to implementation. Retry usage is

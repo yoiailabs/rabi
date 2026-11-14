@@ -193,6 +193,9 @@ fn implementing(
     config: &crate::config::Factory,
 ) -> Result<Report> {
     let workspace = implement::workspace(root, task)?;
+    // Keep the pre-launch selection through task reload and ancestry checks
+    // after execute_locked returns, including nested credential/read scopes.
+    let _repository = implement::git_metadata_snapshot(&workspace)?.pin();
     let head = super::commit(&workspace, "HEAD")?;
     let evaluated = last_evaluated(store, task)?;
     if !super::dirty(&workspace)?

@@ -64,6 +64,8 @@ rabi task show "$task_id" --json
 
 Exit 10 means waiting for CI or maintainer approval; exit 4 means blocked/refused. Read `task.state.reason` and events in `task show --json`; an exit-0 step does not by itself mean merged. See the [state and recovery tables](docs/commands.md#task-lifecycle) and [exit codes](docs/exit-codes.md).
 
+`task implement` also exits 4 with `stopReason: "metadata_changed"` if its post-launch Git metadata recheck fails. Inspect and repair Git registration before retrying; see [implementation outcomes](docs/json.md#local-task-store).
+
 ## Approval
 
 Only policy-listed low/medium tiers without a floor may merge without approval; the default auto set is empty. High, floors, and missing/failed/uncertain classification require a maintainer. Review output is never approval. Automation never runs `rabi task approve`, unsets `RABI_AGENT` to bypass it, or posts a success `rabi/approval` status.

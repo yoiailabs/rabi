@@ -28,6 +28,8 @@ See [Upgrading to v8](docs/upgrading-to-v8.md) for migration steps and the [v8.0
 
 ### Fixed
 
+- Post-launch `task implement` Git inspections pin the Git directory and common directory validated before the agent ran. Redirected metadata stops with exit 4 (`refused`), `stopReason: "metadata_changed"` and null post-launch Git facts; command, exit-code and JSON references now document this outcome.
+
 - Landing blocks remote-only PR head movement, non-descendant local heads and dirty re-derivation before an implementer can launch. Standalone `task merge` requires the same event-bound earned review pass as advance unless `--external-review` is supplied. (#959)
 
 - Secret redaction recognizes assignment suffixes and credential prefixes after underscores and punctuation while preserving non-secret diagnostic words and failure fingerprints. Publication and remote branch deletion explicitly disable Git hooks. `remove --keep-branch` retains preservation evidence in JSON and gc text. (#959)
