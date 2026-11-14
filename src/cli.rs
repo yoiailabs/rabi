@@ -934,6 +934,55 @@ fn task_store(args: &[String], command: &str) -> Result<i32> {
     }
 }
 
+fn task_implement(args: &[String]) -> Result<i32> {
+    let parsed = args::parse(args, &command_options("task implement"), true)?;
+    let provider = single_value(&parsed, "provider")?
+        .map(crate::task::implement::Provider::parse)
+        .transpose()?
+        .unwrap_or_default();
+    let timeout = single_value(&parsed, "timeout")?
+        .map(crate::run::timeout)
+        .transpose()?
+        .unwrap_or(std::time::Duration::from_secs(60 * 60));
+    let (selector, message) = match parsed.positionals.as_slice() {
+        [] => (None, None),
+        [message] if message == "-" => (None, Some(message.as_str())),
+        [selector] => (Some(selector.as_str()), None),
+        [selector, message] => (Some(selector.as_str()), Some(message.as_str())),
+        _ => return Err(Error::validation("Usage: rabi task implement [SEL] [--provider codex|claude] [--timeout DUR] [MESSAGE|-]")),
+    };
+    let message = match message {
+        Some("-") => {
+            use std::io::Read;
+            let mut message = String::new();
+            std::io::stdin()
+                .read_to_string(&mut message)
+                .map_err(|_| Error::msg("Cannot read implementer message"))?;
+            Some(message)
+        }
+        Some(message) => Some(message.to_owned()),
+        None => None,
+    };
+    let repository = selected_repository(&parsed)?;
+    let cwd = std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?;
+    let root = repository.as_deref().unwrap_or(&cwd);
+    crate::git::git_root(root)?;
+    let report =
+        crate::task::implement::execute(root, selector, provider, timeout, message.as_deref())?;
+    emit_json(&report)?;
+    if !crate::output::json() {
+        outln!("Task implementer exited with status {}", report.exit_code);
+    }
+    if report.exit_code != 0 {
+        crate::output::failure(
+            Error::msg("Task implementation attempt did not complete successfully")
+                .to_json(report.exit_code)
+                .error,
+        );
+    }
+    Ok(report.exit_code)
+}
+
 fn task_status(args: &[String]) -> Result<i32> {
     task_github(args, "task status")
 }
@@ -2134,6 +2183,11 @@ fn command_options(key: &str) -> Vec<Opt> {
         "task show" => vec![repo_flag()],
         "task abandon" => vec![repo_flag(), value_flag("reason", None)],
         "task risk" => vec![repo_flag(), value_flag("base", None)],
+        "task implement" => vec![
+            repo_flag(),
+            value_flag("provider", None),
+            value_flag("timeout", None),
+        ],
         "task classify" => vec![
             repo_flag(),
             value_flag("base", None),
@@ -2724,6 +2778,12 @@ static COMMANDS: &[Command] = &[
         help_key: "task",
         run: task_root,
         children: &[
+            Command {
+                name: "implement",
+                help_key: "task implement",
+                run: task_implement,
+                children: &[],
+            },
             Command {
                 name: "new",
                 help_key: "task new",

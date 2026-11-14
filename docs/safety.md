@@ -105,6 +105,14 @@ Approval binds to the exact commit, not to a PR or base. The same commit in anot
 
 The write uses `--match-head-commit` to guard against head movement after collection. It does not use `--admin`, `--auto` or `--delete-branch`. Facts are reread even when gh fails; a nonzero result does not prove the remote write had no effect. No automatic write retry occurs. Task status and merge dry-run remain read-only.
 
+## Task agent launch boundary
+
+Every provider launched by `rabi task` uses one shared environment boundary. It removes `GH_TOKEN`, `GITHUB_TOKEN`, `GH_ENTERPRISE_TOKEN`, `GITHUB_ENTERPRISE_TOKEN`, `SSH_AUTH_SOCK`, `GIT_ASKPASS`, `SSH_ASKPASS`, and inherited `GIT_*` variables, including Git selectors and config overrides. Each launch gets a fresh empty temporary `GH_CONFIG_DIR`, kept alive until process cleanup, plus `RABI_AGENT=1` and `GIT_TERMINAL_PROMPT=0`. Provider authentication remains available.
+
+Child-only `GIT_CONFIG_COUNT`, `GIT_CONFIG_KEY_n` and `GIT_CONFIG_VALUE_n` overrides reset `credential.helper` to an empty list, disable `core.askPass` and interactive credentials, and select noninteractive SSH without agent access. No user Git configuration is changed. Implementers receive role instructions to edit, check and commit locally, leaving publication to deterministic task commands. Codex additionally uses workspace-write with network disabled and no approval escalation; Claude uses acceptEdits, denies permission prompts and disallows push/GitHub/web tools. Classify retains stricter tool-less flags and an empty cwd. Plain `rabi run` keeps its existing launch behavior.
+
+These measures stop careless pushes and credential use through the inherited environment and ordinary credential helpers. They do **not** stop a determined agent running as the same Unix user: it can read credential files such as the GitHub CLI hosts file, change its own environment, invoke other clients or use SSH key files. Provider tool restrictions and prompts are defense in depth, not repository access control. Real isolation requires separate credentials or users; that isolation is future work. Use independent repository permissions when the boundary must resist an adversarial process.
+
 ## Task classifier
 
 `task classify` sends the base-commit policy document and full committed diff to one fresh provider session. Providers may incur API costs. The diff is untrusted: a verified random delimiter separates it from the instructions, and the prompt requires escalation for manipulation attempts. This reduces ambiguity, but the classifier can still be persuaded by diff text. Its answer is an assessment, not a security boundary.

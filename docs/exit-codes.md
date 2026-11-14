@@ -11,8 +11,8 @@
 | 4 | Safety refusal before changes | `dirty`, `unpreserved`, `published`, `exists`, `exists_remote`, `untrusted`, `primary`, `refused` |
 | 5 | Sync conflict, rolled back or kept with `--keep-conflicts` | `conflict` |
 | 6 | Persistent changes followed by failure or partial success | `partial` |
-| 124 | Run wall-clock timeout | `failed` |
-| 130 | Run interrupted by SIGINT/SIGTERM | `failed` |
+| 124 | Agent launch wall-clock timeout | `failed` |
+| 130 | Agent launch interrupted by SIGINT/SIGTERM | `failed` |
 
 `refused` is the fallback safety error when no more specific code applies. Text and JSON use the same exit codes. Standalone `exec` preserves its child’s status, including 128+signal, and does not return an envelope.
 
@@ -31,3 +31,5 @@ GC plans and protected skips succeed with exit 0. A warning does not by itself m
 `task new|list|show|abandon` reuse these codes: 0 for success (including list entries displayed as blocked with warnings), 1 (`failed`) for corrupt or unreadable task records/events, invalid or mismatched repository manifests, and other store/Git/remote-resolution failures, 2 (`usage`) for invalid intent/branch/base, branch reservations, short or ambiguous ID prefixes, or terminal transitions, and 3 (`not_found`) for an absent task ID. No exit codes are added.
 
 Task record errors in show/abandon name the task ID. Creation fails closed with exit 1 and the unreadable task ID when it cannot verify branch reservations. Incomplete `.staging-<uuid>` directories are ignored. Invalid record data is an operational failure, not a usage error.
+
+`task implement` passes through the provider status (signals use 128+signal); exit 0 does not declare task completion. Timeout returns 124 and SIGINT/SIGTERM received by rabi returns 130 after process-group cleanup. Launch/store/Git failures use 1, invalid arguments use 2, absent tasks use 3, and untrusted repositories, concurrent launches, invalid task states or unavailable linked workspaces use 4. Events and local edits/commits are retained after provider failure.

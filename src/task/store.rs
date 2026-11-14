@@ -122,7 +122,7 @@ pub(crate) struct Task {
     pub branch: String,
     base_ref: String,
     push_remote_url: String,
-    workspace_path: Option<PathBuf>,
+    pub workspace_path: Option<PathBuf>,
     pr_number: Option<u64>,
 }
 
@@ -135,6 +135,8 @@ pub(crate) struct Event {
     reason: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     detail: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    agent: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -466,6 +468,7 @@ impl Store {
             to: TaskState::New,
             reason: "created".into(),
             detail: None,
+            agent: None,
         };
         self.save(directory, &task, &event)?;
         io(File::open(directory).and_then(|file| file.sync_all()))?;
@@ -490,6 +493,96 @@ impl Store {
             &directory.join("task.json"),
             &encode(task)?,
         ))
+    }
+
+    pub fn implementation_task(&self, selector: Option<&str>) -> Result<Task> {
+        let id = if let Some(selector) = selector.filter(|value| *value != ".") {
+            self.resolve(selector)?
+        } else {
+            let branch = git::current_branch(&self.root)?;
+            let mut matching = Vec::new();
+            for id in self.ids()? {
+                let task = self.load(&id)?;
+                if task.branch == branch && !task.state.terminal() {
+                    matching.push(id);
+                }
+            }
+            match matching.as_slice() {
+                [id] => id.clone(),
+                [] => {
+                    return Err(Error::Status {
+                        code: "not_found",
+                        message: "No active task matches the current branch; specify a task ID"
+                            .into(),
+                    })
+                }
+                _ => {
+                    return Err(Error::validation(
+                        "Ambiguous current task; specify a task ID",
+                    ))
+                }
+            }
+        };
+        self.events(&id)?;
+        self.load(&id)
+    }
+
+    pub fn implementation_lock(&self, task: &Task) -> Result<File> {
+        let file = open(&self.path.join(&task.id).join(".implement.lock"), true)?;
+        file.try_lock().map_err(|_| {
+            Error::status(crate::error::REFUSED, "Task implementer is already running")
+        })?;
+        Ok(file)
+    }
+
+    pub fn implementation_event(
+        &self,
+        id: &str,
+        workspace: &Path,
+        start: bool,
+        data: serde_json::Value,
+    ) -> Result<()> {
+        let directory = self.path.join(id);
+        if !io(fs::symlink_metadata(&directory))?.is_dir() {
+            return Err(Error::msg("Task directory must not be a symlink"));
+        }
+        let _lock = lock(&directory.join(".lock"))?;
+        let mut task = self.load(id)?;
+        self.events(id)?;
+        let mut event = if start {
+            match task.state {
+                TaskState::New => {
+                    transition(&mut task, TaskState::Implementing, "implementation_started")?
+                }
+                TaskState::Implementing => Event {
+                    at: now(),
+                    from: Some(task.state),
+                    to: task.state,
+                    reason: "implementation_started".into(),
+                    detail: None,
+                    agent: None,
+                },
+                _ => {
+                    return Err(Error::status(
+                        crate::error::REFUSED,
+                        "Task must be new or implementing",
+                    ))
+                }
+            }
+        } else {
+            Event {
+                at: now(),
+                from: Some(task.state),
+                to: task.state,
+                reason: "implementation_finished".into(),
+                detail: None,
+                agent: None,
+            }
+        };
+        event.agent = Some(data);
+        task.workspace_path = Some(workspace.to_path_buf());
+        task.updated_at = event.at.clone();
+        self.save(&directory, &task, &event)
     }
 
     pub fn transition(&self, prefix: &str, to: TaskState, reason: &str) -> Result<View> {
@@ -535,6 +628,7 @@ fn transition(task: &mut Task, to: TaskState, reason: &str) -> Result<Event> {
         to,
         reason: reason.into(),
         detail: None,
+        agent: None,
     };
     task.state = to;
     task.updated_at = event.at.clone();

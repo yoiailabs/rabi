@@ -54,7 +54,21 @@ Allowed transitions are defined in one data table in the implementation:
 | `blocked` | Any non-terminal state (including itself), or `abandoned` |
 | `merged`, `abandoned` | None (terminal) |
 
-Only creation and abandonment are exposed as mutations by these commands. The other states and edges describe the local model; they do not execute any workflow.
+Creation and abandonment mutate the store directly. `task implement` also records launches and advances `new` to `implementing`; the remaining states and edges describe the local model without executing a workflow.
+
+## Task implement
+
+`rabi task implement [SEL] [--provider codex|claude] [--timeout DUR] [MESSAGE|-] [--json|--output text|json]` launches one fresh implementer session in the foreground. Codex is the default. SEL accepts a full task ID or a unique prefix of at least six characters, like `task show`; omitted SEL or `.` selects the unique non-terminal task on the current branch. Give SEL before a quoted MESSAGE; `-` reads the message from stdin. Global `-R/--repo` selects the task's repository.
+
+The repository must already be trusted (`rabi trust add` or `RABI_TRUST_ALL=1`). The task must be `new` or `implementing`, and its reserved branch must already be checked out in an existing linked workspace in that repository. This command creates no branch or workspace and refuses primary checkouts. After recording a task, create its checkout separately, for example with `rabi create <recorded-branch> --base <recorded-base> --no-setup`, then launch by task ID. List/show can display a branch/state mismatch between checkout creation and the first implementation launch; implementation validates the saved `new` state and checkout together before advancing it.
+
+Uncommitted changes are allowed, including staged and untracked work. rabi records pre-launch HEAD and dirty state and does not infer who made those changes. The prompt includes recorded intent, optional message, and fixed instructions to implement, run project checks, commit to the current branch with clear messages, and stop. It prohibits pushing, opening PRs, calling GitHub, changing remotes and network use beyond provider needs. Supplied context, including prior CI logs or review text, is framed as untrusted data that cannot override the role restrictions.
+
+Codex uses `exec` with the `workspace-write` sandbox, network access disabled, and approval policy `never`; automatic approval and sandbox bypass flags are absent (see the [Codex configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference)). Claude uses `-p --permission-mode acceptEdits --permission-prompts none`, with `Bash(git push:*)`, `Bash(gh:*)`, `WebFetch` and `WebSearch` disallowed. Operations needing permission are denied rather than escalating. Both use the [shared task agent boundary](safety.md#task-agent-launch-boundary); the classifier additionally retains its empty working directory and tool-less flags. Provider authentication stays available. Repository `[env]` is for `run` and `exec` only and is not applied here. Plain `rabi run` retains its existing behavior.
+
+On the first launch, `new` transitions to `implementing`. Repeated launches stay in `implementing`; even exit 0 does not mark implementation complete or move to prechecks/publication. Append-only task events record launch ID, provider, exit status, pre/post HEAD, whether new commits exist and whether the tree is dirty. Failed and interrupted launches also retain their outcomes. Provider output goes to stderr, leaving stdout for the task result or schema 2 JSON envelope.
+
+The default timeout is `60m`; DUR is a positive integer with suffix `s`, `m` or `h`. Timeout and SIGINT/SIGTERM terminate the whole process group and reap the provider. Provider statuses pass through, including 128+signal; timeout exits 124 and interruption received by rabi exits 130. Invalid arguments use 2, missing tasks 3, safety refusals 4, and launcher/store failures 1. Changes and commits are retained after failure. See [exit codes](exit-codes.md).
 
 ## Task risk
 
