@@ -13,6 +13,7 @@ pub struct RabiConfig {
     pub hooks: Hooks,
     pub env: crate::execution_env::Environment,
     pub precheck: Option<Precheck>,
+    pub factory: Factory,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -27,6 +28,22 @@ pub struct Hooks {
 pub struct Precheck {
     pub commands: Vec<String>,
     pub timeout: Option<String>,
+}
+
+/// Local orchestration limits; zero fixes explicitly disables automatic retries.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
+pub struct Factory {
+    pub fix_budget: u32,
+    pub ci_timeout: String,
+}
+impl Default for Factory {
+    fn default() -> Self {
+        Self {
+            fix_budget: 3,
+            ci_timeout: "60m".into(),
+        }
+    }
 }
 
 /// Load declarations and validate syntax independently of the execution environment.
@@ -91,12 +108,36 @@ pub(crate) fn parse_config(content: &str) -> Result<RabiConfig> {
             })?;
         }
     }
+    crate::run::timeout(&config.factory.ci_timeout).map_err(|_| {
+        Error::msg("Invalid factory.ci-timeout: expected a positive duration with s, m or h suffix")
+    })?;
     Ok(config)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn factory_defaults_and_limits_are_validated() {
+        let config = parse_config("").unwrap();
+        assert_eq!(config.factory.fix_budget, 3);
+        assert_eq!(config.factory.ci_timeout, "60m");
+        let config = parse_config("[factory]\nfix-budget=0\nci-timeout='2h'").unwrap();
+        assert_eq!(config.factory.fix_budget, 0);
+        for declaration in [
+            "fix-budget=-1",
+            "fix-budget='3'",
+            "ci-timeout='0m'",
+            "ci-timeout=60",
+            "extra=true",
+        ] {
+            assert!(
+                parse_config(&format!("[factory]\n{declaration}")).is_err(),
+                "{declaration}"
+            );
+        }
+    }
 
     #[test]
     fn precheck_schema_and_values_are_validated() {

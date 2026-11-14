@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 #[serde(rename_all = "snake_case")]
 pub(crate) enum BlockReason {
     NoProgress,
+    RepeatedFailure,
     Environment,
     NoCi,
     CiTimeout,
@@ -129,26 +130,30 @@ pub(crate) struct Task {
     pub push_remote_url: String,
     pub workspace_path: Option<PathBuf>,
     pub pr_number: Option<u64>,
+    #[serde(default)]
+    pub advance: super::advance::Progress,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Event {
-    at: String,
+    pub(super) at: String,
     from: Option<TaskState>,
     to: TaskState,
-    reason: String,
+    pub(super) reason: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     detail: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    agent: Option<serde_json::Value>,
+    pub(super) agent: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    precheck: Option<serde_json::Value>,
+    pub(super) precheck: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct View {
+    #[serde(flatten)]
+    pub budget: Option<super::advance::Budget>,
     pub task: Task,
     recorded_state: TaskState,
     events: Vec<Event>,
@@ -363,7 +368,7 @@ impl Store {
         Ok(entries)
     }
 
-    fn events(&self, id: &str) -> Result<Vec<Event>> {
+    pub(super) fn events(&self, id: &str) -> Result<Vec<Event>> {
         bytes(&self.path.join(id).join("events.jsonl"))
             .map_err(|error| Error::msg(format!("Cannot read task {id} events: {error}")))?
             .split(|b| *b == b'\n')
@@ -382,6 +387,7 @@ impl Store {
         let recorded_state = task.state;
         task.state = self.derived(&task)?;
         Ok(View {
+            budget: None,
             task,
             recorded_state,
             events,
@@ -477,6 +483,7 @@ impl Store {
             push_remote_url,
             workspace_path: None,
             pr_number: None,
+            advance: Default::default(),
         };
         let event = Event {
             at,
@@ -492,6 +499,7 @@ impl Store {
         io(fs::rename(directory, self.path.join(&task.id)))?;
         io(File::open(&self.path).and_then(|file| file.sync_all()))?;
         Ok(View {
+            budget: None,
             recorded_state: task.state,
             task,
             events: vec![event],
@@ -542,6 +550,49 @@ impl Store {
         };
         self.events(&id)?;
         self.load(&id)
+    }
+
+    pub(super) fn advance_lock(&self, task: &Task) -> Result<File> {
+        let file = open(&self.path.join(&task.id).join(".advance.lock"), true)?;
+        file.try_lock()
+            .map_err(|_| Error::status(crate::error::REFUSED, "Task advance is already running"))?;
+        Ok(file)
+    }
+
+    pub(super) fn advance_event(
+        &self,
+        original: &mut Task,
+        to: TaskState,
+        reason: &str,
+    ) -> Result<()> {
+        let directory = self.path.join(&original.id);
+        let _lock = lock(&directory.join(".lock"))?;
+        let mut task = self.load_record_with_branch(&original.id, Some(&original.branch))?;
+        self.events(&original.id)?;
+        if task.state != original.state {
+            return Err(Error::status(
+                crate::error::REFUSED,
+                "Task state changed during advancement",
+            ));
+        }
+        let event = if task.state == to {
+            Event {
+                at: now(),
+                from: Some(to),
+                to,
+                reason: reason.into(),
+                detail: None,
+                agent: None,
+                precheck: None,
+            }
+        } else {
+            transition(&mut task, to, reason)?
+        };
+        task.advance = original.advance.clone();
+        task.updated_at = event.at.clone();
+        self.save(&directory, &task, &event)?;
+        *original = task;
+        Ok(())
     }
 
     pub fn implementation_lock(&self, task: &Task) -> Result<File> {
@@ -681,6 +732,7 @@ impl Store {
         self.save(&directory, &task, &event)?;
         events.push(event);
         Ok(View {
+            budget: None,
             recorded_state: task.state,
             task,
             events,
@@ -817,6 +869,14 @@ impl Entry {
 impl View {
     pub fn print(&self) {
         output::outln!("{} {}", self.task.id, state_text(self.task.state));
+        if let Some(budget) = &self.budget {
+            output::outln!(
+                "Fixes: {}/{} used; {} remaining",
+                self.task.advance.fixes_used,
+                budget.fix_budget,
+                budget.fixes_remaining
+            );
+        }
         output::outln!("Branch: {}", output::visible_text(&self.task.branch));
         output::outln!("Base: {}", output::visible_text(&self.task.base_ref));
         output::outln!("Intent: {}", output::visible_text(&self.task.intent));
@@ -890,6 +950,7 @@ mod tests {
                     push_remote_url: "example.invalid:repo".into(),
                     workspace_path: None,
                     pr_number: None,
+                    advance: Default::default(),
                 };
                 let result = transition(&mut task, to, "test transition");
                 assert_eq!(result.is_ok(), allowed, "{from:?} -> {to:?}");

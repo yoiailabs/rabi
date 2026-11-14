@@ -132,6 +132,64 @@ impl<'a> Client<'a> {
         Ok(Self { root, repo, prefix })
     }
 
+    pub(super) fn identity(&self) -> String {
+        format!("{}/{}/{}", self.repo.host, self.repo.owner, self.repo.name)
+    }
+
+    pub(crate) fn matches_destination(&self, destination: &str) -> bool {
+        self.identity().eq_ignore_ascii_case(destination)
+    }
+
+    /// Check-run IDs are not workflow/job IDs. Resolve a pinned run's canonical
+    /// Actions URL first, then fetch only that numeric job's failed log stream.
+    pub(crate) fn failed_log(&self, id: u64, head: &str) -> Result<String> {
+        let value = self.get(&format!("/check-runs/{id}"))?;
+        if value.get("id").and_then(Value::as_u64) != Some(id)
+            || value.get("head_sha").and_then(Value::as_str) != Some(head)
+        {
+            return Err(Error::msg("CI log does not match observed check and head"));
+        }
+        let prefix = format!("https://{}/actions/runs/", self.identity());
+        let path = value
+            .get("details_url")
+            .and_then(Value::as_str)
+            .and_then(|url| url.strip_prefix(&prefix))
+            .ok_or_else(|| Error::msg("CI check has no verified Actions job URL"))?;
+        let (run, job) = path
+            .split_once("/job/")
+            .ok_or_else(|| Error::msg("CI check has no Actions job"))?;
+        let numeric = |id: &str| {
+            !id.is_empty()
+                && id.bytes().all(|byte| byte.is_ascii_digit())
+                && id.parse::<u64>().is_ok_and(|id| id > 0)
+        };
+        if !numeric(run) || !numeric(job) {
+            return Err(Error::msg("Invalid Actions job URL"));
+        }
+        let mut command = std::process::Command::new("gh");
+        command
+            .args([
+                "run",
+                "view",
+                run,
+                "--job",
+                job,
+                "--log-failed",
+                "--repo",
+                &self.identity(),
+            ])
+            .current_dir(self.root)
+            .env("GH_HOST", &self.repo.host)
+            .env("GH_PROMPT_DISABLED", "1")
+            .env("GH_PAGER", "cat");
+        for key in std::env::vars_os().map(|(key, _)| key) {
+            if key.to_string_lossy().starts_with("GIT_") {
+                command.env_remove(key);
+            }
+        }
+        crate::task::publish::log_tail(command)
+    }
+
     pub fn approve(&self, sha: &str, description: &str) -> Result<()> {
         super::post_approval(self.root, &self.repo, sha, description)
     }

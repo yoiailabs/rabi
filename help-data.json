@@ -2176,7 +2176,7 @@
     "task": {
       "name": "task",
       "description": "Manage local tasks, inspect PR facts, approve commits and gate merges",
-      "usage": "rabi task new|list|show|abandon|implement|publish|risk|classify|status|approve|merge [arguments] [options]",
+      "usage": "rabi task new|list|show|abandon|implement|publish|advance|risk|classify|status|approve|merge [arguments] [options]",
       "options": [
         {
           "name": "repo",
@@ -2803,6 +2803,66 @@
           "description": "Precheck and publish one task"
         }
       ]
+    },
+    "task advance": {
+      "name": "task advance",
+      "description": "Advance a task from implementation through required CI",
+      "usage": "rabi task advance [SEL] [--wait] [--ci-timeout DUR] [options]",
+      "options": [
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Repository to operate on; uses the shared workspace selector rules",
+          "example": "--repo owner/repo"
+        },
+        {
+          "name": "wait",
+          "type": "boolean",
+          "description": "Repeat steps and poll CI until reviewing or a terminal result"
+        },
+        {
+          "name": "ci-timeout",
+          "type": "string",
+          "description": "Override factory.ci-timeout for required checks (positive s, m or h duration)"
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "SEL is a full task ID or unique prefix of at least six characters; omitted or dot selects the current branch task. Requires repository trust and an existing linked task workspace.",
+        "One step launches the last implementer provider (Codex by default) or accepts clean descendant commits and enters prechecking; prechecking/publishing runs task publish. No new clean commit blocks no_progress.",
+        "CI uses fresh facts for the exact PR head and the base policy required check names/apps. Only the latest matching check run with success passes. Missing or pending checks wait; skipped and neutral fail. Conflicts return implementing with sync-with-base feedback before waiting.",
+        "Failed prechecks and CI return implementing with bounded sanitized untrusted feedback, framed with a random nonce in the implementer prompt. A durable head/check-name signature prevents repeating the same repair.",
+        "Primary-checkout [factory] fix-budget defaults to 3 relaunches; ci-timeout defaults to 60m. Exhausted budget, empty required checks and elapsed pending CI block budget, no_ci and ci_timeout. --ci-timeout overrides the timeout.",
+        "--wait polls pending checks every 30 seconds and stops at reviewing, blocked, merged, abandoned or an error. Stops at reviewing; advance does not launch a reviewer, approve or merge.",
+        "Exit 0 means progressed, reviewing or recorded merged; 10 means waiting; blocked/abandoned use 4. Ordinary provider failures block provider_failed with 4; provider timeout uses 124. SIGINT/SIGTERM during advance, including prechecks, CI log retrieval and polling, stops with 130 without starting another step. Other errors retain their existing codes."
+      ],
+      "examples": [
+        {
+          "command": "rabi task advance --wait --json",
+          "description": "Drive the current task through CI and stop at reviewing"
+        }
+      ]
     }
   },
   "globalOptions": [
@@ -2849,7 +2909,8 @@
     "5": "Integration conflict",
     "6": "Partial completion",
     "124": "Run launch timed out",
-    "130": "Run interrupted by SIGINT or SIGTERM"
+    "130": "Run interrupted by SIGINT or SIGTERM",
+    "10": "Task CI waiting"
   },
   "errorCodes": {
     "failed": 1,
@@ -2878,7 +2939,8 @@
     "floor_changed": 4,
     "diverged": 4,
     "environment": 4,
-    "destination_not_github": 4
+    "destination_not_github": 4,
+    "waiting": 10
   },
   "warningCodes": [
     "repo_discovery",
@@ -2898,6 +2960,7 @@
     "handoff_identity",
     "handoff_request_skipped",
     "env_untrusted",
+    "task_config_unavailable",
     "env_workspace_path_skipped",
     "record_mismatch",
     "internal"

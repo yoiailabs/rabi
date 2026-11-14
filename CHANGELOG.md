@@ -4,6 +4,8 @@
 
 ### Added
 
+- `rabi task advance [SEL] [--wait] [--ci-timeout DUR]` drives implementation, prechecks and publication through required CI, stopping at `reviewing`. Fresh head-bound checks, conflict recovery, sanitized nonce-framed CI feedback, durable failure deduplication, `[factory]` fix budgets and CI deadlines bound retries. Pending CI returns exit 10.
+
 - `rabi task publish [SEL]` runs trusted committed `[precheck]` commands with stripped credentials, blocks changed checks and base-policy floor paths, then pushes to the recorded URL and creates or reuses a draft PR. Publication disables repository hooks/configuration, never forces, reconciles interrupted pushes/PR creation, and advances to `ci` only for the verified HEAD.
 
 - `rabi task implement [SEL] [--provider codex|claude] [--timeout DUR] [MESSAGE|-]` runs one foreground implementer in an existing linked task workspace, records launch and Git outcomes, and advances only `new` to `implementing`. Task implementers and the tool-less classifier share credential stripping, empty GitHub CLI configuration, disabled Git credential helpers/prompts and `RABI_AGENT=1`; `rabi run` keeps its existing behavior.
@@ -23,6 +25,8 @@
 - Task Git reads ignore replace refs and default/inherited grafts. Merge preflight refuses approval when the current base-branch policy differs from the PR base policy or cannot be verified, including auto tiers. Facts expose `baseTipSha`; approval documentation clarifies that statuses bind to commits, not PRs or bases.
 
 ### Changed (Breaking)
+
+- Older binaries reject repository `.rabi.toml` containing `[factory]`; upgrade before declaring task retry and CI limits.
 
 - `task publish` requires an HTTPS or SSH push URL matching the GitHub repository independently resolved by `gh` for the task checkout. Local paths, other transports, non-GitHub destinations and repository mismatches block as `destination_not_github` before pushing.
 - Older rabi binaries reject `.rabi.toml` containing `[precheck]` as an unknown key. Upgrade before adding task prechecks.

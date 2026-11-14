@@ -45,10 +45,10 @@ pub(crate) struct Report {
     launch_id: String,
     provider: Provider,
     pub exit_code: i32,
-    pre_head: String,
-    post_head: Option<String>,
-    new_commits: Option<bool>,
-    dirty: Option<bool>,
+    pub(super) pre_head: String,
+    pub(super) post_head: Option<String>,
+    pub(super) new_commits: Option<bool>,
+    pub(super) dirty: Option<bool>,
     stop_reason: &'static str,
 }
 
@@ -319,12 +319,37 @@ pub(crate) fn execute(
     timeout: Duration,
     message: Option<&str>,
 ) -> Result<Report> {
+    execute_inner(root, selector, provider, timeout, message, false)
+}
+
+pub(super) fn execute_locked(
+    root: &Path,
+    selector: Option<&str>,
+    provider: Provider,
+    timeout: Duration,
+    message: Option<&str>,
+) -> Result<Report> {
+    execute_inner(root, selector, provider, timeout, message, true)
+}
+
+fn execute_inner(
+    root: &Path,
+    selector: Option<&str>,
+    provider: Provider,
+    timeout: Duration,
+    message: Option<&str>,
+    locked: bool,
+) -> Result<Report> {
     let boundary = Boundary::new()?;
     let _git = super::boundary::git_read_scope();
     crate::run::require_trust(root)?;
     let store = Store::locate(root)?;
     let task = store.implementation_task(selector)?;
-    let _launch_lock = store.implementation_lock(&task)?;
+    let _launch_lock = if locked {
+        None
+    } else {
+        Some(store.implementation_lock(&task)?)
+    };
     let task = store.implementation_task(Some(&task.id))?;
     if !matches!(task.state, TaskState::New | TaskState::Implementing) {
         return Err(Error::status(REFUSED, "Task must be new or implementing"));

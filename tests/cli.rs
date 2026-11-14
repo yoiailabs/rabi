@@ -11099,7 +11099,7 @@ fn outer_help_and_version_contracts_text_json_and_exit_codes() {
     let value = assert_envelope(&out, "help");
     assert_eq!(value["data"], expected);
     assert_eq!(expected["schemaVersion"], 2);
-    assert_eq!(expected["exitCodes"].as_object().unwrap().len(), 9);
+    assert_eq!(expected["exitCodes"].as_object().unwrap().len(), 10);
     assert_eq!(expected["exitCodes"]["124"], "Run launch timed out");
     assert_eq!(
         expected["exitCodes"]["130"],

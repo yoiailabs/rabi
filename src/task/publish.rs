@@ -54,7 +54,7 @@ fn block(
     }
 }
 
-fn configuration(workspace: &Path, sha: &str) -> Result<Option<String>> {
+pub(super) fn configuration(workspace: &Path, sha: &str) -> Result<Option<String>> {
     let Some((mode, blob)) = super::committed_entry(workspace, sha, ".rabi.toml")? else {
         return Ok(None);
     };
@@ -73,8 +73,60 @@ fn precheck_value(text: Option<&str>) -> Result<Option<serde_json::Value>> {
     Ok(config.get("precheck").cloned())
 }
 
-fn sanitized(bytes: &[u8], workspace: &Path) -> String {
-    let mut text: String = String::from_utf8_lossy(bytes)
+/// Remove complete CSI and terminal string sequences, including OSC hyperlinks.
+fn strip_ansi(text: &str) -> String {
+    enum State {
+        Text,
+        Escape,
+        Csi,
+        String,
+        StringEscape,
+    }
+    let mut state = State::Text;
+    let mut output = String::new();
+    for character in text.chars() {
+        state = match state {
+            State::Text => match character {
+                '\u{1b}' => State::Escape,
+                '\u{9b}' => State::Csi,
+                '\u{90}' | '\u{9d}' | '\u{9e}' | '\u{9f}' => State::String,
+                _ => {
+                    output.push(character);
+                    State::Text
+                }
+            },
+            State::Escape => match character {
+                '[' => State::Csi,
+                ']' | 'P' | 'X' | '^' | '_' => State::String,
+                _ => State::Text,
+            },
+            State::Csi => {
+                if ('@'..='~').contains(&character) {
+                    State::Text
+                } else {
+                    State::Csi
+                }
+            }
+            State::String => match character {
+                '\u{7}' | '\u{9c}' => State::Text,
+                '\u{1b}' => State::StringEscape,
+                _ => State::String,
+            },
+            State::StringEscape => {
+                if character == '\\' {
+                    State::Text
+                } else {
+                    State::String
+                }
+            }
+        };
+    }
+    output
+}
+
+pub(super) fn sanitized(bytes: &[u8], workspace: &Path) -> String {
+    let stripped = strip_ansi(&String::from_utf8_lossy(bytes));
+    let mut text: String = stripped
         .chars()
         .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
         .collect();
@@ -210,7 +262,6 @@ fn drain_pending(pipe: &mut (impl Read + AsRawFd), tail: &mut VecDeque<u8>) -> R
 
 fn check(workspace: &Path, script: &str, timeout: Duration) -> Result<Check> {
     let boundary = Boundary::new()?;
-    let signals = Signals::install()?;
     let mut command = Command::new("sh");
     command
         .args(["-c", script])
@@ -222,6 +273,34 @@ fn check(workspace: &Path, script: &str, timeout: Duration) -> Result<Check> {
         .stderr(Stdio::piped())
         .process_group(0);
     boundary.prepare(&mut command);
+    capture_tail(command, timeout)
+}
+
+pub(crate) fn log_tail(mut command: Command) -> Result<String> {
+    command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .process_group(0);
+    let check = capture_tail(command, Duration::from_secs(30))?;
+    if check.reason == "interrupted" {
+        return Err(Error::Signaled("SIGINT".into()));
+    }
+    if check.code != 0 {
+        return Err(Error::msg("Cannot retrieve failing CI logs"));
+    }
+    Ok(String::from_utf8_lossy(&check.tail).into_owned())
+}
+
+fn capture_tail(mut command: Command, timeout: Duration) -> Result<Check> {
+    let signals = Signals::install()?;
+    if signals.interrupted() {
+        return Ok(Check {
+            code: 130,
+            reason: "interrupted",
+            tail: Vec::new(),
+        });
+    }
     let child = command.spawn().map_err(|_| Error::Status {
         code: "environment",
         message: "Cannot start precheck shell".into(),
@@ -270,6 +349,11 @@ fn check(workspace: &Path, script: &str, timeout: Duration) -> Result<Check> {
     drain_pending(&mut stdout, &mut tail)?;
     drain_pending(&mut stderr, &mut tail)?;
     let tail = tail.into_iter().collect();
+    let (code, reason) = if signals.interrupted() {
+        (130, "interrupted")
+    } else {
+        (code, reason)
+    };
     Ok(Check { code, tail, reason })
 }
 
@@ -514,7 +598,7 @@ impl Repository {
     }
 }
 
-fn destination(workspace: &Path, url: &str) -> Result<Option<String>> {
+pub(super) fn destination(workspace: &Path, url: &str) -> Result<Option<String>> {
     let Some(recorded) = Repository::parse(url) else {
         return Ok(None);
     };
@@ -644,12 +728,29 @@ fn base_candidates(workspace: &Path, recorded: &str) -> Result<Vec<String>> {
 }
 
 pub(crate) fn execute(root: &Path, selector: Option<&str>) -> Result<Report> {
+    execute_inner(root, selector, false)
+}
+
+pub(super) fn execute_locked(root: &Path, selector: Option<&str>) -> Result<Report> {
+    execute_inner(root, selector, true)
+}
+
+fn execute_inner(root: &Path, selector: Option<&str>, locked: bool) -> Result<Report> {
     crate::run::require_trust(root)?;
+    let signals = Signals::install()?;
     let _read = super::boundary::git_read_scope();
     let store = Store::locate(root)?;
     let mut task = store.implementation_task(selector)?;
-    let _operation = store.implementation_lock(&task)?;
-    let _publication = store.publication_lock(&task)?;
+    let _operation = if locked {
+        None
+    } else {
+        Some(store.implementation_lock(&task)?)
+    };
+    let _publication = if locked {
+        None
+    } else {
+        Some(store.publication_lock(&task)?)
+    };
     if !matches!(
         task.state,
         TaskState::Implementing | TaskState::Prechecking | TaskState::Publishing
@@ -826,7 +927,7 @@ pub(crate) fn execute(root: &Path, selector: Option<&str>) -> Result<Report> {
             current_state,
             "precheck",
             Some(
-                json!({"head": head, "passed": passed, "failingCommand": if passed { None } else { Some(sanitized(script.as_bytes(), &workspace)) }, "outputTail": sanitized(&result.tail, &workspace), "reason": reason}),
+                json!({"head": head, "passed": passed, "failingCommand": if passed { None } else { Some(sanitized(script.as_bytes(), &workspace)) }, "failingCommandHash": if passed { None } else { Some(crate::hash::sha256_hex(script.as_bytes())) }, "outputTail": sanitized(&result.tail, &workspace), "reason": reason}),
             ),
             None,
         )?;
@@ -909,6 +1010,9 @@ pub(crate) fn execute(root: &Path, selector: Option<&str>) -> Result<Report> {
             ));
         }
     }
+    if signals.interrupted() {
+        return Err(Error::Signaled("SIGINT".into()));
+    }
     if remote.as_deref() != Some(head) {
         let pushed = publisher
             .git(&[
@@ -945,6 +1049,9 @@ pub(crate) fn execute(root: &Path, selector: Option<&str>) -> Result<Report> {
                     "--",
                 ],
             )?;
+            if signals.interrupted() {
+                return Err(Error::Signaled("SIGINT".into()));
+            }
             let body = pr_body(&task.intent, &commits)?;
             let body_path = publisher.temporary.path().join("body.txt");
             fs::write(&body_path, body).map_err(|_| Error::msg("Cannot prepare PR body"))?;
@@ -1031,6 +1138,21 @@ pub(crate) fn execute(root: &Path, selector: Option<&str>) -> Result<Report> {
 #[cfg(test)]
 mod tests {
     use super::Repository;
+
+    #[test]
+    fn diagnostics_strip_terminal_sequences_and_bound_utf8_tail() {
+        let input = "before \u{1b}[31mfailed\u{1b}[0m \u{1b}]8;;https://example.invalid\u{1b}\\link\u{1b}]8;;\u{1b}\\\u{7}\u{0} after";
+        assert_eq!(
+            super::sanitized(input.as_bytes(), std::path::Path::new("workspace")),
+            "before failed link after"
+        );
+        let tail = super::sanitized(
+            "é".repeat(10_000).as_bytes(),
+            std::path::Path::new("workspace"),
+        );
+        assert!(tail.len() <= super::TAIL);
+        assert!(tail.chars().all(|character| character == 'é'));
+    }
 
     #[test]
     fn repository_addresses_reject_ambiguous_transports_and_authorities() {
