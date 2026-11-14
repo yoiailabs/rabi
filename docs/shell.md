@@ -38,4 +38,4 @@ rabi -R "$primary" cd feature/auth
 rabi cd -- "$primary/../workspace with spaces"
 ```
 
-Here `primary` is the primary checkout’s absolute path, and `$primary/../workspace with spaces` must be an existing linked checkout. The helper is optional; [the quick start](../README.md#quick-start) uses `exec` without shell integration.
+Here `primary` is the primary checkout’s absolute path, and `$primary/../workspace with spaces` must be an existing linked checkout. The helper is optional; [workspace examples](commands.md#several-agents-in-one-repository) use `exec` without shell integration.

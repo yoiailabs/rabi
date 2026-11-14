@@ -1,187 +1,136 @@
 # rabi
 
-rabi (ラビ, from "rabbit") — isolated Git workspaces for parallel coding agents.
+rabi is an open-source Rust CLI for a software factory: record intent with `rabi task new`, then use `rabi task advance` to drive implementation, prechecks, draft PR publication, CI, review, classification, approval, merge and safe cleanup. Agents edit, check and commit locally; deterministic rabi commands publish and merge behind explicit gates. Ordinary Git workspaces keep each task's files and branch separate.
 
-> [!WARNING]
-> rabi is under active development (v7 beta). During the v7 beta, minor releases (7.x) may contain breaking changes, following the same rule as SemVer 0.x; patch releases (7.x.y) contain fixes only. Breaking changes are listed in [CHANGELOG](CHANGELOG.md).
-
-Give each task an isolated Git workspace (a linked worktree), so coding agents and humans can work in the same repository in parallel. rabi records why each checkout exists, provides machine-readable output, and checks preservation before cleanup. Unpreserved commits and dirty work require explicit permission to discard.
-
-[日本語](README.ja.md) · [Command reference](docs/commands.md) · [JSON contract](docs/json.md)
+[Japanese](README.ja.md) · [Upgrading to v8](docs/upgrading-to-v8.md) · [v8.0.0 release notes](docs/release-notes/v8.0.0.md)
 
 ## Install
 
-Install the latest v7 release. The installer always verifies SHA-256 and needs `curl` and `tar`.
+Install from [GitHub Releases](https://github.com/yoiailabs/rabi/releases) with the release installer (`curl` and `tar` required):
 
 ```sh
 curl -fsSL https://github.com/yoiailabs/rabi/releases/latest/download/install.sh | sh
 ```
 
-Use `sh -s -- --verify-attestation` to also verify artifact provenance (requires `gh`).
-
-Supports Linux and macOS on x64/arm64; use Linux binaries in WSL. Installs to `~/.local/bin` without sudo or shell-profile changes.
-
-Or build from source with Rust 1.89+:
-
-```sh
-cargo install --git https://github.com/yoiailabs/rabi --tag v7.0.0 --locked rabi
-```
-
-npm `@phantompane/cli` and Homebrew `phantom` are the older TypeScript v6.
-
-Agents and CI can pin with `RABI_VERSION=<TAG>` and the same tag's installer URL. See [installation](docs/installation.md) for pinned installs, older releases, manual verification, options, and updates.
+The installer verifies SHA-256 and installs to `~/.local/bin` without sudo. Linux and macOS x64/arm64 are supported; use Linux binaries in WSL. Add `sh -s -- --verify-attestation` in place of `sh` to verify provenance with `gh`. For reproducible installs, pin `RABI_VERSION=<TAG>` and use that tag's installer URL; see [installation](docs/installation.md).
 
 ## Quick start
 
-Start in an existing clone with a `main` branch (substitute your base branch). `sync` needs access to any involved remote. This walkthrough makes no code changes, so cleanup can delete the preserved task branch. Repositories with hooks need [trust or an explicit skip](docs/hooks.md).
+Allow five minutes for setup; agent work and CI take longer. Use an existing GitHub clone with a locally available `main` base, Git 2.44+, authenticated Git and `gh`, and installed/logged-in Codex and Claude CLIs. Codex implements by default, Claude reviews by default and is the only classifier provider. Substitute your base branch and project checks below.
+
+First, have a maintainer add `.rabi.toml` prechecks:
+
+```toml
+[precheck]
+commands = ["cargo fmt --check", "cargo clippy --locked --all-targets -- -D warnings", "cargo test --locked"]
+```
+
+Add `.rabi/policy.toml`, replacing the check names/app with your actual CI jobs and `maintainer-login` with an authorized maintainer's GitHub login:
+
+```toml
+schema = 1
+
+[ci]
+required = ["Rust fmt", "Rust clippy", "Rust test"]
+app = "github-actions"
+
+[merge]
+auto = ["low", "medium"]
+
+[approval]
+approvers = ["maintainer-login"]
+
+[classifier]
+doc = "risk-tiers.md"
+```
+
+Write `risk-tiers.md` with your review and escalation criteria: define low/medium/high, require high for uncertainty, and say which changes need maintainer approval. Have a maintainer commit and publish these three files to the base branch **before** creating tasks. Prechecks must match the committed remote base; policy is read from base commits. Changes to `.rabi.toml`, `.rabi/policy.toml` or `.github/**` hit built-in floors and block task publication for human handling.
+
+Review hooks, prechecks and declared environment before granting trust. Start from the primary checkout and keep that shell there so cleanup can remove the task workspace:
 
 ```sh
 cd your-repo
-rabi create task/auth --base main --purpose 'implement authentication'
-rabi exec task/auth -- git status --short
-rabi list
-rabi sync task/auth
-rabi remove task/auth --dry-run
-rabi remove task/auth
+rabi trust add
+rabi task new "Improve the command documentation" --branch task/docs --base main
+# Set task_id to the ID printed above.
+task_id='task_<uuid>'
+rabi create task/docs --base main --no-setup
+rabi task implement "$task_id"
+rabi task advance "$task_id" --wait
+rabi task show "$task_id" --json
 ```
 
-`exec` runs in the workspace without moving your shell. To enter it yourself, use `cd "$(rabi path task/auth)"` before removal, or load the optional [shell helper and completions](docs/shell.md) for `rabi cd task/auth`.
+`task new` only records intent and reserves an unused branch. `create` supplies the linked checkout; `--no-setup` skips copies and setup hooks. `task implement` starts the first local implementation attempt. `advance` then progresses one step per invocation, or continues and polls with `--wait`: implement → precheck → publish (draft PR) → CI → review → ready → classify → approval/auto-merge → cleanup. Review findings can return to implementation within a shared fix budget (default 3). Only the latest successful required check from its configured app counts.
 
-## Core concepts
+Exit 10 means waiting for CI or maintainer approval; exit 4 means blocked/refused. Read `task.state.reason` and events in `task show --json`; an exit-0 step does not by itself mean merged. See the [state and recovery tables](docs/commands.md#task-lifecycle) and [exit codes](docs/exit-codes.md).
 
-- **Workspace:** a task checkout plus metadata such as purpose, base, and PR/issue links. Names can contain `/`. Select by name, `.`, path, `pr:N`, `issue:N`, or a recorded PR/issue URL.
-- **Primary checkout:** the repository’s original checkout, which supplies copied files. rabi refuses to remove it; `sync --main` explicitly advances it on the default branch.
-- **Records and management:** records live in the Git common directory. rabi also sees unrecorded checkouts; `adopt` records an existing linked checkout, while `forget` removes only records. Unrecorded checkouts outside the configured workspace directory are unmanaged and protected from removal.
-- **Preservation:** removal deletes a branch only with preservation evidence, otherwise keeps it with a warning. Dirty files require `--discard-changes`; deleting unpreserved history requires `--delete-unpreserved-branch`. Ignored files are deleted with the workspace, including nested repositories in ignored directories. `gc` plans until `--apply` and skips unsafe candidates.
+## Approval
 
-Read [removal safety and retries](docs/safety.md) and [sync strategies](docs/sync.md) before automating cleanup or integration. There is no ownership tracking, internal locking, or in-use detection; coordinate with other agents.
+Only policy-listed low/medium tiers without a floor may merge without approval; the default auto set is empty. High, floors, and missing/failed/uncertain classification require a maintainer. Review output is never approval. Automation never runs `rabi task approve`, unsets `RABI_AGENT` to bypass it, or posts a success `rabi/approval` status.
 
-## Commands
+A configured maintainer, outside rabi-launched agents, inspects the exact current PR head and gates, sets `reviewed_sha` to its full 40-hex SHA, then records approval:
 
-| Command | Purpose |
+```sh
+rabi task status task/docs --json
+rabi task approve task/docs --sha "$reviewed_sha"
+rabi task advance "$task_id" --wait
+```
+
+The latest `rabi/approval` status must be success from `[approval] approvers` on that exact SHA. A new head needs renewed approval. Advance posts pending only, then reruns the full preflight and merges with `--match-head-commit`. `--wait` polls approval for up to 24h by default and returns 10 on expiry. Cleanup retains dirty, stashed or unpushed workspaces and all local branches; remote branch deletion is off by default. See [approval and merge safety](docs/safety.md#task-approval-and-merge).
+
+## Workspaces
+
+Use workspace commands for investigations, manual edits or existing branches without the task lifecycle. The primary checkout supplies copied files and is protected from removal. Select workspaces by name, `.`, path or recorded PR/issue link. Commands target one repository: the current checkout or `-R/--repo` with a checkout root path or canonical `host/owner/repo` at its existing clone location. Prefix relative paths with `./`; repository registration and discovery are removed.
+
+```sh
+rabi create topic --base main --purpose 'investigate a change'
+rabi exec topic -- git status --short
+rabi list
+rabi sync topic --dry-run
+rabi remove topic --dry-run
+```
+
+`sync` fetches even with `--dry-run`; it never pushes. `remove` checks preservation and keeps unpreserved branches. Dirty work and unpreserved-history deletion need separate explicit permissions. Ignored files are deleted with the workspace, including nested repositories in ignored directories. Workspace commands do not detect another agent's use; coordinate cleanup. See [workspace commands](docs/commands.md#selecting-and-inspecting-workspaces) and [removal safety](docs/safety.md).
+
+## Parent sessions
+
+`rabi run` launches or resumes one trusted parent session in an existing linked workspace. The parent manages its progress; run does not enforce the task lifecycle or declare task completion. Codex is the default; `--provider cursor|claude` selects another provider on first/fresh launches. `--fresh` retains older records, `--timeout` defaults to `2h`, and optional `--skill VALUE` passes instructions verbatim without lookup. Use `SEL --` to select a workspace; `-R` requires it.
+
+```sh
+rabi run topic -- "Investigate the change and commit locally"
+rabi run topic --
+rabi run --fresh --provider claude --timeout 30m topic -- "Continue the investigation"
+```
+
+Run shares the task agent boundary: inherited GitHub tokens, SSH agent/askpass and `GIT_*` are stripped; gh configuration is empty and Git credentials/prompts are disabled. Agents only edit, check and commit; publication runs outside them. Codex has network/web disabled and approval never; Claude denies push/gh/web tools. This reduces accidental credential use, not access by a determined same-user process. [Provider restrictions and limits](docs/safety.md#task-agent-launch-boundary) also describe Cursor's sandbox behavior. `list`/`show` expose run summaries; handoff memory carries context between sessions.
+
+## Command index
+
+Use `rabi help` for syntax or `rabi help --json` for the full command/flag contract. Global options include `-R/--repo`, `--json`, `--output text|json`, `--no-input`, `-h/--help` and `-v/--version`.
+
+| Area | Commands |
 |---|---|
-| `rabi create` | Create from a new/existing branch, PR, issue, or detached commit |
-| `rabi adopt` | Record an existing linked checkout |
-| `rabi list` | List workspaces and primary checkouts |
-| `rabi show` | Inspect intent and observed state |
-| `rabi path` | Print an absolute workspace path |
-| `rabi set` | Update purpose, base, and PR/issue links |
-| `rabi setup` | Copy ignored files and rerun trusted setup hooks |
-| `rabi exec` | Run a command in a workspace (requires `--`) |
-| `rabi sync` | Fetch and integrate the base; `--main` advances primary |
-| `rabi remove` | Retire explicit workspaces with safety checks |
-| `rabi forget` | Drop records while keeping files and branches |
-| `rabi gc` | Plan cleanup; `--apply` performs it |
-| `rabi clone` | Clone into a ghq-compatible layout |
-| `rabi run` | Launch or resume the workspace parent session |
-| `rabi doctor` | Read-only GitHub diagnostics; lists workflow files for manual review without parsing workflow YAML |
-| `rabi task` | Manage local tasks; inspect, approve and merge PR changes |
-| `rabi task new` | Record intent and reserve an unused branch name locally |
-| `rabi task list` | List non-terminal local tasks (`--all` includes terminal tasks) |
-| `rabi task show` | Show a local task and its append-only event history in text or camelCase JSON |
-| `rabi task abandon` | Abandon a non-terminal local task |
-| `rabi task implement` | Run one implementer in an existing task workspace; record commits and dirty state |
-| `rabi task publish` | Run prechecks, push the task branch and create or reuse a draft PR |
-| `rabi task advance` | Drive implementation through approval, merge and safe cleanup |
-| `rabi task review` | Review the exact PR head in a detached checkout; mark passing changes ready |
-| `rabi task risk` | Classify committed changes using the base commit risk policy |
-| `rabi task classify` | Assess committed diffs using the written policy and record an exact-head verdict |
-| `rabi task status` | Read GitHub PR facts without writes |
-| `rabi task approve` | Approve the exact PR head with a commit status |
-| `rabi task merge` | Merge after preflight and approval; `--dry-run` evaluates only |
-| `rabi trust` | Hooks, run, and repository environment trust |
-| `rabi trust add` | Show hooks and environment and grant trust without prompting |
-| `rabi trust remove` | Revoke trust |
-| `rabi trust list` | List trusted Git common directories |
-| `rabi config` | User configuration commands |
-| `rabi config get` | Read an effective value |
-| `rabi config set` | Set a value |
-| `rabi config unset` | Remove an override |
-| `rabi config list` | List effective values (`--sources` shows origins) |
-| `rabi help` | Text help or the complete JSON command contract |
-| `rabi completions` | Generate bash/zsh/fish completions |
-| `rabi shell-init` | Generate the shell helper for `rabi cd` |
-| `rabi --version` | Print the application version (`-v` also works) |
+| Task records | `rabi task`, `rabi task new`, `rabi task list`, `rabi task show`, `rabi task abandon` |
+| Factory steps | `rabi task implement`, `rabi task advance`, `rabi task publish`, `rabi task review` |
+| Gates | `rabi task risk`, `rabi task classify`, `rabi task status`, `rabi task approve`, `rabi task merge` |
+| Workspaces | `rabi create`, `rabi list`, `rabi show`, `rabi path`, `rabi set`, `rabi exec` |
+| Preparation and retirement | `rabi setup`, `rabi adopt`, `rabi forget`, `rabi sync`, `rabi remove`, `rabi gc` |
+| Sessions and memory | `rabi run`, `rabi handoff`, `rabi handoff show`, `rabi handoff path`, `rabi handoff add` |
+| Trust | `rabi trust`, `rabi trust add`, `rabi trust remove`, `rabi trust list` |
+| User settings | `rabi config`, `rabi config get`, `rabi config set`, `rabi config unset`, `rabi config list` |
+| Tools | `rabi clone`, `rabi doctor`, `rabi help`, `rabi completions`, `rabi shell-init`, `rabi --version` |
 
-Global options (`run -R` requires `SEL --`): `-R/--repo REF`, `--json`, `--output text|json`, `--no-input`, `-h/--help`, and `-v/--version`. For `exec`, put rabi options before the selector and the child command after `--`. See [all options and examples](docs/commands.md).
+## Documentation
 
-## For agents
-
-Use `--json` or `--output json` for one schema 2 envelope: `schema`, `command`, `ok`, `data`, `warnings`, and `error`. Parse `data` even on failure because it can contain partial results; ignore unknown fields. Use `rabi help --json` to discover commands, flags, and error/warning codes.
-
-`--no-input` disables rabi prompts. It is also implied by JSON output, nonempty `CI`, `RABI_NO_INPUT` other than empty or `0`, or stdin/stderr without a terminal. Untrusted hooks refuse before changes; `gc` skips them. Standalone `exec` preserves child output and status; `exec`, `completions`, and `shell-init` reject explicit JSON.
-
-| Exit | Meaning |
-|---|---|
-| 0 | Success |
-| 1 | Operational failure |
-| 2 | Usage error or ambiguous selector |
-| 3 | Target or repository not found |
-| 4 | Safety refusal |
-| 5 | Sync conflict |
-| 6 | Partial persistent changes |
-| 10 | Task advance waiting for required CI |
-| 124 | Run timed out |
-| 130 | Run interrupted |
-
-See [JSON objects and per-command data](docs/json.md) and [exit codes and recovery](docs/exit-codes.md).
+[Commands and task states](docs/commands.md) · [Configuration and policy](docs/configuration.md) · [JSON contract](docs/json.md) · [Exit codes](docs/exit-codes.md) · [Safety](docs/safety.md) · [Hooks and trust](docs/hooks.md) · [Sync](docs/sync.md) · [Shell integration](docs/shell.md) · [Upgrading to v8](docs/upgrading-to-v8.md) · [Changelog](CHANGELOG.md)
 
 ## Agent skill
 
-Install the [rabi usage skill](skills/rabi/SKILL.md) for Codex, Claude Code, and Cursor with Node.js/npm:
-
-```sh
-npx skills add yoiailabs/rabi --skill rabi -a codex -a claude-code -a cursor -g -y
-npx skills update rabi
-```
-
-`-g` installs globally; add `-g` to the update command to explicitly target global scope. Use `-a '*'` instead of the named agents to install to all supported agents. Keep `--skill rabi`: this repository also contains checkout-local contributor skills under `.codex/skills`. The skill teaches CLI usage; install the rabi binary separately as described above.
-
-## Parent sessions and skills
-
-`rabi run "Fix issue #123"` starts one Codex parent session in the current workspace. The parent manages progress, delegates to its own subagents, gathers evidence and decides completion. Run `rabi run` again to resume the same parent; `--fresh` starts over and retains old records. Optional `--skill VALUE` passes a verbatim instruction without resolving files, including on first/fresh runs. `--timeout 30m` changes the per-launch limit (default `2h`). Trust is required; create a workspace before running. See [commands](docs/commands.md).
-
-Choose Cursor with `--provider cursor` or Claude Code with `--provider claude` on the first run or with `--fresh`. Resume follows the recorded provider; a different `--provider` requires `--fresh`. Codex remains the default. Cursor uses sandbox mode with automatic approval review; the review service can permit execution outside the sandbox, which rabi reports in the launch audit. Existing `.cursor/sandbox.json` files are preserved; otherwise rabi creates an empty network allowlist. Claude Code requires `claude` on PATH and login, uses model `opus` with effort `high`, and refuses to run unless its reported permission mode is `auto`. See [provider details](docs/commands.md#parent-sessions).
-
-All parent providers use the shared task credential boundary, including resume and `--no-handoff`: GitHub tokens, SSH agent/askpass and inherited `GIT_*` variables are stripped, gh configuration is empty and Git credentials/prompts are disabled. User-configured MCP servers retain their own credentials for Claude and Cursor run parents (Codex parents use `--ignore-user-config`), so this boundary covers inherited gh/Git credentials only. Parents must not push or call GitHub; run deterministic publication commands outside the agent. Codex uses workspace-write with network disabled and approval never; Claude disallows push, gh and web tools. See [safety](docs/safety.md#task-agent-launch-boundary).
-
-Use `rabi run SEL -- [TASK]` to target a workspace without changing directory; add `-R REPO` from outside its repository. A single positional without `--` remains task text. `rabi list` and `rabi show` display the current parent run state; JSON also includes its session id and latest launch log/answer paths.
-
-`rabi handoff` carries workspace context across parent providers. `rabi handoff show` reads the original task and notes; `rabi handoff add` appends notes (`--kind checkpoint -` reads stdin); `rabi handoff path` prints the memory directory. Run captures the first task once and later tasks as requests. Memory injection is on by default; `--no-handoff` skips it. All providers receive a memory `--add-dir` grant for this workspace; Codex separately receives narrow Git metadata grants for local commits. Memory is retained after remove, gc and forget. See [handoff details](docs/commands.md#workspace-handoff).
-
-```sh
-rabi run "Fix issue #123"
-rabi run --skill my-skill "Follow the project instructions"
-rabi run "Address the review findings"
-rabi run -R /path/to/repo task/auth -- "Address the review findings"
-rabi run --fresh - < task.md
-rabi run --fresh --provider cursor "Fix issue #123"
-rabi run --fresh --provider claude "Fix issue #123"
-```
-
-## Configuration
-
-`rabi config` manages `workspace-root`, `clone-root`, `sync.strategy`, and `sync.rewrite-published`. Commands use the current or `-R/--repo REF`-selected repository. REF accepts a checkout root path starting with `/`, `./`, `../`, or `~` (also `.` and `..`), or a canonical `host/owner/repo` (`owner/repo` uses the default host) at the matching existing clone location. Prefix relative paths with `./`; subdirectory paths are rejected. See [configuration and repository targeting](docs/configuration.md).
-
-Declare `[env]` once in the primary checkout's `.rabi.toml` to prepend PATH entries and set variables for trusted `rabi run` and `rabi exec`. Run skips workspace PATH entries and values referencing `${RABI_WORKSPACE_PATH}` with a warning; declare only directories agents cannot write, since PATH also selects provider interpreters. Both accept `--no-env`; hooks keep their existing environment. See [execution environment](docs/configuration.md#repository-execution-environment) for expansion and security rules.
-
-## Hooks and trust
-
-Repository `.rabi.toml` defines setup and pre-remove hooks; `.worktreeinclude` selects ignored files to copy from primary. Review hooks, declared environment, and parent instructions before granting trust with `rabi trust add`. Trust applies to the Git common-directory path and survives a re-clone at that path until revoked. See [hooks, trust, and setup retries](docs/hooks.md).
-
-## FAQ
-
-**Why not plain `git worktree`?** Git provides the linked checkouts. rabi adds task metadata, repository discovery, preparation, base synchronization, and evidence-based cleanup. Branches and worktrees remain ordinary Git.
-
-**Does it run agents or isolate services?** Workspaces separate files and branches. rabi does not schedule agents, manage terminal sessions, or isolate processes, ports, databases, credentials, or access between agents.
-
-## Status
-
-Beta (see the versioning policy above). Breaking changes are listed in [CHANGELOG](CHANGELOG.md).
+The [rabi usage skill](skills/rabi/SKILL.md) explains task orchestration, local-only agent work, blocked reasons and workspace recovery. Install the CLI separately using the release installer above.
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development and checks. Open pull requests against `main`.
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development and verification. Open pull requests against `main`.
 
 ## License
 

@@ -1,187 +1,136 @@
 # rabi
 
-rabi（ラビ、rabbit から） — コーディングエージェントの並列作業用の独立した Git ワークスペース。
+rabi は、ソフトウェア開発の一連の工程を進めるオープンソースの Rust CLI です。`rabi task new` で作業内容を記録し、`rabi task advance` で実装、事前チェック、ドラフト PR の作成、CI、レビュー、リスク判定、承認・マージ・安全なクリーンアップまで進めます。エージェントはローカルで編集・検証・コミットし、公開とマージは明示的な条件を確認する rabi のコマンドが担当します。タスクごとのファイルとブランチは、通常の Git ワークスペースで分離します。
 
-> [!WARNING]
-> rabi は活発に開発を進めている v7 ベータ版です。v7 のベータ期間中は、SemVer の 0.x と同じルールで、マイナーリリース（7.x）に破壊的変更が含まれることがあります。パッチリリース（7.x.y）は不具合修正のみです。破壊的変更は [CHANGELOG](CHANGELOG.md) に記載しています。
-
-タスクごとに独立した Git ワークスペース（リンクされた worktree）を用意し、複数のエージェントと人間が同じリポジトリで並行して作業できます。rabi はチェックアウトの目的を記録し、機械可読の出力を提供し、削除前に履歴の保全を確認します。未保全のコミットや未コミットの変更を破棄するには、明示的な許可が必要です。
-
-[English](README.md) · [コマンドリファレンス](docs/commands.md) · [JSON 仕様](docs/json.md)（詳細ドキュメントは英語）
+[English](README.md) · [v8 への移行](docs/upgrading-to-v8.md) · [v8.0.0 リリースノート](docs/release-notes/v8.0.0.md)（詳細ドキュメントは英語）
 
 ## インストール
 
-最新の v7 リリースをインストールします。インストーラーは常に SHA-256 を検証し、`curl` と `tar` を必要とします。
+[GitHub Releases](https://github.com/yoiailabs/rabi/releases) のインストーラーを使います（`curl` と `tar` が必要です）。
 
 ```sh
 curl -fsSL https://github.com/yoiailabs/rabi/releases/latest/download/install.sh | sh
 ```
 
-`sh -s -- --verify-attestation` を使うと、配布物の来歴も検証できます（`gh` が必要です）。
-
-Linux・macOS の x64/arm64 に対応しています。WSL では Linux バイナリを使ってください。sudo やシェル設定の変更なしで `~/.local/bin` にインストールします。
-
-ソースからのビルドには Rust 1.89 以降が必要です。
-
-```sh
-cargo install --git https://github.com/yoiailabs/rabi --tag v7.0.0 --locked rabi
-```
-
-npm の `@phantompane/cli` と Homebrew の `phantom` は旧 TypeScript 版 v6 です。
-
-エージェントや CI では、`RABI_VERSION=<TAG>` と同じタグのインストーラー URL でバージョンを固定できます。バージョン固定、旧リリース、手動検証、オプション、更新方法は[インストールの詳細](docs/installation.md)を参照してください。
+SHA-256 を検証し、sudo を使わず `~/.local/bin` にインストールします。Linux・macOS の x64/arm64 に対応し、WSL では Linux バイナリを使います。`sh` を `sh -s -- --verify-attestation` に置き換えると、`gh` で配布物の来歴も検証できます。バージョンを固定するには `RABI_VERSION=<TAG>` と同じタグのインストーラー URL を指定します。[インストールの詳細](docs/installation.md)を参照してください。
 
 ## クイックスタート
 
-既存の clone と `main` ブランチを使います。必要に応じてベースブランチを置き換えてください。`sync` には対象リモートへのアクセスが必要です。この例ではコードを変更しないため、保全済みのタスクブランチを削除できます。フックのあるリポジトリでは[信頼の付与または明示的なスキップ](docs/hooks.md)が必要です。
+設定の目安は5分です。エージェントの作業と CI には別途時間がかかります。GitHub の既存の clone、ローカルで参照できる `main`、Git 2.44 以降、認証済みの Git と `gh`、インストール・ログイン済みの Codex と Claude CLI が必要です。既定では Codex が実装、Claude がレビューを担当し、リスク判定には Claude のみ対応しています。ベースブランチとチェック内容はプロジェクトに合わせて変更してください。
+
+まず、メンテナーが `.rabi.toml` に事前チェックを追加します。
+
+```toml
+[precheck]
+commands = ["cargo fmt --check", "cargo clippy --locked --all-targets -- -D warnings", "cargo test --locked"]
+```
+
+`.rabi/policy.toml` を追加し、チェック名と app を実際の CI ジョブに、`maintainer-login` を承認権限のあるメンテナーの GitHub ログイン名に置き換えます。
+
+```toml
+schema = 1
+
+[ci]
+required = ["Rust fmt", "Rust clippy", "Rust test"]
+app = "github-actions"
+
+[merge]
+auto = ["low", "medium"]
+
+[approval]
+approvers = ["maintainer-login"]
+
+[classifier]
+doc = "risk-tiers.md"
+```
+
+`risk-tiers.md` にレビューとエスカレーションの基準を書きます。low/medium/high を定義し、不確実な場合は high とし、メンテナーの承認が必要な変更を明記してください。タスクを作る**前に**、メンテナーがこの3ファイルをベースブランチへコミットして公開します。事前チェックはリモートのベースコミットと一致する必要があり、ポリシーもベースコミットから読みます。`.rabi.toml`、`.rabi/policy.toml`、`.github/**` の変更は組み込みの保護対象（floor）に該当し、タスクからの公開が停止するため、人間が対応します。
+
+信頼を付与する前にフック・事前チェック・宣言された環境を確認します。プライマリチェックアウトから開始し、クリーンアップでタスクのワークスペースを削除できるよう、シェルはそこに置いたままにします。
 
 ```sh
 cd your-repo
-rabi create task/auth --base main --purpose 'implement authentication'
-rabi exec task/auth -- git status --short
-rabi list
-rabi sync task/auth
-rabi remove task/auth --dry-run
-rabi remove task/auth
+rabi trust add
+rabi task new "Improve the command documentation" --branch task/docs --base main
+# Set task_id to the ID printed above.
+task_id='task_<uuid>'
+rabi create task/docs --base main --no-setup
+rabi task implement "$task_id"
+rabi task advance "$task_id" --wait
+rabi task show "$task_id" --json
 ```
 
-`exec` はシェルの現在地を変えずにワークスペースで実行します。自分で移動する場合は、削除前に `cd "$(rabi path task/auth)"` を使うか、任意の[シェル関数と補完](docs/shell.md)を読み込んで `rabi cd task/auth` を使ってください。
+`task new` は作業内容の記録と未使用ブランチ名の予約だけを行います。`create` でリンクされたチェックアウトを作り、`--no-setup` でコピーとセットアップフックを省略します。最初の実装は `task implement` で開始します。その後は `advance` で1段階ずつ、または `--wait` で進行と待機を繰り返します。流れは、実装 → 事前チェック → 公開（ドラフト PR）→ CI → レビュー → ready → リスク判定 → 承認または自動マージ → クリーンアップです。レビューの指摘で実装に戻る場合も、共通の修正回数制限（既定3回）が適用されます。必須チェックは指定した app による最新の成功だけを採用します。
 
-## 基本概念
+終了コード10は CI またはメンテナーの承認待ち、4はブロックまたは拒否を表します。`task show --json` の `task.state.reason` とイベントを確認してください。1段階の終了コードが0でも、マージ済みとは限りません。[状態と復旧の表](docs/commands.md#task-lifecycle)、[終了コード](docs/exit-codes.md)を参照してください。
 
-- **ワークスペース:** タスクのチェックアウトと、目的・ベース・PR/issue リンクなどのメタデータです。名前に `/` を使えます。名前、`.`、パス、`pr:N`、`issue:N`、記録済みの PR/issue URL で選択します。
-- **プライマリチェックアウト:** リポジトリの元のチェックアウトで、ファイルのコピー元です。rabi はこれを削除しません。デフォルトブランチ上なら `sync --main` で明示的に更新できます。
-- **記録と管理:** 記録は Git 共通ディレクトリに保存します。未記録のチェックアウトも表示されます。`adopt` は既存のリンクされたチェックアウトを記録し、`forget` は記録だけを削除します。設定されたワークスペースディレクトリの外にある未記録のチェックアウトは管理対象外で、削除から保護されます。
-- **履歴の保全:** ブランチは保全を証明できる場合に削除し、証明できない場合は警告とともに残します。未コミットの変更の破棄には `--discard-changes`、未保全の履歴の削除には `--delete-unpreserved-branch` が必要です。無視ファイルはワークスペースと一緒に削除され、無視ディレクトリ内の入れ子のリポジトリも含みます。`gc` は `--apply` まで計画だけを表示し、安全に削除できない対象をスキップします。
+## 承認
 
-自動化の前に[削除の安全性と再試行](docs/safety.md)、[同期戦略](docs/sync.md)を確認してください。所有者管理、内部ロック、使用中かどうかの検出はないため、他のエージェントと調整してください。
+承認なしでマージできるのは、ポリシーで指定した low/medium で floor に該当しない変更だけです。自動マージ対象は既定では空です。high、floor、リスク判定の欠落・失敗・不確実な結果にはメンテナーの承認が必要です。レビュー結果は承認にはなりません。自動化は `rabi task approve` を実行せず、`RABI_AGENT` を解除して回避せず、成功の `rabi/approval` ステータスも投稿しません。
 
-## コマンド
+設定されたメンテナーが rabi 起動のエージェントの外で、PR の現在の HEAD と各条件を確認します。`reviewed_sha` に確認した40桁の完全な SHA を設定してから承認を記録します。
 
-| コマンド | 用途 |
+```sh
+rabi task status task/docs --json
+rabi task approve task/docs --sha "$reviewed_sha"
+rabi task advance "$task_id" --wait
+```
+
+最新の `rabi/approval` が、その SHA に対する `[approval] approvers` の承認者による success である必要があります。HEAD が変われば再承認が必要です。advance が投稿するのは pending だけで、マージ前に全条件を再確認し、`--match-head-commit` を使います。`--wait` の承認待ちは既定で最大24時間で、期限切れは10を返します。クリーンアップは未コミットの変更・stash・未 push のコミットがあるワークスペースと、すべてのローカルブランチを残します。リモートブランチの削除は既定で無効です。[承認とマージの安全性](docs/safety.md#task-approval-and-merge)を参照してください。
+
+## ワークスペース
+
+タスクの工程管理が不要な調査、手動編集、既存ブランチの作業には、ワークスペースのコマンドを使います。プライマリチェックアウトはファイルのコピー元で、削除から保護されます。名前、`.`、パス、記録済みの PR/issue リンクで選択できます。操作対象は現在のリポジトリ、または `-R/--repo` で指定した1つのリポジトリです。チェックアウトのルートパス、または既存の clone 先に対応する正規名 `host/owner/repo` を指定します。相対パスには `./` を付けます。リポジトリの登録と自動検出は廃止されました。
+
+```sh
+rabi create topic --base main --purpose 'investigate a change'
+rabi exec topic -- git status --short
+rabi list
+rabi sync topic --dry-run
+rabi remove topic --dry-run
+```
+
+`sync` は `--dry-run` でも fetch しますが、push はしません。`remove` は履歴の保全を確認し、未保全のブランチを残します。未コミットの変更の破棄と未保全の履歴の削除には、それぞれ明示的な許可が必要です。無視ファイルはワークスペースとともに削除され、無視ディレクトリ内の入れ子のリポジトリも含みます。他のエージェントが使用中かどうかは検出しないため、削除前に調整してください。[ワークスペースのコマンド](docs/commands.md#selecting-and-inspecting-workspaces)、[削除の安全性](docs/safety.md)を参照してください。
+
+## 親セッション
+
+`rabi run` は、既存のリンクされたワークスペースで信頼済みの親セッションを1つ起動・再開します。進行は親自身が管理し、run はタスクの工程を強制せず、完了も判定しません。既定は Codex で、初回または新規開始時に `--provider cursor|claude` で変更できます。`--fresh` は過去の記録を残して新しく開始し、`--timeout` の既定は `2h` です。任意の `--skill VALUE` は検索せず、そのまま指示として渡します。別のワークスペースは `SEL --` で選び、`-R` を使う場合もこれが必要です。
+
+```sh
+rabi run topic -- "Investigate the change and commit locally"
+rabi run topic --
+rabi run --fresh --provider claude --timeout 30m topic -- "Continue the investigation"
+```
+
+run にもタスクエージェントと共通の制限が適用されます。継承した GitHub トークン、SSH エージェント・askpass、`GIT_*` を取り除き、gh の設定を空にし、Git の認証情報の取得とプロンプトを無効にします。エージェントは編集・検証・コミットだけを行い、公開処理はその外で実行します。Codex はネットワーク・Web・承認要求を無効にし、Claude は push・gh・Web ツールを禁止します。これは誤った認証情報の利用を減らす措置で、同一ユーザーのプロセスによる意図的なアクセスを防ぐものではありません。[プロバイダーの制限と限界](docs/safety.md#task-agent-launch-boundary)には Cursor の sandbox の動作も記載しています。`list`/`show` は run の概要を表示し、handoff メモリはセッション間で文脈を引き継ぎます。
+
+## コマンド一覧
+
+構文は `rabi help`、全コマンドとフラグの仕様は `rabi help --json` で確認できます。グローバルオプションは `-R/--repo`、`--json`、`--output text|json`、`--no-input`、`-h/--help`、`-v/--version` です。
+
+| 分類 | コマンド |
 |---|---|
-| `rabi create` | 新規・既存ブランチ、PR、issue、切り離したコミットから作成 |
-| `rabi adopt` | 既存のリンクされたチェックアウトを記録 |
-| `rabi list` | ワークスペースとプライマリチェックアウトの一覧 |
-| `rabi show` | 目的と現在の状態を確認 |
-| `rabi path` | ワークスペースの絶対パスを出力 |
-| `rabi set` | 目的、ベース、PR・issue のリンクを更新 |
-| `rabi setup` | 無視ファイルをコピーし、信頼済みのセットアップフックを再実行 |
-| `rabi exec` | ワークスペースでコマンドを実行（`--` が必須） |
-| `rabi sync` | fetch してベースを取り込む。`--main` でプライマリも更新 |
-| `rabi remove` | 指定したワークスペースを安全性を確認して削除 |
-| `rabi forget` | ファイルとブランチを残して記録だけを削除 |
-| `rabi gc` | クリーンアップを計画し、`--apply` で実行 |
-| `rabi clone` | ghq 互換のディレクトリ構成でクローン |
-| `rabi run` | ワークスペースの親セッションを起動・再開 |
-| `rabi doctor` | GitHub を読み取り専用で診断し、手動確認用にワークフローファイルを列挙（ワークフロー YAML は解析しない） |
-| `rabi task` | ローカルタスクを管理し、PR の変更を検査・承認・マージ |
-| `rabi task new` | 意図を記録し、未使用のブランチ名をローカルで予約 |
-| `rabi task list` | 未完了のローカルタスクを一覧表示（`--all` で終了済みも表示） |
-| `rabi task show` | ローカルタスクと追記専用のイベント履歴をテキストまたは camelCase JSON で表示 |
-| `rabi task abandon` | 未完了のローカルタスクを中止 |
-| `rabi task implement` | 既存のタスクワークスペースで実装エージェントを実行し、コミットと未コミットの変更を記録 |
-| `rabi task publish` | 事前チェックを実行し、タスクブランチを push してドラフト PR を作成・再利用 |
-| `rabi task advance` | 実装から承認・マージ・安全なクリーンアップまで進行 |
-| `rabi task review` | 切り離したチェックアウトで PR の正確な HEAD をレビューし、合格した変更をレビュー可能にする |
-| `rabi task risk` | ベースコミットのリスクポリシーでコミット済みの変更を分類 |
-| `rabi task classify` | 文書化されたポリシーでコミット済みの差分を評価し、正確な HEAD に対する判定を記録 |
-| `rabi task status` | 書き込みなしで GitHub の PR 情報を表示 |
-| `rabi task approve` | PR の正確な HEAD をコミットステータスで承認 |
-| `rabi task merge` | 事前チェックと承認を確認してマージ（`--dry-run` は評価のみ） |
-| `rabi trust` | フック・run・リポジトリ環境の信頼設定 |
-| `rabi trust add` | フックと環境を表示し、確認プロンプトなしで信頼を付与 |
-| `rabi trust remove` | 信頼を取り消す |
-| `rabi trust list` | 信頼済みの Git 共通ディレクトリの一覧 |
-| `rabi config` | ユーザー設定の操作 |
-| `rabi config get` | 有効な設定値を取得 |
-| `rabi config set` | 設定値を保存 |
-| `rabi config unset` | 設定の上書きを解除 |
-| `rabi config list` | 有効な設定値の一覧（`--sources` で設定元を表示） |
-| `rabi help` | テキストヘルプ、または完全な JSON コマンド仕様 |
-| `rabi completions` | bash・zsh・fish の補完スクリプトを生成 |
-| `rabi shell-init` | `rabi cd` 用のシェル関数を生成 |
-| `rabi --version` | アプリのバージョンを表示（`-v` も利用可） |
+| タスクの記録 | `rabi task`, `rabi task new`, `rabi task list`, `rabi task show`, `rabi task abandon` |
+| 工程の実行 | `rabi task implement`, `rabi task advance`, `rabi task publish`, `rabi task review` |
+| 条件の確認 | `rabi task risk`, `rabi task classify`, `rabi task status`, `rabi task approve`, `rabi task merge` |
+| ワークスペース | `rabi create`, `rabi list`, `rabi show`, `rabi path`, `rabi set`, `rabi exec` |
+| 準備と片付け | `rabi setup`, `rabi adopt`, `rabi forget`, `rabi sync`, `rabi remove`, `rabi gc` |
+| セッションとメモリ | `rabi run`, `rabi handoff`, `rabi handoff show`, `rabi handoff path`, `rabi handoff add` |
+| 信頼設定 | `rabi trust`, `rabi trust add`, `rabi trust remove`, `rabi trust list` |
+| ユーザー設定 | `rabi config`, `rabi config get`, `rabi config set`, `rabi config unset`, `rabi config list` |
+| ツール | `rabi clone`, `rabi doctor`, `rabi help`, `rabi completions`, `rabi shell-init`, `rabi --version` |
 
-グローバルオプション（`run -R` には `SEL --` が必要です）: `-R/--repo REF`、`--json`、`--output text|json`、`--no-input`、`-h/--help`、`-v/--version`。`exec` ではセレクターの前に rabi のオプション、`--` の後に子コマンドを置きます。[全オプションと使用例](docs/commands.md)を参照。
+## ドキュメント
 
-## エージェント向け
-
-`--json` または `--output json` で、`schema`、`command`、`ok`、`data`、`warnings`、`error` を持つ schema 2 のエンベロープを 1 つ出力します。失敗時も `data` に部分的な結果が入ることがあるため解析し、未知のフィールドは無視してください。`rabi help --json` でコマンド、フラグ、エラー・警告コードを取得できます。
-
-`--no-input` は rabi の確認プロンプトを無効にします。JSON 出力、空でない `CI`、空でも `0` でもない `RABI_NO_INPUT`、標準入力または標準エラーが端末でない場合も同様です。未信頼のフックは変更前に拒否され、`gc` はその対象をスキップします。単独の `exec` は子コマンドの出力と終了ステータスを保持します。`exec`、`completions`、`shell-init` は明示的な JSON 指定を拒否します。
-
-| 終了コード | 意味 |
-|---|---|
-| 0 | 成功 |
-| 1 | 実行上の失敗 |
-| 2 | 使用方法の誤り、または曖昧なセレクター |
-| 3 | 対象またはリポジトリが見つからない |
-| 4 | 安全上の拒否 |
-| 5 | 同期の競合 |
-| 6 | 永続的な変更後の部分的な完了 |
-| 10 | タスクの進行に必要な CI の完了待ち |
-| 124 | run の制限時間超過 |
-| 130 | run の中断 |
-
-[JSON オブジェクトとコマンド別データ](docs/json.md)、[終了コードと復旧](docs/exit-codes.md)を参照してください。
+[コマンドとタスクの状態](docs/commands.md) · [設定とポリシー](docs/configuration.md) · [JSON 仕様](docs/json.md) · [終了コード](docs/exit-codes.md) · [安全性](docs/safety.md) · [フックと信頼](docs/hooks.md) · [同期](docs/sync.md) · [シェル連携](docs/shell.md) · [v8 への移行](docs/upgrading-to-v8.md) · [変更履歴](CHANGELOG.md)
 
 ## エージェントスキル
 
-Node.js/npm を使って、Codex、Claude Code、Cursor 向けに [rabi の使い方を学ぶスキル](skills/rabi/SKILL.md)をインストールできます。
-
-```sh
-npx skills add yoiailabs/rabi --skill rabi -a codex -a claude-code -a cursor -g -y
-npx skills update rabi
-```
-
-`-g` はグローバルにインストールします。更新コマンドにも `-g` を付けると、グローバルを明示的に指定できます。対応するすべてのエージェントにインストールするには、個別のエージェント指定の代わりに `-a '*'` を使ってください。このリポジトリには `.codex/skills` 配下にチェックアウト内の開発者向けスキルもあるため、`--skill rabi` が必要です。スキルは CLI の使い方を説明するものです。rabi バイナリは上記の手順で別途インストールしてください。
-
-## 親セッションとスキル
-
-`rabi run "Fix issue #123"` は現在のワークスペースで Codex の親セッションを1つ起動します。親が進行管理、subagent への委任、証拠収集、完了判断を担当します。次の `rabi run` は同じ親を再開し、`--fresh` は古い記録を残して新しく開始します。`--skill VALUE` は任意で、初回や `--fresh` での起動時にも省略できます。指定した値はファイルを解決せず、そのまま指示に渡します。`--timeout 30m` で起動ごとの制限時間を変更できます（既定 `2h`）。リポジトリの信頼が必要です。先にワークスペースを作成してください。[コマンド](docs/commands.md)を参照。
-
-初回または `--fresh` とともに `--provider cursor` で Cursor、`--provider claude` で Claude Code を選べます。再開時は記録された provider に従い、異なる `--provider` には `--fresh` が必要です。既定は Codex のままです。Cursor は sandbox と自動承認レビューを使い、レビューサービスが sandbox 外での実行を許可した場合は起動の監査情報に表示します。既存の `.cursor/sandbox.json` は保持し、存在しない場合は空のネットワーク許可リストを作成します。Claude Code は PATH 上の `claude` とログインを必要とし、モデル `opus`、effort `high` を使い、報告された権限モードが `auto` でなければ起動を停止します。[provider の詳細](docs/commands.md#parent-sessions)を参照。
-
-すべての親プロバイダには、再開時や `--no-handoff` の指定時も、タスクエージェントと共通の認証情報の制限が適用されます。GitHub トークン、SSH エージェント・askpass の設定、継承された `GIT_*` 変数を取り除き、gh の設定を空にし、Git の認証情報の取得とプロンプトを無効にします。ユーザーが設定した MCP サーバーは Claude と Cursor の run 親セッションでも独自の認証情報を保持するため、この制限の対象は継承された gh・Git の認証情報のみです（Codex の親セッションは `--ignore-user-config` を使います）。親は push や GitHub へのアクセスを行わず、公開処理はエージェントの外で決められたコマンドを使って実行してください。Codex は workspace-write を使い、ネットワークと承認要求を無効にします。Claude は push、gh、Web ツールを禁止します。[安全性](docs/safety.md#task-agent-launch-boundary)を参照してください。
-
-`rabi run SEL -- [TASK]` でディレクトリを移動せずにワークスペースを選べます。リポジトリ外からは `-R REPO` を追加します。`--` がない場合の単一の位置引数は従来どおりタスクの文章です。`rabi list` と `rabi show` は現在の親の実行状態を表示し、JSON にはセッション ID と最新起動のログ・回答のパスも含まれます。
-
-`rabi handoff` は親プロバイダを切り替える際のコンテキストを保持します。`rabi handoff show` で元のタスクとメモを読み、`rabi handoff add` でメモを追記し（`--kind checkpoint -` は標準入力）、`rabi handoff path` で保存先を表示します。run は最初のタスクを一度保存し、その後のタスクを request として追記します。注入は既定で有効で、`--no-handoff` で省略できます。全プロバイダに、このワークスペースのメモリディレクトリを `--add-dir` で渡します。Codex には、ローカルコミットに必要な Git メタデータへの書き込み権限も範囲を絞って別途付与します。remove・gc・forget 後もメモリは保持されます。[詳細](docs/commands.md#workspace-handoff)を参照。
-
-```sh
-rabi run "Fix issue #123"
-rabi run --skill my-skill "Follow the project instructions"
-rabi run "Address the review findings"
-rabi run -R /path/to/repo task/auth -- "Address the review findings"
-rabi run --fresh - < task.md
-rabi run --fresh --provider cursor "Fix issue #123"
-rabi run --fresh --provider claude "Fix issue #123"
-```
-
-## 設定
-
-`rabi config` で `workspace-root`、`clone-root`、`sync.strategy`、`sync.rewrite-published` を管理します。コマンドの対象は現在のリポジトリ、または `-R/--repo REF` で選択したリポジトリです。REF には `/`、`./`、`../`、`~` で始まるチェックアウトのルートパス（`.` と `..` も可）、または既存のクローン先に対応する正規名 `host/owner/repo`（`owner/repo` はデフォルトホストを使用）を指定します。相対パスには `./` を付けてください。サブディレクトリのパスは指定できません。[設定とリポジトリの指定](docs/configuration.md)を参照してください。
-
-プライマリチェックアウトの `.rabi.toml` に `[env]` を宣言すると、信頼済みの `rabi run` と `rabi exec` で PATH の先頭追加と変数の設定を共有できます。run はワークスペース内の PATH エントリーと `${RABI_WORKSPACE_PATH}` を参照する値を警告付きでスキップします。PATH はプロバイダーのインタープリターも選ぶため、エージェントが書き込めないディレクトリだけを宣言してください。どちらも `--no-env` で無効にできます。フックの環境は従来どおりです。展開とセキュリティのルールは[実行環境](docs/configuration.md#repository-execution-environment)を参照してください。
-
-## フックと信頼
-
-リポジトリの `.rabi.toml` に setup・pre-remove フックを定義します。`.worktreeinclude` はプライマリからコピーする無視ファイルを選びます。`rabi trust add` で信頼を付与する前にフック・宣言された環境・親への指示を確認してください。信頼は Git 共通ディレクトリのパスに付与され、同じパスに clone し直しても取り消すまで有効です。[フック・信頼・セットアップの再試行](docs/hooks.md)を参照してください。
-
-## FAQ
-
-**普通の `git worktree` との違いは？** Git がリンクされたチェックアウトを提供し、rabi はタスクのメタデータ、リポジトリ検出、準備、ベースとの同期、根拠に基づくクリーンアップを追加します。ブランチと worktree は通常の Git のままです。
-
-**エージェントの実行やサービスの分離も行う？** ワークスペースが分けるのはファイルとブランチです。rabi はエージェントのスケジュール、端末セッションの管理、プロセス・ポート・データベース・認証情報・エージェント間アクセスの分離は行いません。
-
-## ステータス
-
-ベータ版です（上のバージョニング方針を参照）。破壊的変更は [CHANGELOG](CHANGELOG.md) に記載しています。
+[rabi の利用スキル](skills/rabi/SKILL.md)では、タスクの進め方、エージェントのローカル作業、ブロック理由、ワークスペースの復旧方法を説明しています。CLI は上記のリリースインストーラーで別途インストールしてください。
 
 ## コントリビューション
 
-開発手順とチェックは [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。プルリクエストの宛先は `main` です。
+開発と検証は [CONTRIBUTING.md](CONTRIBUTING.md) を参照してください。プルリクエストの宛先は `main` です。
 
 ## ライセンス
 

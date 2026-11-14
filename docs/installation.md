@@ -2,15 +2,15 @@
 
 [README](../README.md) · [Commands](commands.md) · [JSON](json.md)
 
-> rabi is under active development (v7 beta). During the v7 beta, minor releases (7.x) may contain breaking changes, following the same rule as SemVer 0.x; patch releases (7.x.y) contain fixes only. Breaking changes are listed in [CHANGELOG](../CHANGELOG.md).
+For v8 migration steps, see [Upgrading to v8](upgrading-to-v8.md). Breaking changes remain listed in [CHANGELOG](../CHANGELOG.md).
 
-Install the latest v7 release:
+Install the latest stable release from GitHub Releases:
 
 ```sh
 curl -fsSL https://github.com/yoiailabs/rabi/releases/latest/download/install.sh | sh
 ```
 
-The installer always verifies SHA-256. Use `sh -s -- --verify-attestation` to also verify artifact provenance (requires `gh`). Without a version pin, the installer selects the newest stable v7 release with a `rabi-` archive for the platform, skipping v6.
+The installer always verifies SHA-256. Use `sh -s -- --verify-attestation` to also verify artifact provenance (requires `gh`). Without a version pin, the installer selects the newest stable release with a `rabi-` archive for the platform, skipping v6.
 
 For agents and CI, pin the installer and binary to the same release tag:
 
@@ -43,7 +43,7 @@ Release binaries support Linux x64/arm64 (static musl builds for any distributio
 
 ## Other installation methods
 
-With mise, pin v7.0.0 or a later v7 release (v7.0.0-alpha.10 and later prereleases also work). The v7 releases share the same repository as the older v6 TypeScript releases, so keep the version pin explicit.
+With mise, pin v7.0.0 or a later release (v7.0.0-alpha.10 and later prereleases also work). The v7 releases share the same repository as the older v6 TypeScript releases, so keep the version pin explicit.
 
 ```sh
 mise use github:yoiailabs/rabi@<VERSION>
@@ -66,4 +66,4 @@ grep " rabi-v7.0.0-linux-x64.tar.gz$" SHA256SUMS | sha256sum -c -
 
 ## Updating
 
-Re-run the main installer command above to update to the newest stable v7 release, or update the tag in both places in the pinned command. mise users update their version pin with mise; Cargo users rerun the source install command with the new tag; manual users replace the binary with the newly downloaded and verified one. `rabi` has no self-update command and does not check for updates or make network calls for update checks.
+Re-run the main installer command above to update to the newest stable release, or update the tag in both places in the pinned command. mise users update their version pin with mise; Cargo users rerun the source install command with the new tag; manual users replace the binary with the newly downloaded and verified one. `rabi` has no self-update command and does not check for updates or make network calls for update checks.

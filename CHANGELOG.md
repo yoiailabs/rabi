@@ -2,7 +2,11 @@
 
 ## Unreleased
 
+See [Upgrading to v8](docs/upgrading-to-v8.md) for migration steps and the [draft v8.0.0 release notes](docs/release-notes/v8.0.0.md).
+
 ### Added
+
+- Rewrite the English/Japanese READMEs, command reference and agent usage skill for the v8 software-factory flow; add a complete v8 upgrade guide and draft release notes.
 
 - `rabi task review [SEL]` reviews the exact verified PR head in a fresh detached checkout with a restricted Codex or Claude reviewer. Primary-checkout `[review]` preferences select provider/model; the default provider is the opposite of the implementer. Strict nonce-framed answers bind atomic records to head/base/merge-base. Passing reviews mark the PR ready and upsert one sanitized findings comment before `classifying`; revisions share the fix budget, signature deduplication and repeated-failure stop. Review output never approves or merges.
 
