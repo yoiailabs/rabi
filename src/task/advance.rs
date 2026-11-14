@@ -762,12 +762,130 @@ pub(crate) fn execute(
     wait: bool,
     timeout: Option<Duration>,
 ) -> Result<Report> {
+    execute_internal(root, selector, wait, timeout, false)?
+        .ok_or_else(|| Error::msg("Task advance did not produce a report"))
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BatchReport {
+    pub items: Vec<BatchItem>,
+    #[serde(skip)]
+    pub exit_code: i32,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct BatchItem {
+    pub task_id: String,
+    pub exit_code: i32,
+    pub report: Option<Report>,
+    pub error: Option<crate::error::JsonErrorBody>,
+}
+
+// Outcomes are ordered by operational severity, not numeric status. Unknown
+// failures rank alongside operational errors; ties retain the first outcome.
+fn severity(exit: i32) -> u8 {
+    match exit {
+        130 => 10,
+        124 => 9,
+        6 => 8,
+        5 => 6,
+        4 => 5,
+        3 => 4,
+        2 => 3,
+        10 => 2,
+        0 => 0,
+        _ => 7,
+    }
+}
+
+pub(crate) fn execute_all(
+    root: &Path,
+    wait: bool,
+    timeout: Option<Duration>,
+) -> Result<BatchReport> {
+    crate::run::require_trust(root)?;
+    // Keep one outer guard alive so nested task launches cannot clear a batch
+    // cancellation between tasks. A user interrupt stops further launches.
+    let signals = super::boundary::Signals::install()?;
+    let _git = super::boundary::git_read_scope();
+    // Cleanup may remove the invoking linked checkout before later tasks run.
+    // Use the protected primary checkout for all batch operations and hooks.
+    let primary = crate::git::git_root(root)?;
+    let root = primary.as_path();
+    let store = Store::locate(root)?;
+    let mut batch = BatchReport {
+        items: Vec::new(),
+        exit_code: 0,
+    };
+    for id in store.ids()? {
+        if signals.interrupted() {
+            batch.exit_code = 130;
+            break;
+        }
+        let item = match execute_internal(root, Some(&id), wait, timeout, true) {
+            Ok(None) => continue,
+            Ok(Some(report)) => BatchItem {
+                task_id: id,
+                exit_code: report.exit_code,
+                report: Some(report),
+                error: None,
+            },
+            Err(error) => {
+                let exit_code = error.exit_code();
+                BatchItem {
+                    task_id: id,
+                    exit_code,
+                    report: None,
+                    error: Some(error.to_json(exit_code).error),
+                }
+            }
+        };
+        if severity(item.exit_code) > severity(batch.exit_code) {
+            batch.exit_code = item.exit_code;
+        }
+        batch.items.push(item);
+        if signals.interrupted() {
+            batch.exit_code = 130;
+            break;
+        }
+    }
+    if signals.interrupted() {
+        batch.exit_code = 130;
+    }
+    Ok(batch)
+}
+
+fn execute_internal(
+    root: &Path,
+    selector: Option<&str>,
+    wait: bool,
+    timeout: Option<Duration>,
+    batch: bool,
+) -> Result<Option<Report>> {
     crate::run::require_trust(root)?;
     let signals = super::boundary::Signals::install()?;
     let _git = super::boundary::git_read_scope();
     let store = Store::locate(root)?;
-    let task = store.implementation_task(selector)?;
+    let task = if batch {
+        // Batch selectors come directly from the store's sorted ID snapshot.
+        store.load(selector.ok_or_else(|| Error::msg("Missing batch task ID"))?)?
+    } else {
+        store.implementation_task(selector)?
+    };
+    if batch && (task.state.terminal() || matches!(store.derived(&task)?, TaskState::Blocked(_))) {
+        return Ok(None);
+    }
     let _advance = store.advance_lock(&task)?;
+    if batch {
+        // A concurrent advance may have finished since enumeration. Recheck
+        // under the same lock that protects all steps below.
+        let current = store.load(&task.id)?;
+        if current.state.terminal() || matches!(store.derived(&current)?, TaskState::Blocked(_)) {
+            return Ok(None);
+        }
+    }
     let id = task.id;
     let config = configuration(root)?;
     let timeout = timeout.unwrap_or(crate::run::timeout(&config.ci_timeout)?);
@@ -793,6 +911,7 @@ pub(crate) fn execute(
             let _implementation = store.implementation_lock(&task)?;
             let _publication = store.publication_lock(&task)?;
             match task.state {
+                TaskState::New if batch => Ok(report(&task, "skipped_new", None, 0)),
                 TaskState::Implementing => implementing(root, &store, &mut task, &config),
                 TaskState::Prechecking | TaskState::Publishing => {
                     publishing(root, &store, &mut task)
@@ -831,6 +950,7 @@ pub(crate) fn execute(
         }
         let result = step?;
         if !wait
+            || (batch && result.exit_code == crate::error::WAITING)
             || (result.exit_code != 0 && result.exit_code != crate::error::WAITING)
             || !matches!(
                 result.state,
@@ -862,7 +982,7 @@ pub(crate) fn execute(
     })();
     result.map(|mut report: Report| {
         report.budget = Budget::new(config.fix_budget, report.fixes_used);
-        report
+        Some(report)
     })
 }
 
@@ -870,6 +990,15 @@ pub(crate) fn execute(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn batch_severity_is_explicit_and_not_numeric() {
+        let ordered = [0, 10, 2, 3, 4, 5, 1, 6, 124, 130];
+        for pair in ordered.windows(2) {
+            assert!(severity(pair[0]) < severity(pair[1]), "{pair:?}");
+        }
+        assert_eq!(severity(42), severity(1));
+    }
 
     #[test]
     fn required_check_contract_table() {

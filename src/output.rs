@@ -102,6 +102,7 @@ struct Output {
     command: String,
     json: bool,
     data: Option<Value>,
+    lines: Option<Vec<Value>>,
     warnings: Vec<Warning>,
     error: Option<JsonErrorBody>,
     reported_errors: Vec<String>,
@@ -155,6 +156,17 @@ pub(crate) fn data(value: &impl Serialize) -> Result<i32> {
     }
     OUTPUT.with_borrow_mut(|out| out.data = Some(value));
     Ok(0)
+}
+
+/// Stage a finite, read-only JSON-lines response. Errors retain the ordinary envelope.
+pub(crate) fn json_lines(values: &[impl Serialize]) -> Result<()> {
+    let lines = values
+        .iter()
+        .map(serde_json::to_value)
+        .collect::<std::result::Result<Vec<_>, _>>()
+        .map_err(|error| Error::msg(error.to_string()))?;
+    OUTPUT.with_borrow_mut(|out| out.lines = Some(lines));
+    Ok(())
 }
 
 pub(crate) fn app_version(version: String) -> Result<i32> {
@@ -250,6 +262,16 @@ pub(crate) fn finish(mut exit: i32) -> Result<i32> {
     OUTPUT.with_borrow_mut(|out| {
         if !out.json {
             return Ok(exit);
+        }
+        if exit == 0 && out.error.is_none() {
+            if let Some(lines) = &out.lines {
+                for line in lines {
+                    let text = serde_json::to_string(line)
+                        .map_err(|error| Error::msg(error.to_string()))?;
+                    outln!("{text}");
+                }
+                return Ok(exit);
+            }
         }
         if exit != 0 && out.error.is_none() {
             out.error = Some(

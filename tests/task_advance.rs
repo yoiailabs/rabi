@@ -3,6 +3,8 @@
 mod test_git;
 #[path = "common/scripts.rs"]
 mod test_support;
+#[path = "common/wait.rs"]
+mod wait;
 
 use serde_json::{json, Value};
 use std::{
@@ -940,6 +942,44 @@ fn advance_reports_stopping_states_without_launch_or_remote_calls() {
         assert_eq!(report["data"]["state"], state);
         assert_eq!(repo.launches(), 0);
         assert!(!repo.root.join("gh-trace").exists());
+    }
+}
+
+#[test]
+fn standalone_publish_precheck_failure_is_reported_as_a_precheck_fix_relaunch() {
+    let repo = Repo::new(
+        &["test"],
+        "",
+        Some("printf 'standalone precheck failure\\n'; exit 1"),
+    );
+    let run = |mut command: Command, exit| {
+        let mut capture = wait::OutputCapture::new();
+        let mut child = capture.apply(&mut command).spawn().unwrap();
+        decode(capture.finish(&mut child), exit)
+    };
+    run(repo.advance(), 0);
+    run(repo.command(&["task", "publish", &repo.task, "--json"]), 1);
+    let view = run(repo.command(&["task", "show", &repo.task, "--json"]), 0);
+    assert!(view["data"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| {
+            event["precheck"]["reason"] == "command_failed" && event["precheck"]["passed"] == false
+        }));
+    assert!(!view["data"]["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| { event["reason"] == "precheck_feedback" }));
+    let advanced = run(repo.advance(), 0);
+    assert_eq!(advanced["data"]["fixesUsed"], 1);
+    assert_eq!(repo.launches(), 2);
+    let report = run(repo.command(&["task", "report", "--json"]), 0);
+    for data in [&report["data"], &report["data"]["tasks"][0]] {
+        assert_eq!(data["fixRelaunches"], 1);
+        assert_eq!(data["fixesByCause"]["precheck"], 1);
+        assert_eq!(data["fixesByCause"]["unknown"], 0);
     }
 }
 

@@ -113,6 +113,32 @@ require an ID. In contrast, `task risk`, `classify`, `status`, `approve` and
 `merge` use workspace selectors; do not pass a task ID to them. PR commands also
 accept `pr:N` for inspection; real merge still needs a workspace's matching HEAD.
 
+## Inspect outcomes and advance a batch
+
+Use `rabi task report [--since DUR|DATE] --json` for read-only repository-wide
+state counts, blocked reasons, fix relaunches, review rounds, tier outcomes,
+completed waits and repeated finding fingerprints. Cutoffs accept positive
+s/m/h/d/w durations, UTC dates or RFC3339 timestamps. Missing historical evidence
+is unknown; a report never authorizes publication or merge.
+
+`rabi task events [SEL] [--since DUR|DATE] --json` emits JSON lines, one stored
+event plus taskId per line; omit SEL for all tasks. Empty results emit nothing.
+Errors retain the ordinary JSON envelope. `task show ID --json` already includes
+full history in one envelope. Neither read-only command needs trust or loads
+execution configuration, and neither writes or launches providers.
+
+For an authorized batch lifecycle, use `rabi task advance --all --wait --json`.
+It processes sorted task IDs sequentially under each task's advance lock, skips
+blocked/terminal tasks and continues after individual failures. New tasks are
+reported with reason `skipped_new` and exit 0; they still need `task implement`
+first. Explicit single-task advance refuses new tasks with exit 4. Batch `--wait`
+stops each task at waiting instead of polling; single-task `--wait` still polls.
+JSON data contains per-task reports,
+errors and exit codes. Aggregate exit severity is
+`130 > 124 > 6 > 1 > 5 > 4 > 3 > 2 > 10 > 0` (other errors rank with 1, first tie
+wins); interruption stops further launches. Retry retained merged cleanup with
+a single-task advance. Inspect every task result when a batch fails.
+
 ## Read state before recovery
 
 ```sh

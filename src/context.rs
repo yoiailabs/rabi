@@ -62,10 +62,11 @@ pub(crate) fn open_for_execution(repository: Option<&Path>, no_env: bool) -> Res
 /// Select hooks independently of the target checkout used by dot.
 /// The source must belong to the selected repository; copies still use primary.
 pub(crate) fn open_for_hooks(repository: Option<&Path>, source: &Path) -> Result<Context> {
-    let cwd = std::env::current_dir().map_err(|error| Error::msg(error.to_string()))?;
     let git_root = match repository {
         Some(root) => root.to_path_buf(),
-        None => git::git_root(&cwd)?,
+        None => {
+            git::git_root(&std::env::current_dir().map_err(|error| Error::msg(error.to_string()))?)?
+        }
     };
     let source_checkout = git::top_level(source)?;
     if !paths::same_location(&git::git_root(&source_checkout)?, &git_root) {

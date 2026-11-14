@@ -131,7 +131,7 @@ impl TaskState {
 pub(crate) struct Task {
     schema: u32,
     pub id: String,
-    created_at: String,
+    pub(super) created_at: String,
     updated_at: String,
     pub state: TaskState,
     pub intent: String,
@@ -150,8 +150,8 @@ pub(crate) struct Task {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Event {
     pub(super) at: String,
-    from: Option<TaskState>,
-    to: TaskState,
+    pub(super) from: Option<TaskState>,
+    pub(super) to: TaskState,
     pub(super) reason: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     detail: Option<String>,
@@ -161,6 +161,8 @@ pub(crate) struct Event {
     pub(super) precheck: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) review: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) classification: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -250,7 +252,7 @@ impl Store {
         })
     }
 
-    fn ids(&self) -> Result<Vec<String>> {
+    pub(super) fn ids(&self) -> Result<Vec<String>> {
         if self.repository.directory(false)?.is_none() {
             return Ok(Vec::new());
         }
@@ -270,7 +272,7 @@ impl Store {
         Ok(ids)
     }
 
-    fn load(&self, id: &str) -> Result<Task> {
+    pub(super) fn load(&self, id: &str) -> Result<Task> {
         self.load_record(id)
             .map_err(|error| Error::msg(format!("Cannot read task {id}: {error}")))
     }
@@ -307,7 +309,7 @@ impl Store {
         Ok(record)
     }
 
-    fn resolve(&self, prefix: &str) -> Result<String> {
+    pub(super) fn resolve(&self, prefix: &str) -> Result<String> {
         if prefix.len() < 6 {
             return Err(Error::validation(
                 "Task ID prefixes require at least 6 characters",
@@ -331,7 +333,7 @@ impl Store {
         }
     }
 
-    fn derived(&self, task: &Task) -> Result<TaskState> {
+    pub(super) fn derived(&self, task: &Task) -> Result<TaskState> {
         if !task.state.terminal() && !matches!(task.state, TaskState::Blocked(_)) {
             let exists = git::reference_exists(&self.root, &format!("refs/heads/{}", task.branch))?;
             if exists == (task.state == TaskState::New) {
@@ -542,6 +544,7 @@ impl Store {
             agent: None,
             precheck: None,
             review: None,
+            classification: None,
         };
         self.save(directory, &task, &event)?;
         io(File::open(directory).and_then(|file| file.sync_all()))?;
@@ -624,6 +627,27 @@ impl Store {
         reason: &str,
         review: Option<serde_json::Value>,
     ) -> Result<()> {
+        self.advance_observation_event(original, to, reason, review, None)
+    }
+
+    pub(super) fn advance_classification_event(
+        &self,
+        original: &mut Task,
+        to: TaskState,
+        reason: &str,
+        classification: serde_json::Value,
+    ) -> Result<()> {
+        self.advance_observation_event(original, to, reason, None, Some(classification))
+    }
+
+    fn advance_observation_event(
+        &self,
+        original: &mut Task,
+        to: TaskState,
+        reason: &str,
+        review: Option<serde_json::Value>,
+        classification: Option<serde_json::Value>,
+    ) -> Result<()> {
         let directory = self.path.join(&original.id);
         let _lock = lock(&directory.join(".lock"))?;
         let mut task = self.load_record_with_branch(&original.id, Some(&original.branch))?;
@@ -644,11 +668,13 @@ impl Store {
                 agent: None,
                 precheck: None,
                 review: None,
+                classification: None,
             }
         } else {
             transition(&mut task, to, reason)?
         };
         event.review = review;
+        event.classification = classification;
         task.advance = original.advance.clone();
         task.updated_at = event.at.clone();
         self.save(&directory, &task, &event)?;
@@ -693,6 +719,7 @@ impl Store {
                     agent: None,
                     precheck: None,
                     review: None,
+                    classification: None,
                 },
                 _ => {
                     return Err(Error::status(
@@ -711,6 +738,7 @@ impl Store {
                 agent: None,
                 precheck: None,
                 review: None,
+                classification: None,
             }
         };
         event.agent = Some(data);
@@ -755,6 +783,7 @@ impl Store {
                 agent: None,
                 precheck: None,
                 review: None,
+                classification: None,
             }
         } else {
             transition(&mut task, to, reason)?
@@ -825,6 +854,7 @@ fn transition(task: &mut Task, to: TaskState, reason: &str) -> Result<Event> {
         agent: None,
         precheck: None,
         review: None,
+        classification: None,
     };
     task.state = to;
     task.updated_at = event.at.clone();

@@ -5,6 +5,8 @@
 ### Added
 
 - `rabi task new --issue N` and `rabi task intake --label L [--limit N] [--dry-run]` import GitHub issues with GET-only permission checks. Authors and the latest label actor require write/maintain/admin access; issue links prevent duplicate tasks. Label names match case-insensitively; unknown or non-user label actors skip as `label_actor_unknown`, separately from `intake_not_permitted` refusals, and a collaborator-permission HTTP 404 denies only that issue. External title/body text is sanitized, keeps its beginning within a 4096-byte cap with a trailing truncation marker, and is nonce-framed in later agent prompts. Intake never launches agents or writes to issues.
+- Read-only `rabi task report [--since DUR|DATE]` aggregates local outcomes, blocked reasons, fix relaunches, review rounds, tier outcomes, completed waits and repeated findings with versioned JSON. Fixes after any failed precheck, including standalone `task publish` prechecks, count as `precheck`. `rabi task events [SEL] [--since DUR|DATE]` exports history as text or JSON lines.
+- `rabi task advance --all [--wait]` processes active tasks sequentially under their existing locks, retaining per-task failures and a documented aggregate exit precedence. Batch wait stops each task when it waits; single-task polling is unchanged. New tasks are reported as non-failing skips with reason `skipped_new`; start them with `task implement` first.
 
 ### Fixed
 

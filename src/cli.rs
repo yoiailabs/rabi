@@ -903,6 +903,46 @@ fn task_list(args: &[String]) -> Result<i32> {
 fn task_show(args: &[String]) -> Result<i32> {
     task_store(args, "show")
 }
+fn task_report(args: &[String]) -> Result<i32> {
+    task_learning(args, false)
+}
+fn task_events(args: &[String]) -> Result<i32> {
+    task_learning(args, true)
+}
+fn task_learning(args: &[String], events: bool) -> Result<i32> {
+    let key = if events { "task events" } else { "task report" };
+    let parsed = args::parse(args, &command_options(key), true)?;
+    if parsed.positionals.len() > usize::from(events) {
+        return Err(Error::validation(format!("See rabi help {key} for usage")));
+    }
+    let since = crate::task::learning::parse_since(single_value(&parsed, "since")?)?;
+    let _git = crate::task::boundary::git_read_scope();
+    let repository = selected_repository(&parsed)?;
+    let cwd = std::env::current_dir().map_err(|error| Error::msg(error.to_string()))?;
+    let root = crate::git::git_root(repository.as_deref().unwrap_or(&cwd))?;
+    if events {
+        let rows = crate::task::learning::events(
+            &root,
+            parsed.positionals.first().map(String::as_str),
+            &since,
+        )?;
+        if crate::output::json() {
+            crate::output::json_lines(&rows)?;
+        } else {
+            for row in rows {
+                row.print();
+            }
+        }
+    } else {
+        let report = crate::task::learning::report(&root, &since)?;
+        if crate::output::json() {
+            emit_json(&report)?;
+        } else {
+            report.print();
+        }
+    }
+    Ok(SUCCESS)
+}
 fn task_abandon(args: &[String]) -> Result<i32> {
     task_store(args, "abandon")
 }
@@ -1054,9 +1094,9 @@ fn task_publish(args: &[String]) -> Result<i32> {
 
 fn task_advance(args: &[String]) -> Result<i32> {
     let parsed = args::parse(args, &command_options("task advance"), true)?;
-    if parsed.positionals.len() > 1 {
+    if parsed.positionals.len() > 1 || (parsed.flag("all") && !parsed.positionals.is_empty()) {
         return Err(Error::validation(
-            "Usage: rabi task advance [SEL] [--wait] [--ci-timeout DUR]",
+            "Usage: rabi task advance [SEL | --all] [--wait] [--ci-timeout DUR]",
         ));
     }
     let timeout = single_value(&parsed, "ci-timeout")?
@@ -1067,6 +1107,44 @@ fn task_advance(args: &[String]) -> Result<i32> {
     let cwd = std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?;
     let root = repository.as_deref().unwrap_or(&cwd);
     crate::git::git_root(root)?;
+    if parsed.flag("all") {
+        let batch = crate::task::advance::execute_all(root, parsed.flag("wait"), timeout)?;
+        emit_json(&batch)?;
+        if !crate::output::json() {
+            for item in &batch.items {
+                if let Some(report) = &item.report {
+                    outln!(
+                        "Task {}: {} ({}) [exit {}]",
+                        item.task_id,
+                        report.state.name(),
+                        visible_text(&report.reason),
+                        item.exit_code
+                    );
+                } else if let Some(error) = &item.error {
+                    outln!(
+                        "Task {}: {} [exit {}]",
+                        item.task_id,
+                        visible_text(&error.message),
+                        item.exit_code
+                    );
+                }
+            }
+            if batch.items.is_empty() {
+                outln!("No tasks to advance");
+            }
+        }
+        if batch.exit_code != SUCCESS {
+            crate::output::failure(
+                Error::status(
+                    batch.exit_code,
+                    "Task batch advance did not complete successfully",
+                )
+                .to_json(batch.exit_code)
+                .error,
+            );
+        }
+        return Ok(batch.exit_code);
+    }
     let report = crate::task::advance::execute(
         root,
         parsed.positionals.first().map(String::as_str),
@@ -2022,10 +2100,12 @@ fn command_options(key: &str) -> Vec<Opt> {
         "task list" => vec![repo_flag(), flag("all", None)],
         "task advance" => vec![
             repo_flag(),
+            flag("all", None),
             flag("wait", None),
             value_flag("ci-timeout", None),
         ],
         "task show" | "task publish" | "task review" => vec![repo_flag()],
+        "task report" | "task events" => vec![repo_flag(), value_flag("since", None)],
         "task abandon" => vec![repo_flag(), value_flag("reason", None)],
         "task risk" => vec![repo_flag(), value_flag("base", None)],
         "task implement" => vec![
@@ -2572,6 +2652,18 @@ static COMMANDS: &[Command] = &[
         help_key: "task",
         run: task_root,
         children: &[
+            Command {
+                name: "report",
+                help_key: "task report",
+                run: task_report,
+                children: &[],
+            },
+            Command {
+                name: "events",
+                help_key: "task events",
+                run: task_events,
+                children: &[],
+            },
             Command {
                 name: "advance",
                 help_key: "task advance",
