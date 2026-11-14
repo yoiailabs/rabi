@@ -7,6 +7,7 @@ mod diff;
 pub(crate) mod implement;
 mod policy;
 mod preflight;
+pub(crate) mod publish;
 pub(crate) mod store;
 
 use std::path::Path;

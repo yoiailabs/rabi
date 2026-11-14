@@ -4,6 +4,8 @@
 
 ### Added
 
+- `rabi task publish [SEL]` runs trusted committed `[precheck]` commands with stripped credentials, blocks changed checks and base-policy floor paths, then pushes to the recorded URL and creates or reuses a draft PR. Publication disables repository hooks/configuration, never forces, reconciles interrupted pushes/PR creation, and advances to `ci` only for the verified HEAD.
+
 - `rabi task implement [SEL] [--provider codex|claude] [--timeout DUR] [MESSAGE|-]` runs one foreground implementer in an existing linked task workspace, records launch and Git outcomes, and advances only `new` to `implementing`. Task implementers and the tool-less classifier share credential stripping, empty GitHub CLI configuration, disabled Git credential helpers/prompts and `RABI_AGENT=1`; `rabi run` keeps its existing behavior.
 
 - `rabi task classify [SEL] [--base REF] [--provider claude]` applies the base-commit written policy to committed diffs using one fresh Claude session with all tools disabled (`--tools ""`) and safe flags. Claude is the default and only classifier provider. Deterministic safeguards and classifier failures escalate to high. Exact-head records bind policy/document blobs and are consumed by merge preflight; missing or stale records retain external-review behavior. Repository policies accept `[classifier] doc` and an optional provider.
@@ -22,6 +24,7 @@
 
 ### Changed (Breaking)
 
+- Older rabi binaries reject `.rabi.toml` containing `[precheck]` as an unknown key. Upgrade before adding task prechecks.
 - Classifier providers must support tool-less invocation. Codex classifier support is removed because its CLI cannot currently guarantee this without an injected model catalog; rabi supplies none. Unsupported `task classify --provider` values exit 2, and unsupported `[classifier] provider` values fail policy parsing.
 - `task merge` now attempts a guarded merge unless `--dry-run` is supplied. Approval is evaluated instead of remaining N/A; real merge preflight refusals exit 4.
 - Older rabi binaries reject `.rabi.toml` containing `[env]` as an unknown key. Upgrade binaries before adding the declaration.

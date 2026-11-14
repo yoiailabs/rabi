@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 #[serde(rename_all = "snake_case")]
 pub(crate) enum BlockReason {
     NoProgress,
+    Environment,
     NoCi,
     CiTimeout,
     Conflict,
@@ -120,10 +121,10 @@ pub(crate) struct Task {
     pub state: TaskState,
     pub intent: String,
     pub branch: String,
-    base_ref: String,
-    push_remote_url: String,
+    pub base_ref: String,
+    pub push_remote_url: String,
     pub workspace_path: Option<PathBuf>,
-    pr_number: Option<u64>,
+    pub pr_number: Option<u64>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -137,6 +138,8 @@ pub(crate) struct Event {
     detail: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     agent: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    precheck: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -478,6 +481,7 @@ impl Store {
             reason: "created".into(),
             detail: None,
             agent: None,
+            precheck: None,
         };
         self.save(directory, &task, &event)?;
         io(File::open(directory).and_then(|file| file.sync_all()))?;
@@ -571,6 +575,7 @@ impl Store {
                     reason: "implementation_started".into(),
                     detail: None,
                     agent: None,
+                    precheck: None,
                 },
                 _ => {
                     return Err(Error::status(
@@ -587,10 +592,56 @@ impl Store {
                 reason: "implementation_finished".into(),
                 detail: None,
                 agent: None,
+                precheck: None,
             }
         };
         event.agent = Some(data);
         task.workspace_path = Some(workspace.to_path_buf());
+        task.updated_at = event.at.clone();
+        self.save(&directory, &task, &event)
+    }
+
+    pub fn publication_lock(&self, task: &Task) -> Result<File> {
+        let file = open(&self.path.join(&task.id).join(".publish.lock"), true)?;
+        file.try_lock().map_err(|_| {
+            Error::status(crate::error::REFUSED, "Task publication is already running")
+        })?;
+        Ok(file)
+    }
+
+    pub fn publication_event(
+        &self,
+        original: &Task,
+        to: TaskState,
+        reason: &str,
+        precheck: Option<serde_json::Value>,
+        pr_number: Option<u64>,
+    ) -> Result<()> {
+        let directory = self.path.join(&original.id);
+        let _lock = lock(&directory.join(".lock"))?;
+        let mut task = self.load_record_with_branch(&original.id, Some(&original.branch))?;
+        self.events(&original.id)?;
+        if task.state != original.state {
+            return Err(Error::status(
+                crate::error::REFUSED,
+                "Task state changed during publication",
+            ));
+        }
+        let mut event = if task.state == to {
+            Event {
+                at: now(),
+                from: Some(to),
+                to,
+                reason: reason.into(),
+                detail: None,
+                agent: None,
+                precheck: None,
+            }
+        } else {
+            transition(&mut task, to, reason)?
+        };
+        event.precheck = precheck;
+        task.pr_number = pr_number.or(task.pr_number);
         task.updated_at = event.at.clone();
         self.save(&directory, &task, &event)
     }
@@ -611,6 +662,18 @@ impl Store {
         let mut task = self.load(&id)?;
         let event = transition(&mut task, to, reason)?;
         let mut events = self.events(&id)?;
+        let _publication = if to == TaskState::Abandoned {
+            let file = open(&directory.join(".publish.lock"), true)?;
+            file.try_lock().map_err(|_| {
+                Error::status(
+                    crate::error::REFUSED,
+                    "Cannot abandon a task while publication is running",
+                )
+            })?;
+            Some(file)
+        } else {
+            None
+        };
         self.save(&directory, &task, &event)?;
         events.push(event);
         Ok(View {
@@ -639,6 +702,7 @@ fn transition(task: &mut Task, to: TaskState, reason: &str) -> Result<Event> {
         reason: reason.into(),
         detail: None,
         agent: None,
+        precheck: None,
     };
     task.state = to;
     task.updated_at = event.at.clone();
@@ -682,7 +746,17 @@ fn push_url(root: &Path, branch: &str) -> Result<String> {
     if url.is_empty() {
         return Err(failed());
     }
-    Ok(strip_credentials(url))
+    let url = strip_credentials(url);
+    // Relative local destinations are bound at creation, before later publication
+    // deliberately stops consulting checkout config and changes its working directory.
+    if !url.contains("://") && !url.contains(':') && !Path::new(&url).is_absolute() {
+        return fs::canonicalize(root.join(&url))
+            .map_err(|_| Error::msg("Cannot resolve local task push destination"))?
+            .into_os_string()
+            .into_string()
+            .map_err(|_| Error::msg("Task push destination must be UTF-8"));
+    }
+    Ok(url)
 }
 
 fn strip_credentials(url: &str) -> String {

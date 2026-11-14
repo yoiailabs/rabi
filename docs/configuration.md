@@ -56,6 +56,20 @@ Eligible environment reaches the provider process. Provider settings and login s
 
 Setup and pre-remove hooks do not receive `[env]`. A hook can opt into it by running `rabi exec . -- <cmd>` in its target workspace. See [hooks and trust](hooks.md).
 
+## Task prechecks
+
+Declare optional checks in repository `.rabi.toml`:
+
+```toml
+[precheck]
+commands = ["cargo fmt --check", "cargo test --locked"]
+timeout = "60m"
+```
+
+`rabi task publish` reads this table from the task's committed HEAD and compares it with the resolved base commit's table before executing anything. A changed table blocks as `precheck_changed` for human inspection. Unknown precheck fields, invalid types, blank commands or invalid timeouts fail validation. `timeout` is optional, defaults to `60m` per command, and accepts a positive integer followed by `s`, `m` or `h`. Commands run sequentially through `sh -c` in the linked task workspace, require common-directory trust, and receive the task agent credential boundary, including empty GitHub CLI configuration. `trust add` displays the declared checks and timeout alongside hooks and environment. Repository `[env]` is not applied. Do not put secrets in commands.
+
+The workspace must start clean at a committed HEAD and remain unchanged after checks. No `[precheck]` declaration passes through successfully. Precheck outcomes are bound to HEAD in the append-only task events; failed commands return to `implementing`, while missing tools block as `environment`. See [publication](commands.md#task-publish) and [safety](safety.md#task-publication).
+
 ## Cloning repositories
 
 `rabi clone` clones a Git repository into `<root>/<host>/<owner>/<repo>` and registers it. `owner/repo` uses `github.com`. The command accepts `https` and `http` URLs, `ssh://` URLs, scp-style `git@host:owner/repo` paths, `host/owner/repo`, and `owner/repo`. The host directory is lowercased, and a URL port is part of it (`example.net:9443`). `file://` URLs are rejected. A local path has no host, owner, and repository to place under that layout. A clone that exits early can leave a hidden `.rabi-clone-<pid>-<uuid>` directory beside the destination. A later clone in that directory removes it when the recorded process is no longer running.

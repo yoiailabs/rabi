@@ -180,6 +180,7 @@ pub struct ProjectView {
     pub setup: Vec<String>,
     pub pre_remove: Vec<String>,
     pub env: crate::execution_env::Environment,
+    pub precheck: Option<config::Precheck>,
 }
 
 pub fn load_hooks(start: &Path) -> Result<ProjectView> {
@@ -193,6 +194,7 @@ pub fn load_hooks(start: &Path) -> Result<ProjectView> {
         env,
         setup: config::setup_commands(loaded.as_ref()).to_vec(),
         pre_remove: config::pre_remove_commands(loaded.as_ref()).to_vec(),
+        precheck: loaded.as_ref().and_then(|config| config.precheck.clone()),
     })
 }
 
@@ -217,6 +219,14 @@ pub fn format_hooks(setup: &[String], pre_remove: &[String]) -> String {
         "{}\n{}",
         format_list("setup", setup),
         format_list("pre-remove", pre_remove)
+    )
+}
+
+pub fn format_precheck(precheck: &config::Precheck) -> String {
+    format!(
+        "{}\nprecheck timeout per command: {}",
+        format_list("precheck", &precheck.commands),
+        visible_text(precheck.timeout.as_deref().unwrap_or("60m"))
     )
 }
 

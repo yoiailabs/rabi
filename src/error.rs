@@ -132,7 +132,8 @@ pub fn exit_for_code(code: &str) -> i32 {
         "usage" | "ambiguous" => VALIDATION,
         "not_found" | "branch_not_found" | "not_repository" => NOT_FOUND,
         "dirty" | "unpreserved" | "published" | "exists" | "exists_remote" | "untrusted"
-        | "primary" | "refused" => REFUSED,
+        | "primary" | "refused" | "precheck_changed" | "floor_changed" | "diverged"
+        | "environment" => REFUSED,
         "conflict" => CONFLICT,
         "partial" => PARTIAL,
         _ => GENERAL,
