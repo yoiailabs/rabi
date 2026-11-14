@@ -16,7 +16,7 @@ mod md5;
 // oversized lines without allocating beyond this separate finalization bound.
 #[cfg(test)]
 use super::stream::FINAL_LINE_BYTES;
-const SANDBOX: &[u8] = b"{\"networkPolicy\":{\"allow\":[\"github.com\",\"*.github.com\",\"*.githubusercontent.com\"]}}\n";
+const SANDBOX: &[u8] = b"{\"networkPolicy\":{\"allow\":[]}}\n";
 
 pub(super) fn command(
     workspace: &Path,

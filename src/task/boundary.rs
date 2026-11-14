@@ -1,4 +1,4 @@
-//! Shared launch environment and lifetime for task agents, not a same-user sandbox.
+//! Shared launch environment and lifetime for agents, not a same-user sandbox.
 use std::fs;
 use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
@@ -100,6 +100,35 @@ impl Drop for Boundary {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.path);
     }
+}
+
+/// Local agents share sandbox policy while retaining provider authentication.
+pub(crate) fn codex_local_policy(command: &mut Command) {
+    command.args([
+        "--ignore-user-config",
+        "--ignore-rules",
+        "-s",
+        "workspace-write",
+        "-c",
+        "approval_policy=\"never\"",
+        "-c",
+        "sandbox_workspace_write.network_access=false",
+        "-c",
+        "web_search=\"disabled\"",
+        "-c",
+        "shell_environment_policy.inherit=\"all\"",
+        "-c",
+        "shell_environment_policy.include_only=[]",
+        "-c",
+        "shell_environment_policy.set={}",
+    ]);
+}
+
+pub(crate) fn claude_local_policy(command: &mut Command) {
+    command.args([
+        "--disallowedTools",
+        "Bash(git push:*),Bash(gh:*),WebFetch,WebSearch",
+    ]);
 }
 
 static INTERRUPTED: AtomicBool = AtomicBool::new(false);

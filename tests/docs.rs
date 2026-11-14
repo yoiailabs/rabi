@@ -66,9 +66,11 @@ fn user_documentation_has_no_temporary_phase_promises() {
 }
 
 #[test]
-fn parent_session_guidance_and_discovery_replace_the_workflow_contract() {
+fn parent_session_guidance_matches_the_simplified_run_contract() {
     let help: serde_json::Value = serde_json::from_str(include_str!("../help-data.json")).unwrap();
     for name in [
+        "skill",
+        "skill list",
         "workflow",
         "workflow list",
         "workflow show",
@@ -82,7 +84,7 @@ fn parent_session_guidance_and_discovery_replace_the_workflow_contract() {
         for flag in ["--skill", "--fresh", "--timeout", "--provider"] {
             assert!(document.contains(flag));
         }
-        assert!(document.contains("rabi skill list"));
+        assert!(!document.contains("rabi skill list"));
         for old in [
             "rabi workflow",
             "rabi run start",
@@ -206,4 +208,46 @@ fn task_landing_guidance_covers_approval_merge_and_cleanup() {
     assert!(include_str!("../docs/exit-codes.md").contains("maintainer approval"));
     assert!(include_str!("../docs/configuration.md").contains("approval-timeout = \"24h\""));
     assert!(include_str!("../docs/json.md").contains("mergeCommitSha"));
+}
+
+#[test]
+fn run_guidance_documents_optional_skill_and_shared_agent_boundary() {
+    let help: serde_json::Value = serde_json::from_str(include_str!("../help-data.json")).unwrap();
+    let skill = help["helps"]["run"]["options"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|option| option["name"] == "skill")
+        .unwrap();
+    assert!(skill["description"].as_str().unwrap().contains("Optional"));
+    assert!(!help["commands"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|command| command["name"] == "skill"));
+    let notes = help["helps"]["run"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|note| note.as_str().unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for (name, document) in [
+        ("run help", notes.as_str()),
+        ("commands", include_str!("../docs/commands.md")),
+        ("safety", include_str!("../docs/safety.md")),
+    ] {
+        for setting in [
+            "GH_CONFIG_DIR",
+            "RABI_AGENT=1",
+            "sandbox_workspace_write.network_access=false",
+            "Bash(git push:*)",
+            "Bash(gh:*)",
+            "WebFetch",
+            "WebSearch",
+            "empty network allowlist",
+        ] {
+            assert!(document.contains(setting), "{name} is missing {setting}");
+        }
+    }
 }

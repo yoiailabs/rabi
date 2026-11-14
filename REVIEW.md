@@ -9,7 +9,7 @@ For changes to trust, hooks, delete/remove (including gc), or sync behavior, use
 Prioritize:
 
 - Removal/gc preflight, primary checkout protection, dirty files, submodules, commit preservation, and checks after hooks. Ignored files are intentionally removed with a workspace; that documented behavior alone is not a bug.
-- Common-directory trust for hooks and run execution; skill discovery must execute nothing. Check noninteractive refusal and hook-skipping flags.
+- Common-directory trust for hooks and run execution. Check noninteractive refusal and hook-skipping flags.
 - Sync publication evidence, rewrite permission, fetch destinations, dry-run guarantees, and conflict recovery.
 - CLI output, JSON contracts, exit codes, stream routing, selectors, shell quoting, and partial-failure results.
 - Durable records, credentials, argument execution, fresh review context, and read-only enforcement. Documentation must match implemented behavior.

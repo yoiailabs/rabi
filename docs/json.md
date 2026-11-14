@@ -104,7 +104,6 @@ These are the keys inside envelope `data`; nested workspace objects use the cont
 |---|---|
 | `create` | `workspace`, `source`, `setup`, `copy`, `metadata` |
 | `run` | `run: RECORD, launch: LAUNCH, answer: string` |
-| `skill list` | `skills: [{name,source,path}]` |
 | `show`, `set`, `adopt` | `workspace` |
 | `path` | `path` |
 | `list` | `workspaces`; `--all-repos` also adds `repos` |
@@ -186,11 +185,11 @@ A failed clone uses the common error envelope. A destination that is not the exp
 
 `--version` and `-v` show the application version. `rabi --version --json` uses `command: "--version"`; `data.version` contains the application version and `data.display` contains the text version line.
 
-## Parent sessions and skill discovery
+## Parent sessions
 
 `list` and `show` add `run` to each workspace object. It is null when no current pointer exists. Invalid or unreadable pointer or state data also produces null and a `run_read` warning without failing the command; the same applies to invalid or unreadable locks when checking a running record. Other commands' workspace objects do not need this field. This summary reads the existing run store and never acquires, creates, removes, or rewrites a lock, pointer, or state file.
 
-The summary is `{id,provider,state,sessionId,skill,launches,lastLaunch}`. `launches` is the number of recorded launches, not the latest launch number. `lastLaunch` is null when none are recorded, otherwise `{n,startedAt,finishedAt,exitCode,stopReason,message,dir,promptPath,eventsPath,stderrPath,answerPath}`. `dir` and file paths are absolute, and paths are null when the corresponding directory or file does not exist; an answer may be absent while the parent is running. Session and unfinished launch fields may be null. `state` uses `running`, `idle`, `stopped`, or `error` as below, but a record saying running is displayed as `stopped` unless its lock's launcher pid or parent process group is alive. This is a read-only observation; it does not repair the stored state or claim task completion.
+The summary is `{id,provider,state,sessionId,skill,launches,lastLaunch}`. `launches` is the number of recorded launches, not the latest launch number. `lastLaunch` is null when none are recorded, otherwise `{n,startedAt,finishedAt,exitCode,stopReason,message,dir,promptPath,eventsPath,stderrPath,answerPath}`. `dir` and file paths are absolute, and paths are null when the corresponding directory or file does not exist; an answer may be absent while the parent is running. Session and unfinished launch fields may be null. `skill` is an empty string when no skill was supplied for the run; omitting it on resume retains the recorded value. `state` uses `running`, `idle`, `stopped`, or `error` as below, but a record saying running is displayed as `stopped` unless its lock's launcher pid or parent process group is alive. This is a read-only observation; it does not repair the stored state or claim task completion.
 
 `run` returns `data: {run, launch, answer}`. `run` is the schema-2 internal state: `{schema:2,id,workspace:{id,name,path,branch},provider:"codex"|"cursor"|"claude",sessionId,skill,state,launches:[...]}`. Unknown workspace id/branch and sessionId are null. State is `running`, `idle` after a completed parent launch, `stopped` after parent failure/interruption/timeout, or `error` after launcher/protocol errors. It never means task success.
 
@@ -203,8 +202,6 @@ Cursor finalization scans the log once after the parent is reaped, independently
 Claude finalization uses the same 16 MiB line limit, last-result selection, atomic answer writing, and status precedence. Its live observer also allows 16 MiB per line and per poll so large init metadata is validated; unreadable, malformed, or oversized live events trigger a controlled error stop. It validates init permission mode and agreement between first, init, and result session ids; an inconsistent new session remains without a resumable parent id. Null or missing result strings produce no answer file, matching Cursor; an ordinary exit 0 with such a malformed result is a protocol error. Timeout and interrupt retain their reason and rabi status even when Claude exits 0 with `is_error: true` and a null result. Unknown-session resume failures without init keep their nonzero parent exit and `parent_failed` reason. No record schema change is needed.
 
 Records live at `<git-common-dir>/rabi/runs/run_<uuid v4>/state.json`. Per-launch `launches/<n>/` contains `prompt.md`, raw `events.jsonl`, `stderr.log`, and the provider's `answer.md` when produced. Current pointers are `<common>/rabi/runs/current/<key>` containing a run id; key is the lowercase hexadecimal SHA-256 digest of the UTF-8 absolute checkout path, matching `run.workspace.path`. Branch or display-name changes do not change this identity. `<key>.lock` initially contains the launcher pid; after spawn it atomically records both launcher pid and parent process group id as whitespace-separated integers. A group id of zero marks spawning in progress; if the launcher dies before publishing the actual id, the lock is unverifiable and requires inspection. A surviving launcher or process group prevents takeover. State and pointer writes use the shared atomic writer. Old schema-1 directories and users' `.rabi/workflows/` are left untouched and unused. Workspace metadata schema 2 is unchanged.
-
-`skill list` returns `data: {skills:[{name,source,path}]}`. Paths identify skill directories, not `SKILL.md`; sources and order are documented in [commands](commands.md). Duplicates remain separate entries. Neither discovery nor run parses skill contents.
 
 ## Workspace handoff
 
@@ -231,7 +228,6 @@ Launch records optionally add `handoff: {injectedEntryIds:[...],bytes:N,snapshot
 `status` retains Git's status and any similarity score (for example `R100`); `oldPath` appears for renames/copies. Both paths are evaluated, and unknown encodings force high and floor with `floor:unknown:path-encoding`; replacement characters in displayed paths are never used for matching. Per-file reasons include applicable path rules/defaults, floors, kinds, and unknown data. Overall reasons collect file reasons plus limits. Reason forms and glob behavior are documented in [configuration](configuration.md#repository-risk-policy).
 
 Only committed changes are classified; the working tree and index are not read. Successful high/floor classifications still have `ok: true`, `error: null`, and exit 0. Invalid policy uses exit 1 with `error.code: "failed"`; failed Git inspection or ref resolution uses exit 1 with `git_failed`. Malformed invocation uses exit 2 with `usage`. No new error codes are introduced.
-
 
 ## Task classify
 

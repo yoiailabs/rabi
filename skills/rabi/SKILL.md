@@ -284,6 +284,7 @@ workspace; use `rabi run SEL -- [TASK | -]` to select a workspace without cd and
 `-R REPO` with SEL to select its repository. Without `--`, a single positional
 remains task text. `list` and `show` expose the current parent run state, session
 id, and latest launch paths; inspection never changes run files or locks.
-A first/fresh run requires `--skill VALUE`. `rabi skill list` lists
-checkout and user skill directories independently of run. See the command
-reference for those optional features.
+`--skill VALUE` is optional even on first/fresh runs and is passed verbatim.
+Parents use the shared task credential boundary and must not push or call
+GitHub; run deterministic publication commands outside the agent. See the
+command reference for provider restrictions.

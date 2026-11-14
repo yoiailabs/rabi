@@ -1341,34 +1341,6 @@ fn handoff_command(args: &[String], action: &str) -> Result<i32> {
     Ok(SUCCESS)
 }
 
-fn skill_root(args: &[String]) -> Result<i32> {
-    let parsed = args::parse(args, &command_options("skill"), true)?;
-    Err(Error::validation(format!(
-        "Unknown command 'skill {}'",
-        parsed.positionals.join(" ")
-    )))
-}
-
-fn skill_list(args: &[String]) -> Result<i32> {
-    args::parse(args, &command_options("skill list"), false)?;
-    let cwd = std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?;
-    let checkout = crate::git::top_level(&cwd)?;
-    let skills = crate::skill::list(&checkout)?;
-    if crate::output::json() {
-        crate::output::data(&serde_json::json!({"skills": skills}))?;
-    } else {
-        for skill in skills {
-            outln!(
-                "{}\t{}\t{}",
-                visible_text(&skill.name),
-                skill.source,
-                visible_text(&skill.path.to_string_lossy())
-            );
-        }
-    }
-    Ok(SUCCESS)
-}
-
 fn show(args: &[String]) -> Result<i32> {
     inspect(args, false)
 }
@@ -2473,9 +2445,7 @@ fn command_options(key: &str) -> Vec<Opt> {
 
         _ => vec![],
     };
-    if !matches!(key, "run" | "skill" | "skill list")
-        && !options.iter().any(|option| option.name == "repo")
-    {
+    if key != "run" && !options.iter().any(|option| option.name == "repo") {
         options.push(repo_flag());
     }
     options
@@ -2884,13 +2854,6 @@ static TRUST_COMMANDS: &[Command] = &[
     },
 ];
 
-static SKILL_COMMANDS: &[Command] = &[Command {
-    name: "list",
-    help_key: "skill list",
-    run: skill_list,
-    children: &[],
-}];
-
 static HANDOFF_COMMANDS: &[Command] = &[
     Command {
         name: "show",
@@ -3015,12 +2978,6 @@ static COMMANDS: &[Command] = &[
         help_key: "run",
         run: run_parent,
         children: &[],
-    },
-    Command {
-        name: "skill",
-        help_key: "skill",
-        run: skill_root,
-        children: SKILL_COMMANDS,
     },
     Command {
         name: "completions",

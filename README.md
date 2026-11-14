@@ -94,8 +94,6 @@ Read [removal safety and retries](docs/safety.md) and [sync strategies](docs/syn
 | `rabi task status` | Read GitHub PR facts without writes |
 | `rabi task approve` | Approve the exact PR head with a commit status |
 | `rabi task merge` | Merge after preflight and approval; `--dry-run` evaluates only |
-| `rabi skill` | Skill discovery |
-| `rabi skill list` | List skill names, sources and paths |
 | `rabi trust` | Hooks, run, and repository environment trust |
 | `rabi trust add` | Show hooks and environment and grant trust without prompting |
 | `rabi trust remove` | Revoke trust |
@@ -110,7 +108,7 @@ Read [removal safety and retries](docs/safety.md) and [sync strategies](docs/syn
 | `rabi shell-init` | Generate the shell helper for `rabi cd` |
 | `rabi --version` | Print the application version (`-v` also works) |
 
-Global options (`skill` uses the current checkout; `run -R` requires `SEL --`): `-R/--repo REF`, `--json`, `--output text|json`, `--no-input`, `-h/--help`, and `-v/--version`. For `exec`, put rabi options before the selector and the child command after `--`. See [all options and examples](docs/commands.md).
+Global options (`run -R` requires `SEL --`): `-R/--repo REF`, `--json`, `--output text|json`, `--no-input`, `-h/--help`, and `-v/--version`. For `exec`, put rabi options before the selector and the child command after `--`. See [all options and examples](docs/commands.md).
 
 ## For agents
 
@@ -146,24 +144,24 @@ npx skills update rabi
 
 ## Parent sessions and skills
 
-`rabi run --skill my-skill "Fix issue #123"` starts one Codex parent session in the current workspace. The parent manages progress, delegates to its own subagents, gathers evidence and decides completion. Run `rabi run` again to resume the same parent; `--fresh --skill VALUE` starts over and retains old records. `--skill` passes a verbatim instruction without resolving files. `--timeout 30m` changes the per-launch limit (default `2h`). Trust is required; create a workspace before running. See [commands](docs/commands.md).
+`rabi run "Fix issue #123"` starts one Codex parent session in the current workspace. The parent manages progress, delegates to its own subagents, gathers evidence and decides completion. Run `rabi run` again to resume the same parent; `--fresh` starts over and retains old records. Optional `--skill VALUE` passes a verbatim instruction without resolving files, including on first/fresh runs. `--timeout 30m` changes the per-launch limit (default `2h`). Trust is required; create a workspace before running. See [commands](docs/commands.md).
 
-Choose Cursor with `--provider cursor` or Claude Code with `--provider claude` on the first run or with `--fresh`. Resume follows the recorded provider; a different `--provider` requires `--fresh`. Codex remains the default. Cursor uses sandbox mode with automatic approval review; the review service can permit execution outside the sandbox, which rabi reports in the launch audit. Existing `.cursor/sandbox.json` files are preserved; otherwise rabi creates a GitHub network allowlist. Claude Code requires `claude` on PATH and login, uses model `opus` with effort `high`, and refuses to run unless its reported permission mode is `auto`. See [provider details](docs/commands.md#parent-sessions-and-skill-discovery).
+Choose Cursor with `--provider cursor` or Claude Code with `--provider claude` on the first run or with `--fresh`. Resume follows the recorded provider; a different `--provider` requires `--fresh`. Codex remains the default. Cursor uses sandbox mode with automatic approval review; the review service can permit execution outside the sandbox, which rabi reports in the launch audit. Existing `.cursor/sandbox.json` files are preserved; otherwise rabi creates an empty network allowlist. Claude Code requires `claude` on PATH and login, uses model `opus` with effort `high`, and refuses to run unless its reported permission mode is `auto`. See [provider details](docs/commands.md#parent-sessions).
+
+All parent providers use the shared task credential boundary, including resume and `--no-handoff`: GitHub tokens, SSH agent/askpass and inherited `GIT_*` variables are stripped, gh configuration is empty and Git credentials/prompts are disabled. User-configured MCP servers retain their own credentials for Claude and Cursor run parents (Codex parents use `--ignore-user-config`), so this boundary covers inherited gh/Git credentials only. Parents must not push or call GitHub; run deterministic publication commands outside the agent. Codex uses workspace-write with network disabled and approval never; Claude disallows push, gh and web tools. See [safety](docs/safety.md#task-agent-launch-boundary).
 
 Use `rabi run SEL -- [TASK]` to target a workspace without changing directory; add `-R REPO` from outside its repository. A single positional without `--` remains task text. `rabi list` and `rabi show` display the current parent run state; JSON also includes its session id and latest launch log/answer paths.
 
-`rabi handoff` carries workspace context across parent providers. `rabi handoff show` reads the original task and notes; `rabi handoff add` appends notes (`--kind checkpoint -` reads stdin); `rabi handoff path` prints the memory directory. Run captures the first task once and later tasks as requests. Memory injection is on by default; `--no-handoff` skips it. All providers receive `--add-dir` for only this workspace’s memory directory. Memory is retained after remove, gc and forget. See [handoff details](docs/commands.md#workspace-handoff).
-
-`rabi skill list` lists direct child skills from checkout and user skill directories, including duplicates. It is independent of `rabi run`.
+`rabi handoff` carries workspace context across parent providers. `rabi handoff show` reads the original task and notes; `rabi handoff add` appends notes (`--kind checkpoint -` reads stdin); `rabi handoff path` prints the memory directory. Run captures the first task once and later tasks as requests. Memory injection is on by default; `--no-handoff` skips it. All providers receive a memory `--add-dir` grant for this workspace; Codex separately receives narrow Git metadata grants for local commits. Memory is retained after remove, gc and forget. See [handoff details](docs/commands.md#workspace-handoff).
 
 ```sh
-rabi skill list
-rabi run --skill my-skill "Fix issue #123"
+rabi run "Fix issue #123"
+rabi run --skill my-skill "Follow the project instructions"
 rabi run "Address the review findings"
 rabi run -R /path/to/repo task/auth -- "Address the review findings"
-rabi run --fresh --skill my-skill - < task.md
-rabi run --fresh --provider cursor --skill my-skill "Fix issue #123"
-rabi run --fresh --provider claude --skill my-skill "Fix issue #123"
+rabi run --fresh - < task.md
+rabi run --fresh --provider cursor "Fix issue #123"
+rabi run --fresh --provider claude "Fix issue #123"
 ```
 
 ## Configuration

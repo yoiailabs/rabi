@@ -94,8 +94,6 @@ rabi remove task/auth
 | `rabi task status` | 書き込みなしで GitHub の PR 情報を表示 |
 | `rabi task approve` | PR の正確な HEAD をコミットステータスで承認 |
 | `rabi task merge` | 事前チェックと承認を確認してマージ（`--dry-run` は評価のみ） |
-| `rabi skill` | スキル探索 |
-| `rabi skill list` | スキル名・探索元・パスを一覧表示 |
 | `rabi trust` | フック・run・リポジトリ環境の信頼設定 |
 | `rabi trust add` | フックと環境を表示し、確認プロンプトなしで信頼を付与 |
 | `rabi trust remove` | 信頼を取り消す |
@@ -110,7 +108,7 @@ rabi remove task/auth
 | `rabi shell-init` | `rabi cd` 用のシェル関数を生成 |
 | `rabi --version` | アプリのバージョンを表示（`-v` も利用可） |
 
-グローバルオプション（`skill` は現在のチェックアウトを使用し、`run -R` には `SEL --` が必要です）: `-R/--repo REF`、`--json`、`--output text|json`、`--no-input`、`-h/--help`、`-v/--version`。`exec` ではセレクターの前に rabi のオプション、`--` の後に子コマンドを置きます。[全オプションと使用例](docs/commands.md)を参照。
+グローバルオプション（`run -R` には `SEL --` が必要です）: `-R/--repo REF`、`--json`、`--output text|json`、`--no-input`、`-h/--help`、`-v/--version`。`exec` ではセレクターの前に rabi のオプション、`--` の後に子コマンドを置きます。[全オプションと使用例](docs/commands.md)を参照。
 
 ## エージェント向け
 
@@ -146,24 +144,24 @@ npx skills update rabi
 
 ## 親セッションとスキル
 
-`rabi run --skill my-skill "Fix issue #123"` は現在のワークスペースで Codex の親セッションを1つ起動します。親が進行管理、subagent への委任、証拠収集、完了判断を担当します。次の `rabi run` は同じ親を再開し、`--fresh --skill VALUE` は古い記録を残して新しく開始します。`--skill` はファイルを解決せず値をそのまま指示に渡します。`--timeout 30m` で起動ごとの制限時間を変更できます（既定 `2h`）。リポジトリの信頼が必要です。先にワークスペースを作成してください。[コマンド](docs/commands.md)を参照。
+`rabi run "Fix issue #123"` は現在のワークスペースで Codex の親セッションを1つ起動します。親が進行管理、subagent への委任、証拠収集、完了判断を担当します。次の `rabi run` は同じ親を再開し、`--fresh` は古い記録を残して新しく開始します。`--skill VALUE` は任意で、初回や `--fresh` での起動時にも省略できます。指定した値はファイルを解決せず、そのまま指示に渡します。`--timeout 30m` で起動ごとの制限時間を変更できます（既定 `2h`）。リポジトリの信頼が必要です。先にワークスペースを作成してください。[コマンド](docs/commands.md)を参照。
 
-初回または `--fresh` とともに `--provider cursor` で Cursor、`--provider claude` で Claude Code を選べます。再開時は記録された provider に従い、異なる `--provider` には `--fresh` が必要です。既定は Codex のままです。Cursor は sandbox と自動承認レビューを使い、レビューサービスが sandbox 外での実行を許可した場合は起動の監査情報に表示します。既存の `.cursor/sandbox.json` は保持し、存在しない場合は GitHub 向けネットワーク許可リストを作成します。Claude Code は PATH 上の `claude` とログインを必要とし、モデル `opus`、effort `high` を使い、報告された権限モードが `auto` でなければ起動を停止します。[provider の詳細](docs/commands.md#parent-sessions-and-skill-discovery)を参照。
+初回または `--fresh` とともに `--provider cursor` で Cursor、`--provider claude` で Claude Code を選べます。再開時は記録された provider に従い、異なる `--provider` には `--fresh` が必要です。既定は Codex のままです。Cursor は sandbox と自動承認レビューを使い、レビューサービスが sandbox 外での実行を許可した場合は起動の監査情報に表示します。既存の `.cursor/sandbox.json` は保持し、存在しない場合は空のネットワーク許可リストを作成します。Claude Code は PATH 上の `claude` とログインを必要とし、モデル `opus`、effort `high` を使い、報告された権限モードが `auto` でなければ起動を停止します。[provider の詳細](docs/commands.md#parent-sessions)を参照。
+
+すべての親プロバイダには、再開時や `--no-handoff` の指定時も、タスクエージェントと共通の認証情報の制限が適用されます。GitHub トークン、SSH エージェント・askpass の設定、継承された `GIT_*` 変数を取り除き、gh の設定を空にし、Git の認証情報の取得とプロンプトを無効にします。ユーザーが設定した MCP サーバーは Claude と Cursor の run 親セッションでも独自の認証情報を保持するため、この制限の対象は継承された gh・Git の認証情報のみです（Codex の親セッションは `--ignore-user-config` を使います）。親は push や GitHub へのアクセスを行わず、公開処理はエージェントの外で決められたコマンドを使って実行してください。Codex は workspace-write を使い、ネットワークと承認要求を無効にします。Claude は push、gh、Web ツールを禁止します。[安全性](docs/safety.md#task-agent-launch-boundary)を参照してください。
 
 `rabi run SEL -- [TASK]` でディレクトリを移動せずにワークスペースを選べます。リポジトリ外からは `-R REPO` を追加します。`--` がない場合の単一の位置引数は従来どおりタスクの文章です。`rabi list` と `rabi show` は現在の親の実行状態を表示し、JSON にはセッション ID と最新起動のログ・回答のパスも含まれます。
 
-`rabi handoff` は親プロバイダを切り替える際のコンテキストを保持します。`rabi handoff show` で元のタスクとメモを読み、`rabi handoff add` でメモを追記し（`--kind checkpoint -` は標準入力）、`rabi handoff path` で保存先を表示します。run は最初のタスクを一度保存し、その後のタスクを request として追記します。注入は既定で有効で、`--no-handoff` で省略できます。全プロバイダに、このワークスペースのメモリディレクトリだけを `--add-dir` で渡します。remove・gc・forget 後もメモリは保持されます。[詳細](docs/commands.md#workspace-handoff)を参照。
-
-`rabi skill list` はチェックアウトとユーザーのスキルディレクトリから直下のスキルを重複も含めて一覧表示します。`rabi run` はこの探索を使いません。
+`rabi handoff` は親プロバイダを切り替える際のコンテキストを保持します。`rabi handoff show` で元のタスクとメモを読み、`rabi handoff add` でメモを追記し（`--kind checkpoint -` は標準入力）、`rabi handoff path` で保存先を表示します。run は最初のタスクを一度保存し、その後のタスクを request として追記します。注入は既定で有効で、`--no-handoff` で省略できます。全プロバイダに、このワークスペースのメモリディレクトリを `--add-dir` で渡します。Codex には、ローカルコミットに必要な Git メタデータへの書き込み権限も範囲を絞って別途付与します。remove・gc・forget 後もメモリは保持されます。[詳細](docs/commands.md#workspace-handoff)を参照。
 
 ```sh
-rabi skill list
-rabi run --skill my-skill "Fix issue #123"
+rabi run "Fix issue #123"
+rabi run --skill my-skill "Follow the project instructions"
 rabi run "Address the review findings"
 rabi run -R /path/to/repo task/auth -- "Address the review findings"
-rabi run --fresh --skill my-skill - < task.md
-rabi run --fresh --provider cursor --skill my-skill "Fix issue #123"
-rabi run --fresh --provider claude --skill my-skill "Fix issue #123"
+rabi run --fresh - < task.md
+rabi run --fresh --provider cursor "Fix issue #123"
+rabi run --fresh --provider claude "Fix issue #123"
 ```
 
 ## 設定
