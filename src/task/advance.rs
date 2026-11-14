@@ -644,12 +644,7 @@ fn ci(root: &Path, store: &Store, task: &mut Task, timeout: Duration) -> Result<
         store.advance_event(task, TaskState::Implementing, "sync_with_base")?;
         return Ok(report(task, "sync_with_base", Some(head), 0));
     }
-    let policy = match client.policy(&facts.pr.base_sha)? {
-        Some(bytes) => Policy::parse(
-            std::str::from_utf8(&bytes).map_err(|_| Error::msg("Base CI policy must be UTF-8"))?,
-        )?,
-        None => Policy::default(),
-    };
+    let policy = Policy::load(client.policy(&facts.pr.base_sha)?.as_deref())?;
     if policy.ci.required.is_empty() {
         return block(store, task, BlockReason::NoCi, "no_ci", Some(head));
     }

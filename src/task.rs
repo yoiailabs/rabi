@@ -303,14 +303,6 @@ fn commit(root: &Path, reference: &str) -> Result<String> {
 }
 
 pub(crate) fn inspect(root: &Path, base: Option<&str>) -> Result<Report> {
-    inspect_inner(root, base, false)
-}
-
-fn inspect_for_classifier(root: &Path, base: Option<&str>) -> Result<Report> {
-    inspect_inner(root, base, true)
-}
-
-fn inspect_inner(root: &Path, base: Option<&str>, classifier: bool) -> Result<Report> {
     let base_ref = match base {
         Some(reference) => reference.to_owned(),
         None => default_branch(root)?,
@@ -321,15 +313,7 @@ fn inspect_inner(root: &Path, base: Option<&str>, classifier: bool) -> Result<Re
     let source = format!("{base_sha}:.rabi/policy.toml");
     let blob = policy_blob(root, &base_sha)?;
     let present = blob.is_some();
-    let policy = if classifier {
-        Policy::load(blob.as_deref())?
-    } else if let Some(bytes) = blob {
-        let contents = std::str::from_utf8(&bytes)
-            .map_err(|_| Error::msg("Invalid .rabi/policy.toml: policy must be UTF-8"))?;
-        Policy::parse(contents)?
-    } else {
-        Policy::default()
-    };
+    let policy = Policy::load(blob.as_deref())?;
     // Neither the head branch nor the worktree/index may turn binary changes
     // into text (or alter line limits): the base decides, like the policy.
     let attributes = format!("--attr-source={base_sha}");
@@ -495,13 +479,7 @@ pub(crate) fn github_report(
     } else {
         client.policy(&facts.pr.base_sha)?
     };
-    let policy = match &blob {
-        Some(bytes) => Policy::parse(
-            std::str::from_utf8(bytes)
-                .map_err(|_| Error::msg("Invalid .rabi/policy.toml: policy must be UTF-8"))?,
-        )?,
-        None => Policy::default(),
-    };
+    let policy = Policy::load(blob.as_deref())?;
     let (merge_base, kinds) = pr_kinds(root, &facts)?;
     if let GithubAction::Approve { sha, note } = action {
         let risk =
