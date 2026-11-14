@@ -272,10 +272,45 @@ fn providers_use_the_boundary_and_safe_arguments() {
             assert!(!arguments
                 .iter()
                 .any(|arg| arg.contains("network_access=true")));
+            let directories: Vec<_> = arguments
+                .windows(2)
+                .filter(|pair| pair[0] == "--add-dir")
+                .map(|pair| PathBuf::from(&pair[1]))
+                .collect();
+            let expected: Vec<_> = ["--git-dir", "--git-common-dir"]
+                .into_iter()
+                .map(|option| {
+                    fs::canonicalize(repo.git(&[
+                        "-C",
+                        repo.workspace.to_str().unwrap(),
+                        "rev-parse",
+                        "--path-format=absolute",
+                        option,
+                    ]))
+                    .unwrap()
+                })
+                .collect();
+            assert_eq!(directories, expected);
+            assert!(directories.iter().all(|directory| directory.is_absolute()
+                && !directory.starts_with(fs::canonicalize(&repo.workspace).unwrap())));
         } else {
             assert!(arguments
                 .windows(2)
-                .any(|args| args == ["--permission-mode", "acceptEdits"]));
+                .any(|args| args == ["--permission-mode", "auto"]));
+            for pair in [
+                ["--permission-prompts", "none"],
+                ["--mcp-config", "{\"mcpServers\":{}}"],
+                ["--settings", "{\"disableAllHooks\":true}"],
+            ] {
+                assert!(arguments.windows(2).any(|args| args == pair));
+            }
+            for flag in [
+                "--strict-mcp-config",
+                "--setting-sources",
+                "--no-session-persistence",
+            ] {
+                assert!(arguments.iter().any(|arg| arg == flag));
+            }
             for restriction in ["Bash(git push:*)", "Bash(gh:*)", "WebFetch", "WebSearch"] {
                 assert!(arguments.iter().any(|arg| arg.contains(restriction)));
             }
