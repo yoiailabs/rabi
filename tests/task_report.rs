@@ -128,12 +128,6 @@ impl Repo {
         let id = task["id"].as_str().unwrap().to_owned();
         task["createdAt"] = json!("2026-01-01T00:00:00Z");
         task["state"] = state;
-        if !matches!(
-            task["state"]["name"].as_str().unwrap(),
-            "merged" | "abandoned" | "new" | "blocked"
-        ) {
-            self.git(&["branch", branch]);
-        }
         let directory = self.tasks().join(&id);
         fs::write(
             directory.join("task.json"),

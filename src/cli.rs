@@ -262,6 +262,14 @@ fn create(args: &[String]) -> Result<i32> {
 }
 
 fn render_create(allocation: &crate::allocation::Allocation, logger: &Logger) -> Result<i32> {
+    render_create_with_data(allocation, logger, serde_json::json!({}))
+}
+
+fn render_create_with_data(
+    allocation: &crate::allocation::Allocation,
+    logger: &Logger,
+    mut data: serde_json::Value,
+) -> Result<i32> {
     let tree = &allocation.workspace;
     let metadata_error = allocation.metadata_error.as_deref();
     let setup = &allocation.setup;
@@ -281,11 +289,12 @@ fn render_create(allocation: &crate::allocation::Allocation, logger: &Logger) ->
             &format!("Warning: {}", visible_text(error)),
         );
     }
-    crate::output::data(&serde_json::json!({
-        "workspace":tree.to_json(None), "source":allocation.source,
-        "setup":setup.outcome(), "copy":setup.copy(),
-        "metadata":worktree::metadata_save_outcome(metadata_error)
-    }))?;
+    data["workspace"] = serde_json::json!(tree.to_json(None));
+    data["source"] = allocation.source.clone();
+    data["setup"] = setup.outcome();
+    data["copy"] = setup.copy();
+    data["metadata"] = serde_json::json!(worktree::metadata_save_outcome(metadata_error));
+    crate::output::data(&data)?;
     if let Some(retry) = &allocation.retry_command {
         return Err(Error::status(
             PARTIAL,
@@ -835,32 +844,135 @@ fn task_root(args: &[String]) -> Result<i32> {
 
 fn task_new(args: &[String]) -> Result<i32> {
     let parsed = args::parse(args, &command_options("task new"), true)?;
-    if let Some(issue) = single_value(&parsed, "issue")? {
-        if !parsed.positionals.is_empty() {
-            return Err(Error::validation("--issue conflicts with task intent text"));
-        }
-        let number = issue
-            .parse::<u64>()
-            .ok()
-            .filter(|n| *n > 0)
-            .ok_or_else(|| Error::validation("--issue requires a positive issue number"))?;
-        let repository = selected_repository(&parsed)?;
-        let cwd = std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?;
-        let root = crate::git::git_root(repository.as_deref().unwrap_or(&cwd))?;
-        let view = crate::task::intake::new(
+    let issue = single_value(&parsed, "issue")?
+        .map(|issue| {
+            issue
+                .parse::<u64>()
+                .ok()
+                .filter(|number| *number > 0)
+                .ok_or_else(|| Error::validation("--issue requires a positive issue number"))
+        })
+        .transpose()?;
+    if issue.is_some() && !parsed.positionals.is_empty() {
+        return Err(Error::validation("--issue conflicts with task intent text"));
+    }
+    if issue.is_none() && parsed.positionals.len() != 1 {
+        return Err(Error::validation(
+            "task new requires one intent argument; see rabi help task new",
+        ));
+    }
+    let repository = selected_repository(&parsed)?;
+    let cwd = std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?;
+    let root = crate::git::git_root(repository.as_deref().unwrap_or(&cwd))?;
+    let store = crate::task::store::Store::locate(&root)?;
+    let view = if let Some(number) = issue {
+        crate::task::intake::new(
             &root,
             number,
             single_value(&parsed, "branch")?,
             single_value(&parsed, "base")?,
-        )?;
-        if crate::output::json() {
-            return emit_json(&view);
-        }
-        view.print();
-        return Ok(SUCCESS);
-    }
-    task_store(args, "new")
+        )?
+    } else {
+        let argument = &parsed.positionals[0];
+        let intent = if argument == "-" {
+            use std::io::Read;
+            let mut intent = String::new();
+            std::io::stdin()
+                .read_to_string(&mut intent)
+                .map_err(|e| Error::msg(format!("Failed to read task intent: {e}")))?;
+            intent
+        } else {
+            argument.clone()
+        };
+        store.create(
+            intent,
+            single_value(&parsed, "branch")?,
+            single_value(&parsed, "base")?,
+        )?
+    };
+    attach_task_workspace(&parsed, &store, view)
 }
+
+fn attach_task_workspace(
+    parsed: &Parsed,
+    store: &crate::task::store::Store,
+    mut view: crate::task::store::View,
+) -> Result<i32> {
+    emit_json(&view)?;
+    let recovery = format!(
+        "rabi create {} --base {}",
+        crate::allocation::shell_quote(&view.task.branch),
+        crate::allocation::shell_quote(&view.task.base_ref)
+    );
+    let allocation = (|| {
+        let context = command_context(parsed)?;
+        crate::allocation::create(
+            &context,
+            crate::allocation::Request {
+                name: Some(&view.task.branch),
+                base: Some(&view.task.base_ref),
+                branch: None,
+                pr: None,
+                issue: None,
+                detach: false,
+                reuse: true,
+                copy_files: &[],
+                metadata: Default::default(),
+                no_setup: false,
+                hooks: HookControl {
+                    no_hooks: false,
+                    json: crate::output::json(),
+                    prompt: true,
+                },
+            },
+            &logger_for(crate::output::json()),
+        )
+    })()
+    .map_err(|error| Error::Status {
+        code: error.json_code(GENERAL),
+        message: format!("Task {} was recorded but workspace creation failed: {error}. Recover with `{recovery}`.", view.task.id),
+    })?;
+    let binding_error =
+        match store.bind_workspace(&view.task.id, Path::new(&allocation.workspace.path)) {
+            Ok(bound) => {
+                view = bound;
+                None
+            }
+            Err(error) => Some(error),
+        };
+    if !crate::output::json() {
+        view.print();
+    }
+    let rendered = render_create_with_data(
+        &allocation,
+        &logger_for(crate::output::json()),
+        serde_json::to_value(&view).map_err(|_| Error::msg("Cannot encode task view"))?,
+    )
+    .map_err(|error| Error::Status {
+        code: error.json_code(GENERAL),
+        message: format!(
+            "Task {} workspace at {}: {error}",
+            view.task.id,
+            visible_text(&allocation.workspace.path)
+        ),
+    });
+    if let Some(error) = binding_error {
+        let preparation = rendered
+            .as_ref()
+            .err()
+            .map_or_else(String::new, |error| format!(". {error}"));
+        return Err(Error::status(
+            PARTIAL,
+            format!(
+                "Task {} workspace exists at {} but its path could not be recorded: {error}{preparation}",
+                view.task.id,
+                visible_text(&allocation.workspace.path)
+            ),
+        ));
+    }
+    rendered
+}
+
 fn task_intake(args: &[String]) -> Result<i32> {
     let parsed = args::parse(args, &command_options("task intake"), true)?;
     if !parsed.positionals.is_empty() {
@@ -996,8 +1108,6 @@ fn task_store(args: &[String], command: &str) -> Result<i32> {
             "task {command} requires {expected} positional argument(s); see rabi help task {command}"
         )));
     }
-    let branch = single_value(&parsed, "branch")?;
-    let base = single_value(&parsed, "base")?;
     let reason = single_value(&parsed, "reason")?;
     let repository = selected_repository(&parsed)?;
     let cwd = std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?;
@@ -1015,19 +1125,6 @@ fn task_store(args: &[String], command: &str) -> Result<i32> {
     }
     let argument = &parsed.positionals[0];
     let mut view = match command {
-        "new" => {
-            let intent = if argument == "-" {
-                use std::io::Read;
-                let mut intent = String::new();
-                std::io::stdin()
-                    .read_to_string(&mut intent)
-                    .map_err(|e| Error::msg(format!("Failed to read task intent: {e}")))?;
-                intent
-            } else {
-                argument.clone()
-            };
-            store.create(intent, branch, base)?
-        }
         "abandon" => store.transition(
             argument,
             crate::task::store::TaskState::Abandoned,

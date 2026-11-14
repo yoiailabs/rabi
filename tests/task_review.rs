@@ -15,7 +15,7 @@ const PUSH_URL: &str = "https://github.com/fixture/project.git";
 const GH: &str = r#"#!/bin/sh
 set -eu
 printf '%s\n' "$*" >> "$RABI_REVIEW_FIXTURE/gh-trace"
-head=$(git -C "$RABI_REVIEW_FIXTURE/workspace" rev-parse HEAD)
+head=$(git -C "$RABI_REVIEW_WORKSPACE" rev-parse HEAD)
 base=$(git -C "$RABI_REVIEW_FIXTURE/repo" rev-parse main)
 [ ! -f "$RABI_REVIEW_FIXTURE/pr-head" ] || head=$(cat "$RABI_REVIEW_FIXTURE/pr-head")
 case "$1 $2" in
@@ -190,7 +190,7 @@ impl Repo {
         test_git::configure_repo(&remote);
         fixture.git(&["push", remote.to_str().unwrap(), "main"]);
         fixture.git(&["remote", "add", "origin", PUSH_URL]);
-        fixture.task = decode(
+        let created = decode(
             fixture
                 .command(&[
                     "task",
@@ -205,18 +205,10 @@ impl Repo {
                 .output()
                 .unwrap(),
             0,
-        )["data"]["task"]["id"]
-            .as_str()
-            .unwrap()
-            .into();
-        fixture.git(&[
-            "worktree",
-            "add",
-            "-b",
-            "topic",
-            fixture.workspace.to_str().unwrap(),
-            "main",
-        ]);
+        );
+        fixture.workspace =
+            PathBuf::from(created["data"]["task"]["workspacePath"].as_str().unwrap());
+        fixture.task = created["data"]["task"]["id"].as_str().unwrap().into();
         let repository = fs::read_dir(fixture.root.join("state/rabi/repositories"))
             .unwrap()
             .next()
@@ -330,6 +322,7 @@ exec '{}' "$@"
             .env("XDG_DATA_HOME", self.root.join("data"))
             .env("PATH", path)
             .env("RABI_REVIEW_FIXTURE", &self.root)
+            .env("RABI_REVIEW_WORKSPACE", &self.workspace)
             .env("RABI_TRUST_ALL", "1")
             .env("RABI_TEST_TASK_POLL_MS", "1")
             .env_remove("RABI_OUTPUT")
@@ -602,7 +595,12 @@ fn reviewer_configuration_overrides_default_and_passes_model_as_one_argument() {
     assert!(args(&repo, 1)
         .iter()
         .any(|arg| arg == "--model=fixture-model --literal"));
-    let repo = Repo::new(&["test"], "[review]\nmodel='--dangerous'\n", None);
+    let repo = Repo::new(&["test"], "", None);
+    fs::write(
+        repo.repo.join(".rabi.toml"),
+        "[review]\nmodel='--dangerous'\n",
+    )
+    .unwrap();
     decode(repo.review().output().unwrap(), 1);
     assert_eq!(repo.launches(), 0);
 }

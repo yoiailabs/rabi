@@ -9,7 +9,7 @@ mod wait;
 use serde_json::{json, Value};
 use std::{
     fs,
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Command, Output},
 };
 
@@ -186,7 +186,7 @@ impl Drop for Repo {
 }
 
 #[test]
-fn permitted_author_is_accepted_without_branch_or_agent_and_duplicate_is_refused() {
+fn permitted_author_gets_workspace_without_agent_and_duplicate_is_refused() {
     for permission in ["write", "maintain", "admin"] {
         let mut repo = Repo::new();
         repo.issue(7, "writer", "Expected behavior");
@@ -201,7 +201,18 @@ fn permitted_author_is_accepted_without_branch_or_agent_and_duplicate_is_refused
             .as_str()
             .unwrap()
             .contains("Expected behavior"));
-        assert_eq!(repo.git(&["branch", "--format=%(refname:short)"]), "main");
+        let workspace = task["workspacePath"].as_str().unwrap();
+        assert!(Path::new(workspace).join(".git").is_file());
+        assert_eq!(
+            repo.git(&["rev-parse", task["branch"].as_str().unwrap()]),
+            repo.git(&["rev-parse", task["baseRef"].as_str().unwrap()])
+        );
+        assert_eq!(
+            repo.git(&["worktree", "list", "--porcelain"])
+                .matches("worktree ")
+                .count(),
+            2
+        );
         assert!(!repo.root.join("prompt").exists());
         assert_eq!(
             repo.rabi(&["task", "new", "--issue", "7", "--json"], 4)["error"]["code"],
@@ -676,15 +687,6 @@ fn sanitized_bounded_issue_injection_stays_inside_fresh_implementer_frame() {
             && !intent.contains('\u{0}')
             && !intent.contains("fixture-secret")
     );
-    let branch = task["branch"].as_str().unwrap();
-    repo.git(&[
-        "worktree",
-        "add",
-        "-b",
-        branch,
-        repo.root.join("workspace").to_str().unwrap(),
-        "main",
-    ]);
     for _ in 0..2 {
         let previous = fs::read_to_string(repo.root.join("prompt")).unwrap_or_default();
         repo.rabi(
@@ -727,4 +729,23 @@ fn malformed_cli_is_rejected_without_gh_and_labels_are_query_encoded() {
         json!([]),
     );
     repo.rabi(&["task", "intake", "--label", "a&b+é", "--json"], 0);
+}
+
+#[test]
+fn bulk_intake_records_tasks_without_allocating_workspaces() {
+    let mut repo = Repo::new();
+    repo.list(&[7]);
+    repo.events(7, &["writer"]);
+    repo.issue(7, "writer", "body");
+    repo.permission("writer", "write");
+    let before = repo.git(&["worktree", "list", "--porcelain"]);
+    let result = repo.rabi(&["task", "intake", "--label", "ready", "--json"], 0);
+    let id = result["data"]["items"][0]["taskId"].as_str().unwrap();
+    assert_eq!(result["data"]["items"][0]["action"], "created");
+    let task = repo.rabi(&["task", "show", id, "--json"], 0)["data"]["task"].clone();
+    assert!(task["workspacePath"].is_null());
+    assert_eq!(repo.git(&["worktree", "list", "--porcelain"]), before);
+    assert_eq!(repo.git(&["branch", "--format=%(refname:short)"]), "main");
+    assert!(!repo.root.join("data").exists());
+    assert!(!repo.root.join("prompt").exists());
 }

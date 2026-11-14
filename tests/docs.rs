@@ -2,6 +2,43 @@ const README: &str = include_str!("../README.md");
 const README_JA: &str = include_str!("../README.ja.md");
 
 #[test]
+fn task_new_guidance_creates_workspace_after_record_and_keeps_recovery() {
+    let help: serde_json::Value = serde_json::from_str(include_str!("../help-data.json")).unwrap();
+    let notes = help["helps"]["task new"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|note| note.as_str().unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for text in [
+        "never launches an agent",
+        "After publishing the task record",
+        "setup, hooks and trust",
+        "live workspace",
+        "reused",
+        "task record is kept",
+        "rabi create <branch> --base <base>",
+        "task implement",
+        "task advance explicitly",
+    ] {
+        assert!(notes.contains(text), "{text}");
+    }
+    assert!(!notes.contains("or creates a branch/workspace"));
+    for document in [
+        README,
+        README_JA,
+        include_str!("../docs/commands.md"),
+        include_str!("../docs/safety.md"),
+        include_str!("../skills/rabi/SKILL.md"),
+    ] {
+        assert!(document.contains("rabi create <branch> --base <base>"));
+        assert!(!document.contains("rabi create task/docs --base main --no-setup"));
+    }
+    assert!(include_str!("../docs/json.md").contains("Linked checkout path bound by `task new`"));
+}
+
+#[test]
 fn external_intake_guidance_matches_help_permissions_and_data_contract() {
     let help: serde_json::Value = serde_json::from_str(include_str!("../help-data.json")).unwrap();
     assert!(help["helps"]["task intake"].is_object());

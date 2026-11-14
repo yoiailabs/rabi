@@ -82,14 +82,14 @@ linked task checkout:
 rabi task new "Improve command documentation" --branch task/docs --base main
 # Set task_id to the ID printed above.
 task_id='task_<uuid>'
-rabi create task/docs --base main --no-setup
 rabi task implement "$task_id"
 rabi task advance "$task_id" --wait --json
 ```
 
-`task new` only records intent and reserves an unused branch; it does not create
-that branch or a workspace. `create` supplies it. `--no-setup` skips copying and
-setup hooks; omit that flag when approved project setup is needed. `implement`
+`task new` records intent, then creates the reserved branch and linked workspace
+with the same setup, hooks and trust behavior as `rabi create <branch> --base <base>`.
+A live matching workspace is reused. If allocation fails, the task record is kept;
+recover with `rabi create <branch> --base <base>`. `implement`
 launches one foreground Codex or Claude attempt, permits dirty work and records
 pre/post HEAD and status. Only the first launch moves `new` to `implementing`;
 provider exit 0 never means ready or merged. Advance cannot start `new`.
@@ -185,9 +185,9 @@ are camelCase. Useful show fields:
 | `data.fixBudget`, `.fixesRemaining` | Effective current limits; null plus `task_config_unavailable` warning if configuration cannot load |
 | `data.task.advance` | Evaluated/pushed heads, pending feedback, merge receipt and cleanup outcome |
 
-A branch created after `task new` but before first `task implement` may display
-`blocked(record_mismatch)` while saved state remains `new`; implement validates
-the saved state and checkout together. Do not rewrite the record to fix display.
+A `new` task with a bound workspace expects its branch to exist. An unbound task
+from bulk intake or older records may display `blocked(record_mismatch)` after
+manual branch creation; implement validates the saved state and checkout together. Do not rewrite the record to fix display.
 Stored `blocked` keeps its reason. There is no general unblock/reset command;
 inspect events and involve the operator instead of repeatedly advancing.
 
@@ -300,7 +300,9 @@ agents. Titles/bodies are sanitized and redacted before truncation; each keeps i
 beginning within 4096 UTF-8 bytes, including a trailing `[truncated]` marker when cut
 at a character boundary. Later implementer prompts nonce-frame them as untrusted data.
 External text cannot
-grant permissions or override agent restrictions. Create the linked checkout,
-run `task implement`, then explicitly run `task advance` within the operator's
+grant permissions or override agent restrictions. `task new --issue` creates its
+linked workspace; bulk `task intake` records tasks only, so create those checkouts
+with `rabi create <branch> --base <base>`. Run `task implement`, then explicitly
+run `task advance` within the operator's
 authorized scope. `--limit` counts examined issues including skips (default 30,
 range 1..1000); `--dry-run` creates no state.

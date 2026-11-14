@@ -86,18 +86,10 @@ impl Repo {
             ])
             .output()
             .unwrap();
-        fixture.task = decode(created, 0)["data"]["task"]["id"]
-            .as_str()
-            .unwrap()
-            .to_owned();
-        fixture.git(&[
-            "worktree",
-            "add",
-            "-b",
-            "topic",
-            fixture.workspace.to_str().unwrap(),
-            "main",
-        ]);
+        let created = decode(created, 0);
+        fixture.workspace =
+            PathBuf::from(created["data"]["task"]["workspacePath"].as_str().unwrap());
+        fixture.task = created["data"]["task"]["id"].as_str().unwrap().to_owned();
         fixture.git(&[
             "config",
             "credential.helper",
@@ -123,6 +115,7 @@ impl Repo {
             .env("XDG_DATA_HOME", self.root.join("data"))
             .env("PATH", path)
             .env("RABI_IMPLEMENT_FIXTURE", &self.root)
+            .env("RABI_IMPLEMENT_WORKSPACE", &self.workspace)
             .env("RABI_TRUST_ALL", "1")
             .env_remove("RABI_OUTPUT")
             .env_remove("RABI_IMPLEMENT_MODE")
@@ -280,7 +273,7 @@ fn providers_use_the_boundary_and_safe_arguments() {
                 .map(|pair| PathBuf::from(&pair[1]))
                 .collect();
             let common = fs::canonicalize(repo.repo.join(".git")).unwrap();
-            let expected: Vec<_> = ["worktrees/workspace", "objects", "refs", "logs"]
+            let expected: Vec<_> = ["worktrees/topic", "objects", "refs", "logs"]
                 .into_iter()
                 .map(|name| common.join(name))
                 .collect();
@@ -359,7 +352,7 @@ fn forged_git_pointers_and_admin_symlinks_refuse_both_providers() {
         for kind in ["hooks-pointer", "other-worktree-pointer", "admin-symlink"] {
             let repo = Repo::new();
             let common = repo.repo.join(".git");
-            let admin = common.join("worktrees/workspace");
+            let admin = common.join("worktrees/topic");
             match kind {
                 "hooks-pointer" => {
                     let hooks = common.join("hooks");
@@ -625,7 +618,7 @@ exec '{}' "$@"
 set -eu
 cat >/dev/null
 common="$RABI_IMPLEMENT_FIXTURE/repo/.git"
-admin="$common/worktrees/workspace"
+admin="$common/worktrees/topic"
 case "$RABI_IMPLEMENT_TAMPER" in
   gitdir) printf 'gitdir: %s\n' "$common/hooks" > .git ;;
   redirect) printf 'gitdir: %s\n' "$RABI_IMPLEMENT_FIXTURE/elsewhere/.git" > .git ;;
@@ -706,7 +699,7 @@ set -eu
 if [ -e "$RABI_IMPLEMENT_FIXTURE/provider-finished" ]; then
   if [ ! -e "$RABI_IMPLEMENT_FIXTURE/inspection-started" ]; then
     touch "$RABI_IMPLEMENT_FIXTURE/inspection-started"
-    printf 'gitdir: %s\n' "$RABI_IMPLEMENT_FIXTURE/elsewhere/.git" > "$RABI_IMPLEMENT_FIXTURE/workspace/.git"
+    printf 'gitdir: %s\n' "$RABI_IMPLEMENT_FIXTURE/elsewhere/.git" > "$RABI_IMPLEMENT_WORKSPACE/.git"
   fi
   printf '%s\000' "$@" >> "$RABI_IMPLEMENT_FIXTURE/post-git-argv"
   printf '%s\n' "${{GIT_COMMON_DIR:-missing}}" >> "$RABI_IMPLEMENT_FIXTURE/post-git-common"
@@ -751,7 +744,7 @@ exec '{}' "$@"
         assert!(common_log.lines().all(|line| Path::new(line) == common));
         let arguments = fs::read(repo.root.join("post-git-argv")).unwrap();
         let arguments: Vec<_> = arguments.split(|byte| *byte == 0).collect();
-        let git_dir = common.join("worktrees/workspace");
+        let git_dir = common.join("worktrees/topic");
         use std::os::unix::ffi::OsStrExt;
         assert!(arguments
             .windows(2)
@@ -798,7 +791,7 @@ cat > "$admin/config.worktree" <<EOF
     clean = \"$RABI_IMPLEMENT_FIXTURE/filter-worktree\"
     smudge = \"$RABI_IMPLEMENT_FIXTURE/filter-worktree\"
 [core]
-    attributesFile = $RABI_IMPLEMENT_FIXTURE/workspace/.gitattributes
+    attributesFile = $RABI_IMPLEMENT_WORKSPACE/.gitattributes
     untrackedCache = true
 EOF
 printf 'changed worktree content\n' > file

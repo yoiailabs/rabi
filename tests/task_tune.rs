@@ -250,7 +250,7 @@ exec '{}' "$@"
                 "main",
                 "--json",
             ],
-            0,
+            6,
         )["data"]["task"]["id"]
             .as_str()
             .unwrap()

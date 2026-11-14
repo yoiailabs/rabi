@@ -34,7 +34,7 @@ case "$1 $2" in
   'pr merge')
     [ ! -f "$RABI_ADVANCE_FIXTURE/merge-fails" ] || exit 1
     touch "$RABI_ADVANCE_FIXTURE/merged"
-    if [ -f "$RABI_ADVANCE_FIXTURE/merge-creates-dirty" ]; then printf 'local work\n' > "$RABI_ADVANCE_FIXTURE/workspace/local-work"; fi
+    if [ -f "$RABI_ADVANCE_FIXTURE/merge-creates-dirty" ]; then printf 'local work\n' > "$RABI_ADVANCE_WORKSPACE/local-work"; fi
     ;;
   'run view')
     if [ -f "$RABI_ADVANCE_FIXTURE/interrupt-log" ]; then
@@ -226,7 +226,7 @@ impl Repo {
         test_git::configure_repo(&remote);
         fixture.git(&["push", remote.to_str().unwrap(), "main"]);
         fixture.git(&["remote", "add", "origin", PUSH_URL]);
-        fixture.task = decode(
+        let created = decode(
             fixture
                 .command(&[
                     "task",
@@ -241,18 +241,10 @@ impl Repo {
                 .output()
                 .unwrap(),
             0,
-        )["data"]["task"]["id"]
-            .as_str()
-            .unwrap()
-            .into();
-        fixture.git(&[
-            "worktree",
-            "add",
-            "-b",
-            "topic",
-            fixture.workspace.to_str().unwrap(),
-            "main",
-        ]);
+        );
+        fixture.workspace =
+            PathBuf::from(created["data"]["task"]["workspacePath"].as_str().unwrap());
+        fixture.task = created["data"]["task"]["id"].as_str().unwrap().into();
         let repository = fs::read_dir(fixture.root.join("state/rabi/repositories"))
             .unwrap()
             .next()
@@ -323,6 +315,7 @@ exec '{}' "$@"
             .env("XDG_DATA_HOME", self.root.join("data"))
             .env("PATH", path)
             .env("RABI_ADVANCE_FIXTURE", &self.root)
+            .env("RABI_ADVANCE_WORKSPACE", &self.workspace)
             .env("RABI_TRUST_ALL", "1")
             .env("RABI_TEST_TASK_POLL_MS", "1")
             .env("RABI_TEST_TASK_APPROVAL_TIMEOUT_MS", "5")
@@ -403,12 +396,6 @@ exec '{}' "$@"
             repo.root.join("remote.git").to_str().unwrap(),
             "topic",
         ]);
-        decode(
-            repo.command(&["adopt", repo.workspace.to_str().unwrap(), "--json"])
-                .output()
-                .unwrap(),
-            0,
-        );
         let head = repo.git(&["rev-parse", "topic"]);
         repo.edit(|task| {
             task["state"] = json!({"name":"reviewing"});
