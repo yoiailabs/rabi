@@ -1,10 +1,10 @@
 # Upgrading to rabi v8
 
-[README](../README.md) · [Commands](commands.md) · [Changelog](../CHANGELOG.md#unreleased)
+[README](../README.md) · [Commands](commands.md) · [Changelog](../CHANGELOG.md#v800-2026-11-14)
 
 v8 adds a software-factory task lifecycle while retaining ordinary Git workspaces
 and resumable parent sessions. This guide covers every breaking change listed in
-[Unreleased](../CHANGELOG.md#unreleased). Existing workspace records, task/handoff
+[v8.0.0](../CHANGELOG.md#v800-2026-11-14). Existing workspace records, task/handoff
 state and current run records remain in their existing locations; no bulk state
 migration is required. Removed registry files are ignored, not migrated.
 
