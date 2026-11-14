@@ -64,6 +64,8 @@ rabi task show "$task_id" --json
 
 終了コード10は CI またはメンテナーの承認待ち、4はブロックまたは拒否を表します。`task show --json` の `task.state.reason` とイベントを確認してください。1段階の終了コードが0でも、マージ済みとは限りません。[状態と復旧の表](docs/commands.md#task-lifecycle)、[終了コード](docs/exit-codes.md)を参照してください。
 
+`task implement` は、エージェント終了後の Git メタデータの再検証に失敗した場合も、`stopReason: "metadata_changed"` を記録して終了コード4を返します。再試行する前に Git のワークツリー登録を確認・修復してください。詳しくは[実装の実行結果](docs/json.md#local-task-store)を参照してください。
+
 ## 承認
 
 承認なしでマージできるのは、ポリシーで指定した low/medium で floor に該当しない変更だけです。自動マージ対象は既定では空です。high、floor、リスク判定の欠落・失敗・不確実な結果にはメンテナーの承認が必要です。レビュー結果は承認にはなりません。自動化は `rabi task approve` を実行せず、`RABI_AGENT` を解除して回避せず、成功の `rabi/approval` ステータスも投稿しません。

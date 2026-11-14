@@ -2,7 +2,7 @@ use std::cell::{Cell, RefCell};
 use std::ffi::OsString;
 use std::io::Read;
 use std::marker::PhantomData;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::rc::Rc;
 use std::time::Duration;
@@ -12,9 +12,45 @@ use crate::error::{Error, Result};
 thread_local! {
     static TASK_GIT_ENVIRONMENT: RefCell<Option<GitEnvironment>> = const { RefCell::new(None) };
     static GIT_HOOK_SUPPRESSION: Cell<usize> = const { Cell::new(0) };
+    static GIT_REPOSITORY: RefCell<Option<GitRepository>> = const { RefCell::new(None) };
 }
 
 type GitEnvironment = Vec<(OsString, Option<OsString>)>;
+
+struct GitRepository {
+    workspace: PathBuf,
+    git_dir: PathBuf,
+    common: PathBuf,
+}
+
+/// Keep reads of an agent checkout bound to metadata validated before launch.
+/// This scope is independent of credential scopes, which shared helpers nest.
+pub(crate) struct GitRepositoryScope {
+    previous: Option<GitRepository>,
+    _thread: PhantomData<Rc<()>>,
+}
+
+pub(crate) fn git_repository(
+    workspace: &Path,
+    git_dir: &Path,
+    common: &Path,
+) -> GitRepositoryScope {
+    let repository = GitRepository {
+        workspace: workspace.to_owned(),
+        git_dir: git_dir.to_owned(),
+        common: common.to_owned(),
+    };
+    GitRepositoryScope {
+        previous: GIT_REPOSITORY.with(|slot| slot.replace(Some(repository))),
+        _thread: PhantomData,
+    }
+}
+
+impl Drop for GitRepositoryScope {
+    fn drop(&mut self) {
+        GIT_REPOSITORY.with(|slot| slot.replace(self.previous.take()));
+    }
+}
 
 /// Apply task credentials and hardening to shared Git helpers on this thread.
 /// A launch boundary owning any temporary GH_CONFIG_DIR must outlive this guard.
@@ -56,7 +92,7 @@ impl Drop for GitHookSuppression {
     }
 }
 
-fn command(program: &str) -> Command {
+fn command(program: &str, cwd: Option<&Path>) -> Command {
     let mut cmd = Command::new(program);
     let task_git = program == "git" && TASK_GIT_ENVIRONMENT.with(|slot| slot.borrow().is_some());
     if task_git {
@@ -92,6 +128,22 @@ fn command(program: &str) -> Command {
             "-c",
             "core.fsmonitor=false",
         ]);
+    }
+    if program == "git" {
+        GIT_REPOSITORY.with(|slot| {
+            if let Some(repository) = slot.borrow().as_ref() {
+                if cwd.is_some_and(|cwd| {
+                    cwd.starts_with(&repository.workspace)
+                        || crate::paths::canonical_location(cwd).starts_with(&repository.workspace)
+                }) {
+                    cmd.arg("--git-dir")
+                        .arg(&repository.git_dir)
+                        .arg("--work-tree")
+                        .arg(&repository.workspace)
+                        .env("GIT_COMMON_DIR", &repository.common);
+                }
+            }
+        });
     }
     if crate::runtime::non_interactive() {
         if program == "git" {
@@ -146,7 +198,7 @@ pub(crate) fn raw_bytes(
     env: &[(&str, &str)],
     input: Option<&Path>,
 ) -> Result<std::process::Output> {
-    let mut cmd = self::command(command);
+    let mut cmd = self::command(command, cwd);
     cmd.args(args);
     for (key, value) in env {
         cmd.env(key, value);
@@ -166,7 +218,7 @@ pub fn capture(
     cwd: Option<&Path>,
     trim_stdout: bool,
 ) -> Result<Captured> {
-    let mut cmd = self::command(command);
+    let mut cmd = self::command(command, cwd);
     cmd.args(args);
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
@@ -221,7 +273,7 @@ pub(crate) fn inherit_os(
     env: &[(&str, &std::ffi::OsStr)],
     redirect_stdout_to_stderr: bool,
 ) -> Result<i32> {
-    let mut cmd = self::command(command);
+    let mut cmd = self::command(command, cwd);
     cmd.args(args)
         .stdin(
             if crate::runtime::non_interactive() && crate::runtime::is_hook() {
@@ -259,7 +311,7 @@ pub(crate) fn raw_with_timeout(
     env: &[(&str, &str)],
     timeout: Duration,
 ) -> Result<Captured> {
-    let mut cmd = self::command(program);
+    let mut cmd = self::command(program, cwd);
     cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::piped());
     if let Some(cwd) = cwd {
         cmd.current_dir(cwd);
@@ -425,9 +477,86 @@ mod tests {
     use super::*;
 
     #[test]
+    fn repository_selection_survives_workspace_path_replacement() {
+        use std::os::unix::fs::symlink;
+        let root = std::env::temp_dir().join(format!("rabi-git-pin-{}", uuid::Uuid::new_v4()));
+        let workspace = root.join("workspace");
+        let elsewhere = root.join("elsewhere");
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::create_dir(&elsewhere).unwrap();
+        let workspace = std::fs::canonicalize(&workspace).unwrap();
+        let git_dir = root.join("admin");
+        let common = root.join("common");
+        let _repository = git_repository(&workspace, &git_dir, &common);
+        std::fs::rename(&workspace, root.join("original-workspace")).unwrap();
+        symlink(&elsewhere, &workspace).unwrap();
+        assert_ne!(crate::paths::canonical_location(&workspace), workspace);
+
+        for cwd in [&workspace, &workspace.join("nested")] {
+            let command = command("git", Some(cwd));
+            let arguments = command.get_args().collect::<Vec<_>>();
+            assert!(arguments
+                .windows(2)
+                .any(|pair| pair == [std::ffi::OsStr::new("--git-dir"), git_dir.as_os_str()]));
+            assert!(arguments
+                .windows(2)
+                .any(|pair| pair == [std::ffi::OsStr::new("--work-tree"), workspace.as_os_str()]));
+            assert!(command
+                .get_envs()
+                .any(|(key, value)| key == "GIT_COMMON_DIR" && value == Some(common.as_os_str())));
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn repository_selection_survives_nested_read_scopes_and_preserves_path_bytes() {
+        use std::os::unix::ffi::OsStringExt;
+        let workspace = PathBuf::from(OsString::from_vec(b"/fixture/workspace\xff".to_vec()));
+        let git_dir = PathBuf::from(OsString::from_vec(b"/fixture/admin\xff".to_vec()));
+        let common = PathBuf::from(OsString::from_vec(b"/fixture/common\xff".to_vec()));
+        let selected = || {
+            let command = command("git", Some(&workspace.join("nested")));
+            (
+                command
+                    .get_args()
+                    .map(ToOwned::to_owned)
+                    .collect::<Vec<_>>(),
+                command
+                    .get_envs()
+                    .find(|(key, _)| *key == "GIT_COMMON_DIR")
+                    .map(|(_, value)| value.map(ToOwned::to_owned)),
+            )
+        };
+        assert!(selected().0.is_empty());
+        {
+            let _repository = git_repository(&workspace, &git_dir, &common);
+            {
+                let _read = crate::task::boundary::git_read_scope();
+                let (arguments, observed_common) = selected();
+                assert!(arguments
+                    .windows(2)
+                    .any(|pair| pair
+                        == [OsString::from("--git-dir"), git_dir.as_os_str().to_owned()]));
+                assert!(arguments.windows(2).any(|pair| pair
+                    == [
+                        OsString::from("--work-tree"),
+                        workspace.as_os_str().to_owned()
+                    ]));
+                assert_eq!(observed_common, Some(Some(common.as_os_str().to_owned())));
+                assert!(!command("git", Some(Path::new("/fixture/other")))
+                    .get_args()
+                    .any(|arg| arg == "--git-dir"));
+                assert_eq!(command("gh", Some(&workspace)).get_args().count(), 0);
+            }
+            assert_eq!(selected().1, Some(Some(common.into_os_string())));
+        }
+        assert!(selected().0.is_empty());
+    }
+
+    #[test]
     fn task_git_scopes_restore_nested_environments_and_leave_other_commands_alone() {
         let snapshot = |program| {
-            let command = command(program);
+            let command = command(program, None);
             (
                 command
                     .get_args()
@@ -448,7 +577,7 @@ mod tests {
             assert_ne!(outer, original);
             assert_eq!(snapshot("gh"), other_command);
             assert_eq!(
-                std::thread::spawn(|| command("git").get_args().count())
+                std::thread::spawn(|| command("git", None).get_args().count())
                     .join()
                     .unwrap(),
                 0

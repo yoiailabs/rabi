@@ -123,6 +123,16 @@ pub(super) struct GitMetadata {
     backlink: Vec<u8>,
 }
 
+impl GitMetadata {
+    pub(super) fn pin(&self) -> crate::process::GitRepositoryScope {
+        crate::process::git_repository(&self.workspace, &self.git_dir, &self.common)
+    }
+
+    fn unchanged(&self) -> bool {
+        git_metadata_snapshot(&self.workspace).is_ok_and(|after| after == *self)
+    }
+}
+
 fn metadata_file(path: &Path) -> Result<Vec<u8>> {
     if !fs::symlink_metadata(path)
         .map_err(|_| Error::status(REFUSED, "Cannot verify agent Git metadata"))?
@@ -356,9 +366,10 @@ fn execute_inner(
         .stdout(Stdio::from(std::io::stderr()))
         .stderr(Stdio::inherit());
     boundary.prepare(&mut command);
+    let metadata = git_metadata_snapshot(&workspace)?;
+    let _repository = metadata.pin();
     let pre_head = super::commit(&workspace, "HEAD")?;
     let pre_dirty = super::dirty(&workspace)?;
-    let metadata = git_metadata_snapshot(&workspace)?;
     let launch_id = uuid::Uuid::new_v4().to_string();
     store.implementation_event(&task, &workspace, true, json!({ "launchId": launch_id, "provider": provider, "preHead": pre_head, "dirty": pre_dirty }))?;
     let launched = (|| -> Result<(i32, &'static str)> {
@@ -396,8 +407,8 @@ fn execute_inner(
         launched.as_ref().copied().unwrap_or((1, "launch_failed"));
     // Do not invoke even rev-parse until the checkout's pointer, common-dir,
     // independent backlink and metadata symlinks have passed filesystem checks.
-    let metadata_unchanged = git_metadata_snapshot(&workspace).is_ok_and(|after| after == metadata);
-    let (post_head, dirty, new_commits) = if metadata_unchanged {
+    let metadata_unchanged = metadata.unchanged();
+    let (mut post_head, mut dirty, mut new_commits) = if metadata_unchanged {
         let post_head = super::commit(&workspace, "HEAD").ok();
         let dirty = super::dirty(&workspace).ok();
         let new_commits = post_head.as_ref().and_then(|post| {
@@ -411,10 +422,15 @@ fn execute_inner(
         });
         (post_head, dirty, new_commits)
     } else {
-        exit_code = REFUSED;
-        stop_reason = "metadata_changed";
         (None, None, None)
     };
+    // Selection stays pinned even if pointers change after the first check.
+    // Recheck after inspection so those changes cannot produce a success report.
+    if !metadata_unchanged || !metadata.unchanged() {
+        exit_code = REFUSED;
+        stop_reason = "metadata_changed";
+        (post_head, dirty, new_commits) = (None, None, None);
+    }
     if exit_code == 0 && (post_head.is_none() || dirty.is_none() || new_commits.is_none()) {
         exit_code = 1;
         stop_reason = "inspection_failed";

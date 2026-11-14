@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Post-launch `task implement` Git inspections pin the Git directory and common directory validated before the agent ran. Redirected metadata stops with exit 4 (`refused`), `stopReason: "metadata_changed"` and null post-launch Git facts; command, exit-code and JSON references now document this outcome.
+
 ## v8.0.0 (2026-11-14)
 
 See [Upgrading to v8](docs/upgrading-to-v8.md) for migration steps and the [v8.0.0 release notes](docs/release-notes/v8.0.0.md).
