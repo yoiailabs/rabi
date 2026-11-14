@@ -6,7 +6,6 @@ use crate::help;
 use crate::metadata::{self, MetadataInput};
 use crate::output::{errln, outln, visible_text};
 use crate::preferences;
-use crate::projects::{self, ProjectListEntry, ProjectRecord, ProjectRegistryStore};
 use crate::repository;
 use crate::trust::{self, HookControl};
 use crate::worktree::{self, Logger};
@@ -432,139 +431,106 @@ fn list(args: &[String]) -> Result<i32> {
     if kind.is_some_and(|kind| !matches!(kind, "workspace" | "primary")) {
         return Err(Error::validation("--kind must be workspace or primary"));
     }
-    let contexts = if parsed.flag("all-repos") {
-        if parsed.value("repo").is_some() {
-            return Err(Error::validation(
-                "--all-repos cannot be combined with -R/--repo",
-            ));
-        }
-        let catalog = projects::list_catalog(
-            preferences::load_preferences()?
-                .ghq_discovery
-                .unwrap_or(true),
-        )?;
-        for warning in catalog.warnings {
-            crate::output::warning("repo_discovery", warning);
-        }
-        catalog
-            .projects
-            .iter()
-            .map(|repo| {
-                let (ProjectListEntry::Registry { root_path, .. }
-                | ProjectListEntry::Ghq { root_path, .. }) = repo;
-                crate::context::create_at(Path::new(root_path))
-            })
-            .collect::<Result<Vec<_>>>()?
-    } else {
-        vec![command_context(&parsed)?]
-    };
+    let context = command_context(&parsed)?;
     let mut workspaces = Vec::new();
-    let mut repos = Vec::new();
-    for context in contexts {
-        if let Some(warning) = metadata::read_problem(&context.git_root) {
-            crate::output::warning("metadata_read", format!("Warning: {warning}"));
+    if let Some(warning) = metadata::read_problem(&context.git_root) {
+        crate::output::warning("metadata_read", format!("Warning: {warning}"));
+    }
+    let repo = crate::selectors::repo_json(&context.git_root);
+    if !json && !parsed.flag("names") && !parsed.flag("paths") {
+        outln!(
+            "{}  (primary: {})",
+            visible_text(&repo.name),
+            visible_text(&repo.root)
+        );
+    }
+    let mut count = 0;
+    for tree in worktree::list_worktrees(&context, false, false)? {
+        if kind.is_some_and(|kind| (kind == "primary") != tree.is_default) {
+            continue;
         }
-        let repo = crate::selectors::repo_json(&context.git_root);
-        if !json && !parsed.flag("names") && !parsed.flag("paths") {
-            outln!(
-                "{}  (primary: {})",
-                visible_text(&repo.name),
-                visible_text(&repo.root)
-            );
-        }
-        repos.push(repo);
-        let mut count = 0;
-        for tree in worktree::list_worktrees(&context, false, false)? {
-            if kind.is_some_and(|kind| (kind == "primary") != tree.is_default) {
-                continue;
-            }
-            count += 1;
-            let workspace = tree.to_json(None);
-            let run = if parsed.flag("names") || parsed.flag("paths") {
-                None
+        count += 1;
+        let workspace = tree.to_json(None);
+        let run = if parsed.flag("names") || parsed.flag("paths") {
+            None
+        } else {
+            crate::run::summary(&context.git_root, &tree.path)
+        };
+        if !json {
+            if parsed.flag("names") {
+                outln!("{}", tree.name);
+            } else if parsed.flag("paths") {
+                outln!("{}", tree.path);
             } else {
-                crate::run::summary(&context.git_root, &tree.path)
-            };
-            if !json {
-                if parsed.flag("names") {
-                    outln!("{}", tree.name);
-                } else if parsed.flag("paths") {
-                    outln!("{}", tree.path);
-                } else {
-                    let upstream = workspace
-                        .upstream
+                let upstream = workspace
+                    .upstream
+                    .as_ref()
+                    .map(|u| {
+                        if u.gone {
+                            "upstream:gone".into()
+                        } else {
+                            format!(
+                                "↑{} ↓{}",
+                                u.ahead.map(|n| n.to_string()).unwrap_or_else(|| "?".into()),
+                                u.behind
+                                    .map(|n| n.to_string())
+                                    .unwrap_or_else(|| "?".into())
+                            )
+                        }
+                    })
+                    .unwrap_or_default();
+                let links = [
+                    tree.metadata.links.pr.as_ref().map(|l| {
+                        format!(
+                            "#{}",
+                            l.number
+                                .map(|n| n.to_string())
+                                .unwrap_or_else(|| l.url.clone().unwrap_or_default())
+                        )
+                    }),
+                    tree.metadata.links.issue.as_ref().map(|l| {
+                        format!(
+                            "issue #{}",
+                            l.number
+                                .map(|n| n.to_string())
+                                .unwrap_or_else(|| l.url.clone().unwrap_or_default())
+                        )
+                    }),
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" ");
+                outln!(
+                    "{} {}  {}  {}  {}  {}  {}  {}{}{}",
+                    if workspace.current { "*" } else { " " },
+                    visible_text(&tree.name),
+                    visible_text(workspace.branch.as_deref().unwrap_or("(detached)")),
+                    upstream,
+                    if tree.is_clean { "" } else { "dirty" },
+                    visible_text(&links),
+                    workspace
+                        .metadata
+                        .setup
                         .as_ref()
-                        .map(|u| {
-                            if u.gone {
-                                "upstream:gone".into()
-                            } else {
-                                format!(
-                                    "↑{} ↓{}",
-                                    u.ahead.map(|n| n.to_string()).unwrap_or_else(|| "?".into()),
-                                    u.behind
-                                        .map(|n| n.to_string())
-                                        .unwrap_or_else(|| "?".into())
-                                )
-                            }
-                        })
-                        .unwrap_or_default();
-                    let links = [
-                        tree.metadata.links.pr.as_ref().map(|l| {
-                            format!(
-                                "#{}",
-                                l.number
-                                    .map(|n| n.to_string())
-                                    .unwrap_or_else(|| l.url.clone().unwrap_or_default())
-                            )
-                        }),
-                        tree.metadata.links.issue.as_ref().map(|l| {
-                            format!(
-                                "issue #{}",
-                                l.number
-                                    .map(|n| n.to_string())
-                                    .unwrap_or_else(|| l.url.clone().unwrap_or_default())
-                            )
-                        }),
-                    ]
-                    .into_iter()
-                    .flatten()
-                    .collect::<Vec<_>>()
-                    .join(" ");
-                    outln!(
-                        "{} {}  {}  {}  {}  {}  {}  {}{}{}",
-                        if workspace.current { "*" } else { " " },
-                        visible_text(&tree.name),
-                        visible_text(workspace.branch.as_deref().unwrap_or("(detached)")),
-                        upstream,
-                        if tree.is_clean { "" } else { "dirty" },
-                        visible_text(&links),
-                        workspace
-                            .metadata
-                            .setup
-                            .as_ref()
-                            .filter(|s| s.state != crate::setup::State::Ok)
-                            .map(|s| format!("setup:{}", s.state.as_str()))
-                            .unwrap_or_default(),
-                        visible_text(tree.metadata.purpose.as_deref().unwrap_or("")),
-                        if tree.orphaned { " [orphaned]" } else { "" },
-                        run.as_ref()
-                            .map(|run| format!(" run:{}", run.state))
-                            .unwrap_or_default()
-                    );
-                }
+                        .filter(|s| s.state != crate::setup::State::Ok)
+                        .map(|s| format!("setup:{}", s.state.as_str()))
+                        .unwrap_or_default(),
+                    visible_text(tree.metadata.purpose.as_deref().unwrap_or("")),
+                    if tree.orphaned { " [orphaned]" } else { "" },
+                    run.as_ref()
+                        .map(|run| format!(" run:{}", run.state))
+                        .unwrap_or_default()
+                );
             }
-            workspaces.push(crate::run::WorkspaceOutput { workspace, run });
         }
-        if count == 0 && !json && !parsed.flag("names") && !parsed.flag("paths") {
-            outln!("No linked workspaces found");
-        }
+        workspaces.push(crate::run::WorkspaceOutput { workspace, run });
+    }
+    if count == 0 && !json && !parsed.flag("names") && !parsed.flag("paths") {
+        outln!("No linked workspaces found");
     }
     if json {
-        let mut data = serde_json::json!({"workspaces": workspaces});
-        if parsed.flag("all-repos") {
-            data["repos"] = serde_json::to_value(repos).map_err(|e| Error::msg(e.to_string()))?;
-        }
-        emit_json(&data)
+        emit_json(&serde_json::json!({"workspaces": workspaces}))
     } else {
         Ok(SUCCESS)
     }
@@ -1793,7 +1759,7 @@ fn config_set(args: &[String]) -> Result<i32> {
     }
     let path = preferences::set_preference(key, value)?;
     if crate::output::json() {
-        let value = if matches!(key.as_str(), "sync.rewrite-published" | "discover-ghq") {
+        let value = if key == "sync.rewrite-published" {
             serde_json::json!(value == "true")
         } else {
             serde_json::json!(value)
@@ -1878,8 +1844,7 @@ fn clone_cmd(args: &[String]) -> Result<i32> {
         depth: parsed.value("depth"),
         update: parsed.flag("update"),
     }) {
-        Ok(outcome) => {
-            let result = outcome.result;
+        Ok(result) => {
             if json {
                 emit_json(&serde_json::json!({
                     "repo": {"root": result.path, "name": format!("{}/{}/{}", result.host, result.owner, result.repo), "remoteUrl": result.remote_url},
@@ -1888,312 +1853,10 @@ fn clone_cmd(args: &[String]) -> Result<i32> {
             } else {
                 outln!("{}", repository::human_clone_message(&result));
             }
-            if let Some(error) = outcome.registration_error {
-                let status = if result.cloned || result.updated {
-                    PARTIAL
-                } else {
-                    GENERAL
-                };
-                return fail_with(&Error::status(status, error.to_string()), status);
-            }
             Ok(SUCCESS)
         }
         Err(error) => fail_with(&error, error.exit_code()),
     }
-}
-
-fn project_root(args: &[String]) -> Result<i32> {
-    if args.is_empty() {
-        if let Some(text) = help::command_help("repo")? {
-            outln!("{text}");
-        }
-        return Ok(SUCCESS);
-    }
-    Err(Error::validation(format!(
-        "Unknown repo subcommand: {}",
-        args[0]
-    )))
-}
-
-fn project_add(args: &[String]) -> Result<i32> {
-    let json = crate::output::json();
-    let parsed = match args::parse(args, &command_options("repo add"), true) {
-        Ok(parsed) => parsed,
-        Err(error) => return fail_with(&error, VALIDATION),
-    };
-    if parsed.positionals.len() > 1 {
-        return fail_with(
-            &Error::msg("Usage: rabi repo add [path] [--json]"),
-            VALIDATION,
-        );
-    }
-    let cwd = match std::env::current_dir() {
-        Ok(cwd) => cwd,
-        Err(error) => return bubble(Error::msg(error.to_string()), json),
-    };
-    let selected = selected_repository(&parsed)?;
-    let input = parsed
-        .positionals
-        .first()
-        .map(Path::new)
-        .unwrap_or(selected.as_deref().unwrap_or(cwd.as_path()));
-    let root = match projects::resolve_project_root(input) {
-        Ok(root) => root,
-        Err(error) => return bubble(error, json),
-    };
-    let store = match ProjectRegistryStore::default_store() {
-        Ok(store) => store,
-        Err(error) => return bubble(error, json),
-    };
-    let (project, added) = match store.add(&root) {
-        Ok(added) => added,
-        Err(error) => return bubble(error, json),
-    };
-    if json {
-        return emit_json(&project_add_json(added, &project));
-    } else if added {
-        outln!(
-            "Added repo '{}' ({})",
-            visible_text(&project.name),
-            visible_text(&project.root_path)
-        );
-    } else {
-        outln!(
-            "Repository '{}' is already registered ({})",
-            visible_text(&project.name),
-            visible_text(&project.root_path)
-        );
-    }
-    Ok(SUCCESS)
-}
-
-fn project_list(args: &[String]) -> Result<i32> {
-    let json = crate::output::json();
-    let parsed = match args::parse(args, &command_options("repo list"), false) {
-        Ok(parsed) => parsed,
-        Err(error) => return fail_with(&error, VALIDATION),
-    };
-    let modes = [json, parsed.flag("names"), parsed.flag("paths")]
-        .iter()
-        .filter(|enabled| **enabled)
-        .count();
-    if modes > 1 {
-        return fail_with(
-            &Error::msg("Only one of --json, --names, or --paths can be specified"),
-            VALIDATION,
-        );
-    }
-    let loaded = match preferences::load_preferences() {
-        Ok(preferences) => preferences,
-        Err(error) => return fail_with(&error, GENERAL),
-    };
-    if parsed.flag("registered") && parsed.flag("discovered") {
-        return Err(Error::validation(
-            "Use only one of --registered or --discovered",
-        ));
-    }
-    selected_repository(&parsed)?;
-    let mut catalog = match projects::list_catalog(
-        !parsed.flag("registered") && loaded.ghq_discovery != Some(false),
-    ) {
-        Ok(catalog) => catalog,
-        Err(error) => return bubble(error, json),
-    };
-    if parsed.flag("discovered") {
-        catalog
-            .projects
-            .retain(|entry| matches!(entry, ProjectListEntry::Ghq { .. }));
-    }
-    for warning in &catalog.warnings {
-        crate::output::warning("repo_discovery", format!("Warning: {warning}"));
-    }
-    if json {
-        return emit_json(&catalog_json(&catalog.projects, catalog.version));
-    }
-    if catalog.projects.is_empty() {
-        if !parsed.flag("names") && !parsed.flag("paths") {
-            outln!("No repos found.");
-        }
-        return Ok(SUCCESS);
-    }
-    for project in &catalog.projects {
-        match project {
-            ProjectListEntry::Registry {
-                id,
-                name,
-                root_path,
-                ..
-            } if parsed.flag("names") => outln!("{}", visible_text(name)),
-            ProjectListEntry::Ghq { name, .. } if parsed.flag("names") => {
-                outln!("{}", visible_text(name))
-            }
-            ProjectListEntry::Registry { root_path, .. }
-            | ProjectListEntry::Ghq { root_path, .. }
-                if parsed.flag("paths") =>
-            {
-                outln!("{}", visible_text(root_path));
-            }
-            ProjectListEntry::Ghq {
-                name, root_path, ..
-            } => {
-                outln!("{} ({}) [ghq]", visible_text(name), visible_text(root_path))
-            }
-            ProjectListEntry::Registry {
-                id,
-                name,
-                root_path,
-                ..
-            } => outln!(
-                "{} ({}) [{}]",
-                visible_text(name),
-                visible_text(root_path),
-                visible_text(id)
-            ),
-        }
-    }
-    Ok(SUCCESS)
-}
-
-fn project_remove(args: &[String]) -> Result<i32> {
-    let json = crate::output::json();
-    let parsed = match args::parse(args, &command_options("repo forget"), true) {
-        Ok(parsed) => parsed,
-        Err(error) => return fail_with(&error, error.exit_code()),
-    };
-    if parsed.positionals.len() != 1 {
-        return fail_with(
-            &Error::msg("Usage: rabi repo remove <id|name|path> [--json]"),
-            VALIDATION,
-        );
-    }
-    selected_repository(&parsed)?;
-    let identifier = &parsed.positionals[0];
-    let store = match ProjectRegistryStore::default_store() {
-        Ok(store) => store,
-        Err(error) => return bubble(error, json),
-    };
-    let projects = match store.list() {
-        Ok(projects) => projects,
-        Err(error) => return bubble(error, json),
-    };
-    let project = match find_project(&projects, identifier) {
-        Ok(Some(project)) => project,
-        Ok(None) => {
-            return fail_with(
-                &Error::msg(format!("Repository '{identifier}' not found")),
-                NOT_FOUND,
-            )
-        }
-        Err(error) => return fail_with(&error, error.exit_code()),
-    };
-    let removed = match store.remove(&project.id) {
-        Ok(Some(removed)) => removed,
-        Ok(None) => {
-            return fail_with(
-                &Error::msg(format!("Repository '{identifier}' not found")),
-                NOT_FOUND,
-            )
-        }
-        Err(error) => return bubble(error, json),
-    };
-    if json {
-        return emit_json(&serde_json::json!({
-            "status": "removed",
-            "repo": removed,
-        }));
-    } else {
-        outln!(
-            "Removed repo '{}' ({})",
-            visible_text(&removed.name),
-            visible_text(&removed.root_path)
-        );
-    }
-    Ok(SUCCESS)
-}
-
-fn repo_show(args: &[String]) -> Result<i32> {
-    let parsed = args::parse(args, &command_options("repo show"), true)?;
-    if parsed.positionals.len() > 1 {
-        return Err(Error::validation("Usage: rabi repo show [REF]"));
-    }
-    let selected = selected_repository(&parsed)?;
-    let root = match parsed.positionals.first() {
-        Some(reference) => projects::resolve_project_ref(reference)?,
-        None => crate::context::open(selected.as_deref())?.git_root,
-    };
-    let context = crate::context::create_at(&root)?;
-    let name = repository::canonical_name_from_origin(&root).unwrap_or_else(|| {
-        root.file_name()
-            .unwrap_or_default()
-            .to_string_lossy()
-            .into_owned()
-    });
-    let default_branch = crate::git::default_branch(&root)?;
-    let trusted = trust::trust_all() || trust::is_trusted_root(&root)?;
-    let value = serde_json::json!({"repo": {
-        "root": root, "name": name, "defaultBranch": default_branch,
-        "configPresent": root.join(".rabi.toml").is_file(), "trusted": trusted,
-        "workspaceRoot": context.worktrees_directory,
-    }});
-    if crate::output::json() {
-        emit_json(&value)
-    } else {
-        outln!("{}\nPrimary checkout: {}\nDefault branch: {}\n.rabi.toml: {}\nTrusted: {trusted}\nWorkspace root: {}", visible_text(&name), visible_text(&root.to_string_lossy()), visible_text(default_branch.as_deref().unwrap_or("unknown")), root.join(".rabi.toml").is_file(), visible_text(&context.worktrees_directory.to_string_lossy()));
-        Ok(SUCCESS)
-    }
-}
-
-fn find_project(projects: &[ProjectRecord], identifier: &str) -> Result<Option<ProjectRecord>> {
-    if let Some(project) = projects.iter().find(|project| project.id == identifier) {
-        return Ok(Some(project.clone()));
-    }
-    if let Some(project) = projects
-        .iter()
-        .find(|project| project.root_path == identifier)
-    {
-        return Ok(Some(project.clone()));
-    }
-    let name_matches = projects
-        .iter()
-        .filter(|project| project.name == identifier)
-        .collect::<Vec<_>>();
-    if name_matches.len() == 1 {
-        return Ok(Some(name_matches[0].clone()));
-    }
-    if name_matches.len() > 1 {
-        return Err(Error::Status {
-            code: "ambiguous",
-            message: format!(
-                "Repository '{}' is ambiguous; use its id or path",
-                crate::output::diagnostic_value(identifier)
-            ),
-        });
-    }
-    match projects::resolve_project_ref(identifier) {
-        Ok(root) => {
-            let root = root.to_string_lossy().to_string();
-            Ok(projects
-                .iter()
-                .find(|project| project.root_path == root)
-                .cloned())
-        }
-        Err(Error::ProjectNotFound(_) | Error::PathNotFound(_) | Error::NotARepository) => Ok(None),
-        Err(error) => Err(error),
-    }
-}
-
-fn project_add_json(added: bool, project: &ProjectRecord) -> serde_json::Value {
-    serde_json::json!({
-        "status": if added { "added" } else { "existing" },
-        "repo": project,
-    })
-}
-
-fn catalog_json(projects: &[ProjectListEntry], version: u32) -> serde_json::Value {
-    serde_json::json!({
-        "version": version,
-        "repos": projects,
-    })
 }
 
 fn set(args: &[String]) -> Result<i32> {
@@ -2389,7 +2052,6 @@ fn command_options(key: &str) -> Vec<Opt> {
             value_flag("kind", None),
             flag("names", None),
             flag("paths", None),
-            flag("all-repos", None),
         ],
         "show" | "path" => vec![repo_flag()],
         "remove" => vec![
@@ -2407,16 +2069,8 @@ fn command_options(key: &str) -> Vec<Opt> {
             value_flag("depth", None),
             flag("update", None),
         ],
-        "repo add" => vec![],
-        "repo list" => vec![
-            flag("names", None),
-            flag("paths", None),
-            flag("registered", None),
-            flag("discovered", None),
-        ],
         "config get" | "config list" => vec![flag("sources", None)],
         "help" => vec![flag("help", Some('h'))],
-        "repo forget" => vec![],
         "set" => {
             let mut options = vec![
                 repo_flag(),
@@ -2499,7 +2153,7 @@ fn selected_repository(parsed: &Parsed) -> Result<Option<std::path::PathBuf>> {
         ));
     }
     match parsed.value("repo") {
-        Some(reference) => projects::resolve_project_ref(reference).map(Some),
+        Some(reference) => repository::resolve_repository_ref(reference).map(Some),
         None => Ok(None),
     }
 }
@@ -2710,7 +2364,7 @@ fn trust_list_cmd(args: &[String]) -> Result<i32> {
 fn trust_start(parsed: &Parsed) -> Result<std::path::PathBuf> {
     let selected = selected_repository(parsed)?;
     match parsed.positionals.first() {
-        Some(reference) => projects::resolve_project_ref(reference),
+        Some(reference) => repository::resolve_repository_ref(reference),
         None => match selected {
             Some(root) => Ok(root),
             None => std::env::current_dir().map_err(|error| Error::msg(error.to_string())),
@@ -2762,15 +2416,6 @@ fn emit_json(value: &impl serde::Serialize) -> Result<i32> {
     crate::output::data(value)
 }
 
-fn bubble(error: Error, json: bool) -> Result<i32> {
-    if json {
-        let code = error.exit_code();
-        fail_with(&error, code)
-    } else {
-        Err(error)
-    }
-}
-
 fn logger_for(json: bool) -> Logger {
     if json {
         Logger::json()
@@ -2802,33 +2447,6 @@ static PREFERENCE_COMMANDS: &[Command] = &[
         name: "unset",
         help_key: "config unset",
         run: config_unset,
-        children: &[],
-    },
-];
-
-static PROJECT_COMMANDS: &[Command] = &[
-    Command {
-        name: "show",
-        help_key: "repo show",
-        run: repo_show,
-        children: &[],
-    },
-    Command {
-        name: "add",
-        help_key: "repo add",
-        run: project_add,
-        children: &[],
-    },
-    Command {
-        name: "list",
-        help_key: "repo list",
-        run: project_list,
-        children: &[],
-    },
-    Command {
-        name: "forget",
-        help_key: "repo forget",
-        run: project_remove,
         children: &[],
     },
 ];
@@ -3098,12 +2716,6 @@ static COMMANDS: &[Command] = &[
         help_key: "clone",
         run: clone_cmd,
         children: &[],
-    },
-    Command {
-        name: "repo",
-        help_key: "repo",
-        run: project_root,
-        children: PROJECT_COMMANDS,
     },
 ];
 

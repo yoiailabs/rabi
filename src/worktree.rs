@@ -1458,7 +1458,7 @@ fn copy_error(relative: &Path, error: impl std::fmt::Display) -> Error {
     Error::msg(format!("Failed to copy {}: {error}", relative.display()))
 }
 
-/// Machine-readable workspace. Field names are camelCase, matching `repo list --json`.
+/// Machine-readable workspace. Field names are camelCase, matching `list --json`.
 ///
 /// `base` is set when the command that produced the object knows the starting
 /// commit-ish (create, and GitHub issue/PR checkout), otherwise it is the recorded

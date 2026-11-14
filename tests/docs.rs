@@ -251,3 +251,52 @@ fn run_guidance_documents_optional_skill_and_shared_agent_boundary() {
         }
     }
 }
+
+#[test]
+fn repository_selection_guidance_has_no_registry_or_cross_repository_help() {
+    let help: serde_json::Value = serde_json::from_str(include_str!("../help-data.json")).unwrap();
+    for command in ["repo", "repo add", "repo list", "repo show", "repo forget"] {
+        assert!(help["helps"].get(command).is_none(), "{command}");
+    }
+    let contract = include_str!("../help-data.json");
+    for obsolete in [
+        "registered ID",
+        "unambiguous name suffix",
+        "all-repos",
+        "discover-ghq",
+        "and register it",
+    ] {
+        assert!(!contract.contains(obsolete), "{obsolete}");
+    }
+    for (name, document) in [
+        ("README.md", README),
+        ("README.ja.md", README_JA),
+        ("commands", include_str!("../docs/commands.md")),
+        ("configuration", include_str!("../docs/configuration.md")),
+        ("skill", include_str!("../skills/rabi/SKILL.md")),
+    ] {
+        assert!(document.contains("host/owner/repo"), "{name}");
+        for obsolete in [
+            "rabi repo add",
+            "rabi repo list",
+            "rabi repo show",
+            "rabi repo forget",
+            "registered/discovered name",
+        ] {
+            assert!(!document.contains(obsolete), "{name}: {obsolete}");
+        }
+    }
+    let configuration = include_str!("../docs/configuration.md");
+    for requirement in ["ignored", "untouched", "deleted manually", "origin"] {
+        assert!(configuration.contains(requirement), "{requirement}");
+    }
+    let json = include_str!("../docs/json.md");
+    assert!(!json.contains("`--all-repos` also adds `repos`"));
+    let breaking = include_str!("../CHANGELOG.md")
+        .split("\n## ")
+        .nth(1)
+        .unwrap();
+    for removal in ["registry", "--all-repos", "discover-ghq", "-R"] {
+        assert!(breaking.contains(removal), "{removal}");
+    }
+}

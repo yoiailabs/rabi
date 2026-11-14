@@ -37,29 +37,29 @@ Substitute your repository's base branch and real PR/issue numbers in examples.
 
 ## Choose a repository
 
-Inside an existing clone, rabi uses that repository without requiring registration.
-Register it to select it by name from elsewhere:
+Inside an existing clone, rabi uses that repository. Commands operate on the
+current or `-R/--repo REF`-selected repository only.
 
-```sh
-cd your-repo
-rabi repo add .
-rabi repo list
-rabi repo show
-```
-
-Alternatively, clone and register in a ghq-compatible directory layout:
+Clone into a ghq-compatible directory layout:
 
 ```sh
 rabi clone owner/repo
 ```
 
-`rabi clone` accepts a URL, `host/owner/repo`, or `owner/repo`.
-Use global `-R/--repo REF` to select a repository by path or an unambiguous
-registered/discovered name. For example, from outside the checkout:
+`rabi clone` accepts a URL, `host/owner/repo`, or `owner/repo` and writes no
+registration. REF accepts a filesystem path, or a canonical `host/owner/repo`
+(`owner/repo` uses the default host) mapped directly to the same clone-root
+location. That directory must exist and its origin must identify the repository.
+Names, IDs, and suffixes do not trigger registry lookup or discovery. Use an
+explicit relative path to select an existing checkout elsewhere:
 
 ```sh
-rabi -R /absolute/path/to/your-repo list
+rabi -R ./your-repo list
+rabi -R owner/repo list
 ```
+
+Existing registry state is ignored and left untouched; it can be deleted without
+changing per-repository workspace records. See the configuration reference.
 
 ## Create a task workspace
 

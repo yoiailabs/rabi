@@ -216,7 +216,7 @@ pub struct RepoJson {
 pub(crate) fn repo_json(root: &Path) -> RepoJson {
     RepoJson {
         root: root.to_string_lossy().into_owned(),
-        name: crate::projects::canonical_name(root),
+        name: crate::repository::canonical_name(root),
     }
 }
 

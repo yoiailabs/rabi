@@ -72,12 +72,7 @@ Read [removal safety and retries](docs/safety.md) and [sync strategies](docs/syn
 | `rabi remove` | Retire explicit workspaces with safety checks |
 | `rabi forget` | Drop records while keeping files and branches |
 | `rabi gc` | Plan cleanup; `--apply` performs it |
-| `rabi clone` | Clone into a ghq-compatible layout and register |
-| `rabi repo` | Repository registry commands |
-| `rabi repo add` | Register a repository |
-| `rabi repo list` | List registered and discovered repositories |
-| `rabi repo show` | Inspect a repository |
-| `rabi repo forget` | Drop a registration |
+| `rabi clone` | Clone into a ghq-compatible layout |
 | `rabi run` | Launch or resume the workspace parent session |
 | `rabi doctor` | Read-only GitHub diagnostics; lists workflow files for manual review without parsing workflow YAML |
 | `rabi task` | Manage local tasks; inspect, approve and merge PR changes |
@@ -166,7 +161,7 @@ rabi run --fresh --provider claude "Fix issue #123"
 
 ## Configuration
 
-`rabi config` manages user settings: `workspace-root`, `clone-root`, `discover-ghq`, `sync.strategy`, and `sync.rewrite-published`. `-R/--repo REF` targets a repository by path or registered/discovered name. See [configuration, paths, and repository registrations](docs/configuration.md).
+`rabi config` manages `workspace-root`, `clone-root`, `sync.strategy`, and `sync.rewrite-published`. Commands use the current or `-R/--repo REF`-selected repository. REF accepts a filesystem path or a canonical `host/owner/repo` (`owner/repo` uses the default host) at the matching existing clone location. See [configuration and repository targeting](docs/configuration.md).
 
 Declare `[env]` once in the primary checkout's `.rabi.toml` to prepend PATH entries and set variables for trusted `rabi run` and `rabi exec`. Run skips workspace PATH entries and values referencing `${RABI_WORKSPACE_PATH}` with a warning; declare only directories agents cannot write, since PATH also selects provider interpreters. Both accept `--no-env`; hooks keep their existing environment. See [execution environment](docs/configuration.md#repository-execution-environment) for expansion and security rules.
 

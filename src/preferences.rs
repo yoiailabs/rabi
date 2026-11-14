@@ -8,7 +8,6 @@ use crate::paths;
 
 pub const SUPPORTED_KEYS: &[&str] = &[
     "workspace-root",
-    "discover-ghq",
     "clone-root",
     "sync.strategy",
     "sync.rewrite-published",
@@ -19,7 +18,6 @@ const NEW_FILE_COMMENT: &str = "# rabi user config. `rabi config` reads and writ
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Preferences {
     pub worktrees_directory: Option<String>,
-    pub ghq_discovery: Option<bool>,
     pub root: Option<String>,
     pub sync_strategy: Option<String>,
     pub sync_rewrite_published: Option<bool>,
@@ -32,7 +30,6 @@ pub fn is_preference_key(value: &str) -> bool {
 pub fn preference_value(preferences: &Preferences, key: &str) -> Option<String> {
     match key {
         "workspace-root" => preferences.worktrees_directory.clone(),
-        "discover-ghq" => preferences.ghq_discovery.map(|value| value.to_string()),
         "clone-root" => preferences.root.clone(),
         "sync.strategy" => preferences.sync_strategy.clone(),
         "sync.rewrite-published" => preferences
@@ -74,7 +71,6 @@ pub fn effective_value(preferences: &Preferences, key: &str) -> Result<Effective
             serde_json::json!(preferences.sync_rewrite_published.unwrap_or(false))
         }
         "workspace-root" => serde_json::json!(configured),
-        "discover-ghq" => serde_json::json!(preferences.ghq_discovery.unwrap_or(true)),
         _ => return Err(Error::validation(unknown_key_message(key))),
     };
     Ok(EffectiveValue {
@@ -215,7 +211,6 @@ fn preferences_from(document: &DocumentMut, path: &Path) -> Result<Preferences> 
             "workspace-root" => {
                 preferences.worktrees_directory = Some(require_string(path, key, item)?);
             }
-            "discover-ghq" => preferences.ghq_discovery = Some(require_bool(path, key, item)?),
             "clone-root" => preferences.root = Some(require_string(path, key, item)?),
             "sync" => {
                 let table = item
@@ -260,11 +255,6 @@ fn require_string(path: &Path, key: &str, item: &Item) -> Result<String> {
     })
 }
 
-fn require_bool(path: &Path, key: &str, item: &Item) -> Result<bool> {
-    item.as_bool()
-        .ok_or_else(|| invalid_value(path, key, "a boolean"))
-}
-
 fn assign(document: &mut DocumentMut, key: &str, new_value: Value) {
     if let Some((table, field)) = key.split_once('.') {
         if document.get(table).is_none() {
@@ -297,7 +287,7 @@ fn toml_value(key: &str, value: &str) -> Value {
 }
 
 fn is_bool_key(key: &str) -> bool {
-    matches!(key, "discover-ghq" | "sync.rewrite-published")
+    key == "sync.rewrite-published"
 }
 
 fn unknown_file_key(path: &Path, key: &str) -> Error {
@@ -356,63 +346,34 @@ mod tests {
     fn round_trip_preserves_comments_under_xdg_config_home() {
         let xdg = xdg_config("round-trip");
         let path = xdg.join("rabi").join("config.toml");
-        assert!(!path.exists());
-
-        set_preference_at(&path, "discover-ghq", "true").expect("set");
+        set_preference_at(&path, "workspace-root", "../workspaces").expect("set");
         let created = fs::read_to_string(&path).expect("created");
         assert!(created.starts_with("# rabi user config"), "{created}");
-        assert!(created.contains("discover-ghq = true\n"), "{created}");
-        assert!(!created.contains("keepBranch"), "{created}");
-        assert!(!created.contains("\"true\""), "{created}");
-
-        let commented = "\
-# header stays
-
-# keep the branch
-discover-ghq = true # inline
-
-# separator
-clone-root = \"~/clones\"
-";
-        fs::write(&path, commented).expect("seed");
-        set_preference_at(&path, "discover-ghq", "false").expect("update");
-        set_preference_at(&path, "workspace-root", "../phantom-worktrees").expect("directory");
-        let updated = fs::read_to_string(&path).expect("updated");
-        assert!(updated.contains("# header stays"), "{updated}");
-        assert!(updated.contains("# keep the branch"), "{updated}");
-        assert!(updated.contains("# inline"), "{updated}");
-        assert!(updated.contains("# separator"), "{updated}");
-        assert!(updated.contains("discover-ghq = false"), "{updated}");
-        assert!(updated.contains("clone-root = \"~/clones\""), "{updated}");
         assert!(
-            updated.contains("workspace-root = \"../phantom-worktrees\""),
-            "{updated}"
+            created.contains("workspace-root = \"../workspaces\"\n"),
+            "{created}"
         );
-
+        let commented = "# header stays\nworkspace-root = \"../workspaces\" # inline\n\n# separator\nclone-root = \"~/clones\"\n";
+        fs::write(&path, commented).expect("seed");
+        set_preference_at(&path, "workspace-root", "../spaces").expect("update");
+        let updated = fs::read_to_string(&path).expect("updated");
+        for comment in ["# header stays", "# inline", "# separator"] {
+            assert!(updated.contains(comment), "{updated}");
+        }
         let loaded = load_preferences_from(&path).expect("load");
-        assert_eq!(loaded.ghq_discovery, Some(false));
+        assert_eq!(loaded.worktrees_directory.as_deref(), Some("../spaces"));
         assert_eq!(loaded.root.as_deref(), Some("~/clones"));
-        assert_eq!(
-            loaded.worktrees_directory.as_deref(),
-            Some("../phantom-worktrees")
-        );
-        assert_eq!(
-            preference_value(&loaded, "discover-ghq").as_deref(),
-            Some("false")
-        );
-
-        remove_preference_at(&path, "discover-ghq").expect("remove");
+        remove_preference_at(&path, "workspace-root").expect("remove");
         let removed = fs::read_to_string(&path).expect("removed");
-        assert!(!removed.contains("discover-ghq"), "{removed}");
+        assert!(!removed.contains("workspace-root"), "{removed}");
         assert!(removed.contains("# separator"), "{removed}");
         assert!(removed.contains("clone-root"), "{removed}");
-        assert!(
-            removed.contains("workspace-root = \"../phantom-worktrees\""),
-            "{removed}"
+        assert_eq!(
+            load_preferences_from(&path)
+                .expect("load after remove")
+                .worktrees_directory,
+            None
         );
-        let loaded = load_preferences_from(&path).expect("load after remove");
-        assert_eq!(loaded.ghq_discovery, None);
-
         let _ = fs::remove_dir_all(xdg);
     }
 
@@ -438,22 +399,23 @@ clone-root = \"~/clones\"
         assert!(message.contains(&path.display().to_string()), "{message}");
         assert!(message.contains("workspace-root"), "{message}");
 
-        fs::write(&path, "discover-ghq = \"yes\"\n").expect("type");
+        fs::write(&path, "clone-root = true\n").expect("type");
         let error = load_preferences_from(&path).expect_err("type");
         let message = error.to_string();
-        assert!(message.contains("discover-ghq"), "{message}");
-        assert!(message.contains("boolean"), "{message}");
+        assert!(message.contains("clone-root"), "{message}");
+        assert!(message.contains("string"), "{message}");
         assert!(message.contains(&path.display().to_string()), "{message}");
 
         fs::write(&path, "workspace-root = true\n").expect("string type");
-        let error = set_preference_at(&path, "discover-ghq", "false").expect_err("blocked");
+        let error =
+            set_preference_at(&path, "sync.rewrite-published", "false").expect_err("blocked");
         assert!(
             error.to_string().contains(&path.display().to_string()),
             "{error}"
         );
         let unchanged = fs::read_to_string(&path).expect("unchanged");
         assert!(unchanged.contains("workspace-root = true"), "{unchanged}");
-        assert!(!unchanged.contains("discover-ghq"), "{unchanged}");
+        assert!(!unchanged.contains("rewrite-published"), "{unchanged}");
 
         fs::write(&path, "keepBranch = true\n").expect("legacy");
         let error = load_preferences_from(&path).expect_err("legacy key");
@@ -461,13 +423,13 @@ clone-root = \"~/clones\"
         assert!(message.contains("keepBranch"), "{message}");
         assert!(message.contains(&path.display().to_string()), "{message}");
 
-        fs::write(&path, "discover-ghq = true\n").expect("valid");
+        fs::write(&path, "clone-root = \"~/clones\"\n").expect("valid");
         let missing = remove_preference_at(&path, "workspace-root").expect_err("missing key");
         let message = missing.to_string();
         assert!(message.contains("not set"), "{message}");
         assert!(message.contains(&path.display().to_string()), "{message}");
         let still = fs::read_to_string(&path).expect("still");
-        assert!(still.contains("discover-ghq = true"), "{still}");
+        assert!(still.contains("clone-root"), "{still}");
 
         let _ = fs::remove_dir_all(xdg);
     }
@@ -478,13 +440,13 @@ clone-root = \"~/clones\"
         let path = xdg.join("rabi").join("config.toml");
         let loaded = load_preferences_from(&path).expect("missing");
         assert_eq!(loaded, Preferences::default());
-        let error = remove_preference_at(&path, "discover-ghq").expect_err("remove");
+        let error = remove_preference_at(&path, "sync.rewrite-published").expect_err("remove");
         assert!(
             error.to_string().contains(&path.display().to_string()),
             "{error}"
         );
         assert!(!path.exists());
-        let error = set_preference_at(&path, "discover-ghq", "yes").expect_err("bool");
+        let error = set_preference_at(&path, "sync.rewrite-published", "yes").expect_err("bool");
         assert!(error.to_string().contains("true"), "{error}");
         assert!(!path.exists());
         let _ = fs::remove_dir_all(xdg);
@@ -495,7 +457,7 @@ clone-root = \"~/clones\"
         let error = require_key("keepBranch").expect_err("legacy");
         let message = error.to_string();
         assert!(message.contains("keepBranch"), "{message}");
-        assert!(message.contains("discover-ghq"), "{message}");
+        assert!(message.contains("sync.strategy"), "{message}");
         assert!(message.contains("workspace-root"), "{message}");
     }
 

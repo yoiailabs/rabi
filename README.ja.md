@@ -72,12 +72,7 @@ rabi remove task/auth
 | `rabi remove` | 指定したワークスペースを安全性を確認して削除 |
 | `rabi forget` | ファイルとブランチを残して記録だけを削除 |
 | `rabi gc` | クリーンアップを計画し、`--apply` で実行 |
-| `rabi clone` | ghq 互換の配置に clone して登録 |
-| `rabi repo` | リポジトリ登録の操作 |
-| `rabi repo add` | リポジトリを登録 |
-| `rabi repo list` | 登録済み・検出されたリポジトリの一覧 |
-| `rabi repo show` | リポジトリを確認 |
-| `rabi repo forget` | 登録だけを削除 |
+| `rabi clone` | Clone into a ghq-compatible layout |
 | `rabi run` | ワークスペースの親セッションを起動・再開 |
 | `rabi doctor` | GitHub を読み取り専用で診断し、手動確認用にワークフローファイルを列挙（ワークフロー YAML は解析しない） |
 | `rabi task` | ローカルタスクを管理し、PR の変更を検査・承認・マージ |
@@ -166,7 +161,7 @@ rabi run --fresh --provider claude "Fix issue #123"
 
 ## 設定
 
-`rabi config` で `workspace-root`、`clone-root`、`discover-ghq`、`sync.strategy`、`sync.rewrite-published` を管理します。`-R/--repo REF` はパス、登録済みの名前、検出された名前でリポジトリを選びます。[設定・パス・リポジトリ登録](docs/configuration.md)を参照してください。
+`rabi config` manages `workspace-root`, `clone-root`, `sync.strategy`, and `sync.rewrite-published`. Commands use the current or `-R/--repo REF`-selected repository. REF accepts a filesystem path or a canonical `host/owner/repo` (`owner/repo` uses the default host) at the matching existing clone location. See [configuration and repository targeting](docs/configuration.md).
 
 プライマリチェックアウトの `.rabi.toml` に `[env]` を宣言すると、信頼済みの `rabi run` と `rabi exec` で PATH の先頭追加と変数の設定を共有できます。run はワークスペース内の PATH エントリーと `${RABI_WORKSPACE_PATH}` を参照する値を警告付きでスキップします。PATH はプロバイダーのインタープリターも選ぶため、エージェントが書き込めないディレクトリだけを宣言してください。どちらも `--no-env` で無効にできます。フックの環境は従来どおりです。展開とセキュリティのルールは[実行環境](docs/configuration.md#repository-execution-environment)を参照してください。
 

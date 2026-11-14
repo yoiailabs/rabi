@@ -286,10 +286,12 @@ mod tests {
         assert!(list.contains("-R, --repo <value>"));
         assert!(!list.contains("Put this before the workspace name"));
         let exec = command_help("exec").expect("help").expect("exec");
+        let exec = exec.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(exec.contains("--repo <value>"));
         assert!(exec.contains("put this before SEL"));
         assert!(exec.contains("rabi exec -- git status"));
         let where_help = command_help("path").expect("help").expect("path");
+        let where_help = where_help.split_whitespace().collect::<Vec<_>>().join(" ");
         assert!(!where_help.contains("Put this before the workspace name"));
         assert!(where_help.contains("may appear with the other options"));
         let checkout = command_help("create").expect("help").expect("checkout");
