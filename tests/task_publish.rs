@@ -299,7 +299,12 @@ for arg in "$@"; do
     push|ls-remote|fetch) export GIT_CONFIG_GLOBAL="$RABI_PUBLISH_FIXTURE/push.gitconfig" ;;
   esac
   case "$arg" in
-    fetch) [ ! -f "$RABI_PUBLISH_FIXTURE/fail-fetch" ] || exit 1 ;;
+    fetch)
+      [ ! -f "$RABI_PUBLISH_FIXTURE/fail-fetch" ] || exit 1
+      if [ -f "$RABI_PUBLISH_FIXTURE/trace-fetch" ]; then
+        export GIT_TRACE_PACKET="$RABI_PUBLISH_FIXTURE/fetch-packets"
+      fi
+      ;;
   esac
 done
 exec '{}' "$@"
@@ -1261,6 +1266,7 @@ fn unavailable_verified_base_is_retryable_without_changing_task_state() {
 #[test]
 fn remote_base_missing_locally_is_fetched_and_may_advance_independently() {
     let repo = Repo::new(None, None);
+    let common_base = repo.git(&["rev-parse", "main"]);
     let writer = repo.root.join("base-writer");
     repo.git(&[
         "clone",
@@ -1304,10 +1310,101 @@ fn remote_base_missing_locally_is_fetched_and_may_advance_independently() {
     for entry in fs::read_dir(repo.root.join("git-calls")).unwrap() {
         fs::remove_file(entry.unwrap().path()).unwrap();
     }
+    // The wrapper enables tracing only after publication's environment scrub.
+    // Local upload-pack uses the same fetch negotiation as a network transport.
+    fs::write(repo.root.join("trace-fetch"), "armed").unwrap();
     decode(repo.publish().output().unwrap(), 0);
+    let packets = fs::read_to_string(repo.root.join("fetch-packets")).unwrap();
+    assert!(
+        packets
+            .lines()
+            .any(|line| line.contains("fetch> have ") && line.ends_with(&common_base)),
+        "fetch must negotiate the existing common history: {packets}"
+    );
     assert_eq!(repo.git(&["cat-file", "-t", &remote_base]), "commit");
     assert_eq!(repo.pushes().len(), 1);
     assert_eq!(repo.view()["task"]["state"]["name"], "ci");
+}
+
+#[test]
+fn agent_written_commit_graph_cannot_hide_floor_changes_or_remote_divergence() {
+    for (path, expected) in [
+        (".github/protected", "floor_changed"),
+        ("ordinary", "diverged"),
+    ] {
+        let mut repo = Repo::new(None, None);
+        for directory in [&repo.repo, &repo.workspace] {
+            let file = directory.join(path);
+            fs::create_dir_all(file.parent().unwrap()).unwrap();
+            fs::write(file, "shared fixture content\n").unwrap();
+        }
+        repo.git(&["add", "."]);
+        repo.git(&["commit", "-m", "temporary protected base content"]);
+        let forged_base = repo.git(&["rev-parse", "HEAD"]);
+        repo.git(&["rm", path]);
+        repo.git(&["commit", "-m", "remove temporary protected base content"]);
+        repo.git(&["push", repo.remote.to_str().unwrap(), "main"]);
+        repo.commit("add protected task content");
+        let forged_commit = repo.head.clone();
+        fs::write(repo.workspace.join("tracked"), "additional task content\n").unwrap();
+        repo.commit("add later task content");
+        repo.git(&["commit-graph", "write", "--reachable"]);
+        let graph_path = repo.repo.join(".git/objects/info/commit-graph");
+        let mut graph = fs::read(&graph_path).unwrap();
+        assert_eq!(&graph[..6], b"CGPH\x01\x01");
+        let chunk_offset = |name: &[u8]| {
+            let entry = graph[8..]
+                .as_chunks::<12>()
+                .0
+                .iter()
+                .take(usize::from(graph[6]))
+                .find(|entry| &entry[..4] == name)
+                .unwrap();
+            usize::try_from(u64::from_be_bytes(entry[4..12].try_into().unwrap())).unwrap()
+        };
+        let oids = chunk_offset(b"OIDL");
+        let data = chunk_offset(b"CDAT");
+        let position = |sha: &str| {
+            graph[oids..data]
+                .as_chunks::<20>()
+                .0
+                .iter()
+                .position(|oid| {
+                    oid.iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>()
+                        == sha
+                })
+                .unwrap()
+        };
+        let commit_position = position(&forged_commit);
+        let base_position = u32::try_from(position(&forged_base)).unwrap();
+        // Each SHA-1 commit-data record has a 20-byte tree ID followed by its
+        // parent positions. Forge a task ancestor without changing commit objects.
+        let parent = data + commit_position * 36 + 20;
+        graph[parent..parent + 4].copy_from_slice(&base_position.to_be_bytes());
+        fs::remove_file(&graph_path).unwrap();
+        fs::write(graph_path, graph).unwrap();
+        // Verify the adversarial fixture affects Git's actual ancestry lookup.
+        assert_eq!(
+            repo.git(&["-c", "core.commitGraph=true", "merge-base", "main", "topic"]),
+            forged_base
+        );
+        if expected == "diverged" {
+            repo.git(&[
+                "push",
+                repo.remote.to_str().unwrap(),
+                &format!("{forged_base}:refs/heads/topic"),
+            ]);
+        }
+        for entry in fs::read_dir(repo.root.join("git-calls")).unwrap() {
+            fs::remove_file(entry.unwrap().path()).unwrap();
+        }
+        let output = decode(repo.publish().output().unwrap(), 4);
+        assert_eq!(output["error"]["code"], expected);
+        assert!(repo.pushes().is_empty());
+        assert_eq!(repo.creates(), 0);
+    }
 }
 
 #[test]

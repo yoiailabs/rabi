@@ -342,9 +342,9 @@ impl Publisher {
             .map_err(|_| Error::msg("Cannot prepare publication HEAD"))?;
         let object_format = super::text(workspace, &["rev-parse", "--show-object-format"])?;
         let config = if object_format == "sha256" {
-            "[core]\nbare = true\nrepositoryformatversion = 1\n[extensions]\nobjectformat = sha256\n"
+            "[core]\nbare = true\ncommitGraph = false\nrepositoryformatversion = 1\n[extensions]\nobjectformat = sha256\n"
         } else {
-            "[core]\nbare = true\nrepositoryformatversion = 0\n"
+            "[core]\nbare = true\ncommitGraph = false\nrepositoryformatversion = 0\n"
         };
         fs::write(path.join("config"), config)
             .map_err(|_| Error::msg("Cannot prepare publication config"))?;
@@ -377,6 +377,12 @@ impl Publisher {
             "--no-lazy-fetch",
             "--git-dir",
             git_dir,
+            "-c",
+            "core.commitGraph=false",
+            "-c",
+            "fetch.writeCommitGraph=false",
+            "-c",
+            "gc.auto=0",
             "-c",
             "credential.interactive=false",
             "-c",
@@ -698,8 +704,12 @@ pub(crate) fn execute(root: &Path, selector: Option<&str>) -> Result<Report> {
     // Fetch only the independently observed object ID into disposable metadata.
     // Neither local branch/tracking refs nor agent-writable config can select
     // the base, redirect this fetch, or change its ref destinations.
+    // The checked commit supplies negotiation history without importing refs
+    // from the agent-writable repository into the disposable metadata.
+    let negotiation_tip = format!("--negotiation-tip={head}");
     let fetched = publisher.git(&[
         "fetch",
+        &negotiation_tip,
         "--no-tags",
         "--no-write-fetch-head",
         "--no-recurse-submodules",
@@ -888,8 +898,8 @@ pub(crate) fn execute(root: &Path, selector: Option<&str>) -> Result<Report> {
     let reference = format!("refs/heads/{}", task.branch);
     let remote = publisher.remote_head(&task.push_remote_url, &reference)?;
     if let Some(remote) = remote.as_deref().filter(|remote| *remote != head) {
-        let ancestor = super::capture(&workspace, &["merge-base", "--is-ancestor", remote, head])?;
-        if !ancestor.status.success() {
+        let ancestor = publisher.git(&["merge-base", "--is-ancestor", remote, head])?;
+        if ancestor.code != 0 {
             return Err(block(
                 &store,
                 &mut task,
