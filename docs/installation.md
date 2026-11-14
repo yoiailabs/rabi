@@ -15,10 +15,10 @@ The installer always verifies SHA-256. Use `sh -s -- --verify-attestation` to al
 For agents and CI, pin the installer and binary to the same release tag:
 
 ```sh
-curl -fsSL https://github.com/yoiailabs/rabi/releases/download/v7.0.0/install.sh | RABI_VERSION=v7.0.0 sh
+curl -fsSL https://github.com/yoiailabs/rabi/releases/download/v8.0.0/install.sh | RABI_VERSION=v8.0.0 sh
 ```
 
-To pin another release, replace `v7.0.0` in both places with a tag from the [Releases page](https://github.com/yoiailabs/rabi/releases); rabi releases start at v7.0.0-alpha.10. v7.0.0-alpha.9 and v7.0.0-alpha.8 must each be installed with that release's own `install.sh` at `https://github.com/yoiailabs/rabi/releases/download/<TAG>/install.sh` (with `<TAG>` set to that release), using its original options and environment variables; v7.0.0-alpha.7 and older have no installer, so install them manually as described below. Pinned installs allow prereleases and make no GitHub API request.
+To pin another release, replace `v8.0.0` in both places with a tag from the [Releases page](https://github.com/yoiailabs/rabi/releases); rabi releases start at v7.0.0-alpha.10. v7.0.0-alpha.9 and v7.0.0-alpha.8 must each be installed with that release's own `install.sh` at `https://github.com/yoiailabs/rabi/releases/download/<TAG>/install.sh` (with `<TAG>` set to that release), using its original options and environment variables; v7.0.0-alpha.7 and older have no installer, so install them manually as described below. Pinned installs allow prereleases and make no GitHub API request.
 
 To opt into newer prereleases when installing without a version pin, pass `--prerelease`:
 
@@ -43,7 +43,7 @@ Release binaries support Linux x64/arm64 (static musl builds for any distributio
 
 ## Other installation methods
 
-With mise, pin v7.0.0 or a later release (v7.0.0-alpha.10 and later prereleases also work). The v7 releases share the same repository as the older v6 TypeScript releases, so keep the version pin explicit.
+With mise, pin v8.0.0 or a later release (v7.0.0-alpha.10 and later prereleases also work). The v7 releases share the same repository as the older v6 TypeScript releases, so keep the version pin explicit.
 
 ```sh
 mise use github:yoiailabs/rabi@<VERSION>
@@ -52,14 +52,14 @@ mise use github:yoiailabs/rabi@<VERSION>
 Or build from source with Rust 1.89+ (the `rust-version` in `Cargo.toml`):
 
 ```sh
-cargo install --git https://github.com/yoiailabs/rabi --tag v7.0.0 --locked rabi
+cargo install --git https://github.com/yoiailabs/rabi --tag v8.0.0 --locked rabi
 ```
 
-For a manual install, download `rabi-v<VERSION>-<os>-<arch>.tar.gz` from Releases (`<VERSION>` omits the leading `v`; `<os>` is `linux` or `darwin`, and `<arch>` is `x64` or `arm64`). Some older releases use archive names such as `mabo-v<VERSION>-<os>-<arch>.tar.gz`, `maboroshi-v<VERSION>-<os>-<arch>.tar.gz` or `ptm-v<VERSION>-<os>-<arch>.tar.gz`; for those, download the archive listed on that release. `install.sh` supports only the `rabi-` archive name and requires exactly one valid entry for it in `SHA256SUMS`. Each current archive contains only `rabi` (older archives contain the binary named at that release); extract it and place it in a directory on PATH. For releases after v7.0.0-alpha.7, download `SHA256SUMS` from the same release and verify before extracting. For v7.0.0 on Linux x64, verify provenance with `gh` and check SHA-256 in the download directory (adapt the archive name for other platforms or releases):
+For a manual install, download `rabi-v<VERSION>-<os>-<arch>.tar.gz` from Releases (`<VERSION>` omits the leading `v`; `<os>` is `linux` or `darwin`, and `<arch>` is `x64` or `arm64`). Some older releases use archive names such as `mabo-v<VERSION>-<os>-<arch>.tar.gz`, `maboroshi-v<VERSION>-<os>-<arch>.tar.gz` or `ptm-v<VERSION>-<os>-<arch>.tar.gz`; for those, download the archive listed on that release. `install.sh` supports only the `rabi-` archive name and requires exactly one valid entry for it in `SHA256SUMS`. Each current archive contains only `rabi` (older archives contain the binary named at that release); extract it and place it in a directory on PATH. For releases after v7.0.0-alpha.7, download `SHA256SUMS` from the same release and verify before extracting. For v8.0.0 on Linux x64, verify provenance with `gh` and check SHA-256 in the download directory (adapt the archive name for other platforms or releases):
 
 ```sh
-gh attestation verify rabi-v7.0.0-linux-x64.tar.gz --repo yoiailabs/rabi
-grep " rabi-v7.0.0-linux-x64.tar.gz$" SHA256SUMS | sha256sum -c -
+gh attestation verify rabi-v8.0.0-linux-x64.tar.gz --repo yoiailabs/rabi
+grep " rabi-v8.0.0-linux-x64.tar.gz$" SHA256SUMS | sha256sum -c -
 ```
 
 `SHA256SUMS` covers all four archives and `install.sh`; the `grep` selects the line for the archive you downloaded, which works with GNU and BusyBox `sha256sum`. On macOS, use `shasum -a 256 -c -` instead of `sha256sum -c -`. v7.0.0-alpha.7 and older releases have no `SHA256SUMS` or artifact attestations.

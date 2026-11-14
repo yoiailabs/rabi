@@ -60,7 +60,7 @@ rabi task advance "$task_id" --wait
 rabi task show "$task_id" --json
 ```
 
-`task new` only records intent and reserves an unused branch. `create` supplies the linked checkout; `--no-setup` skips copies and setup hooks. `task implement` starts the first local implementation attempt. `advance` then progresses one step per invocation, or continues and polls with `--wait`: implement → precheck → publish (draft PR) → CI → review → ready → classify → approval/auto-merge → cleanup. Review findings can return to implementation within a shared fix budget (default 3). Only the latest successful required check from its configured app counts.
+`task new` only records intent and reserves an unused branch. `create` supplies the linked checkout; `--no-setup` skips copies and setup hooks. `task implement` starts the first local implementation attempt. `advance` then progresses one step per invocation, or continues and polls with `--wait`: implement → precheck → publish (draft PR) → CI → review → ready → classify → approval/auto-merge → cleanup. Review findings can return to implementation within a shared fix budget (default 3). For each required check name and app, the newest run must have succeeded.
 
 Exit 10 means waiting for CI or maintainer approval; exit 4 means blocked/refused. Read `task.state.reason` and events in `task show --json`; an exit-0 step does not by itself mean merged. See the [state and recovery tables](docs/commands.md#task-lifecycle) and [exit codes](docs/exit-codes.md).
 
@@ -126,7 +126,7 @@ Use `rabi help` for syntax or `rabi help --json` for the full command/flag contr
 
 ## Agent skill
 
-The [rabi usage skill](skills/rabi/SKILL.md) explains task orchestration, local-only agent work, blocked reasons and workspace recovery. Install the CLI separately using the release installer above.
+The [rabi usage skill](skills/rabi/SKILL.md) explains task orchestration, local-only agent work, blocked reasons and workspace recovery. Install the CLI separately using the release installer above, then copy `skills/rabi/` into your agent provider's skills directory.
 
 ## Contributing
 

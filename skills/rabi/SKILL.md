@@ -162,7 +162,7 @@ without force to the recorded GitHub URL with repository hooks disabled.
 Interrupted publication can be retried in `implementing`, `prechecking` or
 `publishing` to reconcile remote results. A blocked task needs human intervention.
 
-CI uses only the latest successful check run for each base-policy name/app.
+For each base-policy name/app, CI uses the newest check run, and it must have succeeded.
 Review runs in a fresh detached exact-head checkout with restricted read tools;
 a valid pass marks the PR ready and upserts sanitized findings. Classification
 uses the base's written policy, currently with tool-less Claude; failures and
