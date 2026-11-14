@@ -124,12 +124,136 @@ fn strip_ansi(text: &str) -> String {
     output
 }
 
+// Remove whole key blocks first: assignment redaction must not consume a BEGIN
+// header and leave the following lines of key material without a recognizable frame.
+fn redact_private_keys(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut remaining = text;
+    while let Some(begin) = remaining.find("-----BEGIN ") {
+        output.push_str(&remaining[..begin]);
+        let tail = &remaining[begin..];
+        let header = &tail["-----BEGIN ".len()..];
+        if let Some((kind, rest)) = header.split_once("-----") {
+            if kind.ends_with("PRIVATE KEY")
+                && kind.bytes().all(|c| c.is_ascii_uppercase() || c == b' ')
+            {
+                let end_marker = format!("-----END {kind}-----");
+                let header_len = tail.len() - rest.len();
+                let end = rest
+                    .find(&end_marker)
+                    .map(|end| header_len + end + end_marker.len())
+                    .unwrap_or(tail.len());
+                output.push_str("[redacted-private-key]");
+                remaining = &tail[end..];
+                continue;
+            }
+        }
+        output.push_str("-----BEGIN ");
+        remaining = header;
+    }
+    output.push_str(remaining);
+    output
+}
+
+// Match recognizable credentials even when they are not inherited environment values.
+fn redact_secret_patterns(text: &str) -> String {
+    let mut output = String::with_capacity(text.len());
+    let mut offset = 0;
+    while let Some(tail) = text.get(offset..).filter(|tail| !tail.is_empty()) {
+        let github = ["ghp_", "gho_", "ghs_", "ghu_", "ghr_", "github_pat_"]
+            .iter()
+            .any(|prefix| tail.starts_with(prefix));
+        let aws = [
+            "AKIA", "ASIA", "AIDA", "AROA", "ABIA", "ACCA", "AGPA", "AIPA", "ANPA", "ANVA", "APKA",
+        ]
+        .iter()
+        .any(|prefix| tail.starts_with(prefix))
+            && tail.get(..20).is_some_and(|key| {
+                key.bytes()
+                    .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+            });
+        if github || aws {
+            let end = tail
+                .bytes()
+                .take_while(|c| c.is_ascii_alphanumeric() || *c == b'_')
+                .count();
+            output.push_str("[redacted]");
+            offset += end;
+            continue;
+        }
+        if let Some((start, end)) = secret_assignment(tail) {
+            output.push_str(&tail[..start]);
+            output.push_str("[redacted]");
+            offset += end;
+            continue;
+        }
+        if let Some(character) = tail.chars().next() {
+            output.push(character);
+            offset += character.len_utf8();
+        }
+    }
+    output
+}
+
+fn secret_assignment(text: &str) -> Option<(usize, usize)> {
+    for (key, separator) in [
+        ("authorization", ':'),
+        ("token", '='),
+        ("aws_secret_access_key", '='),
+        ("aws_access_key_id", '='),
+    ] {
+        if !text
+            .get(..key.len())
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case(key))
+        {
+            continue;
+        }
+        let after_key = text[key.len()..].trim_start_matches([' ', '\t']);
+        let Some(value) = after_key.strip_prefix(separator) else {
+            continue;
+        };
+        let value = value.trim_start_matches([' ', '\t']);
+        let start = text.len() - value.len();
+        let length = if separator == ':' {
+            // Authorization schemes can contain spaces (for example, Bearer and Basic).
+            value.find('\n').unwrap_or(value.len())
+        } else {
+            secret_value_length(value)
+        };
+        return Some((start, start + length));
+    }
+    None
+}
+
+fn secret_value_length(value: &str) -> usize {
+    let mut quote = None;
+    let mut escaped = false;
+    for (index, character) in value.char_indices() {
+        if escaped {
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else if let Some(delimiter) = quote {
+            if character == delimiter {
+                quote = None;
+            }
+        } else if matches!(character, '\'' | '"' | '`') {
+            quote = Some(character);
+        } else if character.is_whitespace() || matches!(character, '&' | ',' | ';' | ')') {
+            return index;
+        }
+    }
+    value.len()
+}
+
 pub(super) fn sanitized(bytes: &[u8], workspace: &Path) -> String {
     let stripped = strip_ansi(&String::from_utf8_lossy(bytes));
-    let mut text: String = stripped
+    let text: String = stripped
         .chars()
         .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
         .collect();
+    // Redact before bounding the tail so truncation cannot expose a partial secret.
+    let mut text = redact_private_keys(&text);
     for (key, value) in std::env::vars_os() {
         let key = key.to_string_lossy();
         let value = value.to_string_lossy();
@@ -145,6 +269,7 @@ pub(super) fn sanitized(bytes: &[u8], workspace: &Path) -> String {
     if let Some(path) = workspace.to_str() {
         text = text.replace(path, "[workspace]");
     }
+    text = redact_secret_patterns(&text);
     // Absolute paths and URL userinfo can contain private checkout names or credentials.
     text = text
         .split_inclusive(char::is_whitespace)
@@ -412,12 +537,12 @@ fn unchanged(
 
 /// Disposable bare metadata excludes agent-writable repository config, hooks,
 /// URL rewrites, transport commands and remote defaults from credentialed Git.
-struct Publisher {
-    temporary: Boundary,
+pub(super) struct Publisher {
+    pub(super) temporary: Boundary,
     head: String,
 }
 impl Publisher {
-    fn new(workspace: &Path, head: &str) -> Result<Self> {
+    pub(super) fn new(workspace: &Path, head: &str) -> Result<Self> {
         let temporary = Boundary::new()?;
         let path = temporary.path();
         fs::create_dir(path.join("refs"))
@@ -440,7 +565,35 @@ impl Publisher {
             head: head.into(),
         })
     }
-    fn git(&self, args: &[&str]) -> Result<crate::process::Captured> {
+    pub(super) fn git(&self, args: &[&str]) -> Result<crate::process::Captured> {
+        self.git_inner(args, false)
+    }
+    /// Materialize only the pinned head, without checkout filters or hooks
+    /// inherited from system/user configuration. Network publication retains
+    /// its ordinary authentication configuration.
+    pub(super) fn checkout(&self, path: &Path) -> Result<()> {
+        let path = path
+            .to_str()
+            .ok_or_else(|| Error::msg("Review checkout path is not UTF-8"))?;
+        let result = self.git_inner(
+            &[
+                "-c",
+                "core.hooksPath=/dev/null",
+                "worktree",
+                "add",
+                "--detach",
+                "--",
+                path,
+                &self.head,
+            ],
+            true,
+        )?;
+        if result.code != 0 {
+            return Err(Error::msg("Cannot create detached reviewer checkout"));
+        }
+        Ok(())
+    }
+    fn git_inner(&self, args: &[&str], isolated: bool) -> Result<crate::process::Captured> {
         let mut environment = Command::new("git");
         for key in std::env::vars_os().map(|(key, _)| key) {
             if key.to_string_lossy().starts_with("GIT_") {
@@ -451,6 +604,11 @@ impl Publisher {
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_NO_REPLACE_OBJECTS", "1")
             .env("GIT_GRAFT_FILE", "/dev/null/rabi-grafts");
+        if isolated {
+            environment
+                .env("GIT_CONFIG_NOSYSTEM", "1")
+                .env("GIT_CONFIG_GLOBAL", "/dev/null");
+        }
         let _scope = crate::process::task_git_environment(&environment);
         let git_dir = self
             .temporary
@@ -497,7 +655,7 @@ impl Publisher {
             Duration::from_secs(120),
         )
     }
-    fn remote_head(&self, url: &str, reference: &str) -> Result<Option<String>> {
+    pub(super) fn remote_head(&self, url: &str, reference: &str) -> Result<Option<String>> {
         let response = self.git(&["ls-remote", "--refs", "--", url, reference])?;
         if response.code != 0 {
             return Err(Error::msg("Cannot inspect recorded push destination"));
@@ -620,7 +778,7 @@ pub(super) fn destination(workspace: &Path, url: &str) -> Result<Option<String>>
     Ok(Some(resolved.selector()))
 }
 
-fn gh(workspace: &Path, repo: &str, args: &[&str]) -> Result<String> {
+pub(super) fn gh(workspace: &Path, repo: &str, args: &[&str]) -> Result<String> {
     let mut options = args.to_vec();
     options.extend(["--repo", repo]);
     gh_command(workspace, &options)
@@ -690,7 +848,7 @@ fn pull_list(workspace: &Path, task: &Task, repository: &str) -> Result<Option<P
 /// Candidate names come only from the trusted record. Short names with a
 /// slash may denote a local branch or a remote-tracking spelling, so only the
 /// verified remote can disambiguate them; mutable local refs cannot choose.
-fn base_candidates(workspace: &Path, recorded: &str) -> Result<Vec<String>> {
+pub(super) fn base_candidates(workspace: &Path, recorded: &str) -> Result<Vec<String>> {
     let candidates = if let Some(branch) = recorded.strip_prefix("refs/heads/") {
         vec![branch.to_owned()]
     } else if let Some(tracking) = recorded.strip_prefix("refs/remotes/") {
@@ -1119,6 +1277,7 @@ fn execute_inner(root: &Path, selector: Option<&str>, locked: bool) -> Result<Re
             "Task HEAD or tree changed during publication; human reconciliation required",
         ));
     }
+    task.advance.pushed_head = Some(head.to_owned());
     event(
         &store,
         &mut task,
@@ -1152,6 +1311,122 @@ mod tests {
         );
         assert!(tail.len() <= super::TAIL);
         assert!(tail.chars().all(|character| character == 'é'));
+    }
+
+    #[test]
+    fn diagnostics_redact_credentials_without_environment_matches() {
+        for secret in [
+            "ghp_fixtureSecret123",
+            "gho_fixtureSecret123",
+            "ghs_fixtureSecret123",
+            "github_pat_fixtureSecret123",
+            "AKIAIOSFODNN7EXAMPLE",
+            "ASIAIOSFODNN7EXAMPLE",
+        ] {
+            let input = format!("Finding: ({secret}) remains unsafe.");
+            assert_eq!(
+                super::sanitized(input.as_bytes(), std::path::Path::new("workspace")),
+                "Finding: ([redacted]) remains unsafe.",
+                "{secret}"
+            );
+        }
+        for (input, expected) in [
+            (
+                "Authorization: Bearer fixture-secret\nnext finding",
+                "Authorization: [redacted]\nnext finding",
+            ),
+            (
+                "aUtHoRiZaTiOn : Basic Zml4dHVyZQ==",
+                "aUtHoRiZaTiOn : [redacted]",
+            ),
+            ("token=x", "token=[redacted]"),
+            (
+                "?token=fixture-secret&keep=yes",
+                "?token=[redacted]&keep=yes",
+            ),
+            ("TOKEN = 'fixture secret'; keep", "TOKEN = [redacted]; keep"),
+            ("token=\"fixture secret\"; keep", "token=[redacted]; keep"),
+            ("token=`fixture secret`; keep", "token=[redacted]; keep"),
+            ("token=[redacted]fixture-secret", "token=[redacted]"),
+            (r#"token="fixture\"remaining-secret""#, "token=[redacted]"),
+            (
+                r#"token="fixture"remaining-secret" tail"; keep"#,
+                "token=[redacted]; keep",
+            ),
+            (
+                r#"token='fixture'" secret"; keep"#,
+                "token=[redacted]; keep",
+            ),
+            (r#"token=fixture\ secret; keep"#, "token=[redacted]; keep"),
+            (r#"token="unterminated fixture secret"#, "token=[redacted]"),
+            (
+                "aws_secret_access_key=fixture-secret",
+                "aws_secret_access_key=[redacted]",
+            ),
+            ("é token=fixture-secret, next", "é token=[redacted], next"),
+        ] {
+            assert_eq!(
+                super::sanitized(input.as_bytes(), std::path::Path::new("workspace")),
+                expected
+            );
+            assert_eq!(
+                super::sanitized(expected.as_bytes(), std::path::Path::new("workspace")),
+                expected,
+                "redaction must be idempotent"
+            );
+        }
+    }
+
+    #[test]
+    fn diagnostics_redact_complete_and_unterminated_private_keys_before_truncation() {
+        for kind in [
+            "PRIVATE KEY",
+            "RSA PRIVATE KEY",
+            "EC PRIVATE KEY",
+            "OPENSSH PRIVATE KEY",
+            "ENCRYPTED PRIVATE KEY",
+        ] {
+            let key = format!("-----BEGIN {kind}-----\nfixture-key-material\n-----END {kind}-----");
+            let input = format!("before {key} after");
+            assert_eq!(
+                super::sanitized(input.as_bytes(), std::path::Path::new("workspace")),
+                "before [redacted-private-key] after"
+            );
+            let truncated = format!(
+                "before -----BEGIN {kind}-----\n{}",
+                "fixture-key-material".repeat(1000)
+            );
+            assert_eq!(
+                super::sanitized(truncated.as_bytes(), std::path::Path::new("workspace")),
+                "before [redacted-private-key]"
+            );
+            for prefix in ["Authorization: ", "token="] {
+                let input = format!("{prefix}{key}\nnext finding");
+                let expected = format!("{prefix}[redacted]\nnext finding");
+                assert_eq!(
+                    super::sanitized(input.as_bytes(), std::path::Path::new("workspace")),
+                    expected
+                );
+                let input = format!(
+                    "{prefix}-----BEGIN {kind}-----\n{}",
+                    "fixture-key-material".repeat(1000)
+                );
+                let output = super::sanitized(input.as_bytes(), std::path::Path::new("workspace"));
+                assert!(!output.contains("fixture-key-material"));
+                assert!(!output.contains("PRIVATE KEY"));
+            }
+        }
+    }
+
+    #[test]
+    fn diagnostics_redact_home_even_embedded_in_relative_text() {
+        // Use the invoking environment without changing process-global HOME in parallel tests.
+        if let Some(home) = std::env::var_os("HOME").filter(|home| !home.is_empty()) {
+            let input = format!("path={}{}", home.to_string_lossy(), "/fixture/file");
+            let output = super::sanitized(input.as_bytes(), std::path::Path::new("workspace"));
+            assert!(!output.contains(home.to_string_lossy().as_ref()));
+            assert!(output.contains("[redacted]"));
+        }
     }
 
     #[test]

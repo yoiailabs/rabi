@@ -25,7 +25,8 @@ case "$1 $2" in
       printf '[{"number":7,"headRefName":"topic","headRefOid":"%s","isCrossRepository":false}]\n' "$head"
     else printf '[]\n'; fi ;;
   'pr create') touch "$RABI_ADVANCE_FIXTURE/pr-created"; printf '%s\n' 'https://github.com/fixture/project/pull/7' ;;
-  'pr view') printf '{"number":7,"headRefName":"topic","headRefOid":"%s","isCrossRepository":false,"state":"OPEN"}\n' "$head" ;;
+  'pr view') printf '{"number":7,"headRefName":"topic","headRefOid":"%s","isCrossRepository":false,"state":"OPEN","baseRefName":"main","baseRefOid":"%s","title":"Fixture PR","body":"Fixture body","isDraft":true}\n' "$head" "$base" ;;
+  'pr ready') touch "$RABI_ADVANCE_FIXTURE/ready" ;;
   'run view')
     if [ -f "$RABI_ADVANCE_FIXTURE/interrupt-log" ]; then
       signal=$(cat "$RABI_ADVANCE_FIXTURE/interrupt-log")
@@ -38,7 +39,15 @@ case "$1 $2" in
     fi ;;
   *)
     [ "$1" = api ] || exit 91
+    if [ "$2" = --hostname ]; then shift 2; fi
     case "$2" in
+      user) printf '{"id":100}\n' ;;
+      repos/fixture/project/issues/7/comments*)
+        case "$*" in
+          *'--method POST'*) touch "$RABI_ADVANCE_FIXTURE/comment-created"; printf '{"id":101}\n' ;;
+          *) if [ -f "$RABI_ADVANCE_FIXTURE/comment-created" ]; then printf '[[{"id":101,"body":"<!-- rabi-task-review -->","user":{"id":100}}]]\n'; else printf '[[]]\n'; fi ;;
+        esac ;;
+      repos/fixture/project/issues/comments/101) printf '{"id":101}\n' ;;
       repos/fixture/project) printf '%s\n' '{"default_branch":"main"}' ;;
       repos/fixture/project/pulls/7)
         mergeable=true; mergeable_state=clean
@@ -72,11 +81,25 @@ esac
 
 const PROVIDER: &str = r#"#!/bin/sh
 set -eu
+prompt=$(cat)
+case "$prompt" in
+  *'<rabi-review-output-'*)
+    nonce=$(printf '%s\n' "$prompt" | sed -n 's/.*<rabi-review-output-\([^>]*\)>.*/\1/p' | head -1)
+    head=$(git rev-parse HEAD)
+    answer=$(printf '<rabi-review-output-%s>\n{"sha":"%s","verdict":"pass","findings":[]}\n</rabi-review-output-%s>\n' "$nonce" "$head" "$nonce")
+    last=0
+    for arg in "$@"; do
+      if [ "$last" -eq 1 ]; then printf '%s\n' "$answer" > "$arg"; last=0; fi
+      if [ "$arg" = --output-last-message ]; then last=1; fi
+    done
+    printf '%s\n' "$answer"
+    exit 0 ;;
+esac
 index=$(cat "$RABI_ADVANCE_FIXTURE/provider-count")
 index=$((index+1))
 printf '%s\n' "$index" > "$RABI_ADVANCE_FIXTURE/provider-count"
 printf '%s\n' "${0##*/}" > "$RABI_ADVANCE_FIXTURE/provider.$index"
-cat > "$RABI_ADVANCE_FIXTURE/prompt.$index"
+printf '%s\n' "$prompt" > "$RABI_ADVANCE_FIXTURE/prompt.$index"
 case "$(cat "$RABI_ADVANCE_FIXTURE/provider-mode")" in
   commit)
     git commit --allow-empty -m "feat: fixture attempt $index"
@@ -347,7 +370,7 @@ fn check(id: u64, name: &str, status: &str, conclusion: Option<&str>, app: &str)
 }
 
 #[test]
-fn wait_drives_implementation_publication_and_pending_ci_to_reviewing() {
+fn wait_drives_implementation_publication_and_pending_ci_to_classifying() {
     let repo = Repo::new(&["test"], "", None);
     repo.checks(&[
         vec![check(42, "test", "in_progress", None, "github-actions")],
@@ -360,7 +383,7 @@ fn wait_drives_implementation_publication_and_pending_ci_to_reviewing() {
         )],
     ]);
     let report = decode(repo.advance().arg("--wait").output().unwrap(), 0);
-    assert_eq!(report["data"]["state"]["name"], "reviewing");
+    assert_eq!(report["data"]["state"]["name"], "classifying");
     assert_eq!(repo.launches(), 1);
     assert_eq!(
         repo.transitions(),
@@ -368,12 +391,15 @@ fn wait_drives_implementation_publication_and_pending_ci_to_reviewing() {
             ("implementing".into(), "prechecking".into()),
             ("prechecking".into(), "publishing".into()),
             ("publishing".into(), "ci".into()),
-            ("ci".into(), "reviewing".into())
+            ("ci".into(), "reviewing".into()),
+            ("reviewing".into(), "ready".into()),
+            ("ready".into(), "classifying".into())
         ]
     );
     let trace = fs::read_to_string(repo.root.join("gh-trace")).unwrap();
     assert!(trace.contains("pr create --draft"), "{trace}");
-    assert!(!trace.contains("pr merge") && !trace.contains("--method POST"));
+    assert!(!trace.contains("pr merge"));
+    assert!(trace.contains("pr ready 7"));
     for event in repo.view()["events"].as_array().unwrap() {
         assert!(!event["reason"].as_str().unwrap().is_empty());
     }
@@ -779,7 +805,7 @@ fn fresh_pr_head_mismatch_blocks_before_repair_launch() {
 #[test]
 fn advance_reports_stopping_states_without_launch_or_remote_calls() {
     for (state, exit) in [
-        (json!({"name":"reviewing"}), 0),
+        (json!({"name":"classifying"}), 0),
         (json!({"name":"blocked","reason":"budget"}), 4),
         (json!({"name":"abandoned"}), 4),
         (json!({"name":"merged"}), 0),

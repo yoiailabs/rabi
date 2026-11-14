@@ -87,7 +87,8 @@ Read [removal safety and retries](docs/safety.md) and [sync strategies](docs/syn
 | `rabi task abandon` | Abandon a non-terminal local task |
 | `rabi task implement` | Run one implementer in an existing task workspace; record commits and dirty state |
 | `rabi task publish` | Run prechecks, push the task branch and create or reuse a draft PR |
-| `rabi task advance` | Drive implementation and publication through CI; stop at reviewing |
+| `rabi task advance` | Drive implementation, publication, CI and review; stop at classifying |
+| `rabi task review` | Review the exact PR head in a detached checkout; mark passing changes ready |
 | `rabi task risk` | Classify committed changes using the base commit risk policy |
 | `rabi task classify` | Assess committed diffs using the written policy and record an exact-head verdict |
 | `rabi task status` | Read GitHub PR facts without writes |

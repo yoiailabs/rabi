@@ -24,6 +24,8 @@ pub(crate) enum BlockReason {
     FloorChanged,
     PrecheckChanged,
     ReviewInvalid,
+    ReviewDiffTooLarge,
+    ReviewPassInvalid,
     Budget,
     Internal,
     RecordMismatch,
@@ -147,6 +149,8 @@ pub(crate) struct Event {
     pub(super) agent: Option<serde_json::Value>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) precheck: Option<serde_json::Value>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) review: Option<serde_json::Value>,
 }
 
 #[derive(Serialize)]
@@ -493,6 +497,7 @@ impl Store {
             detail: None,
             agent: None,
             precheck: None,
+            review: None,
         };
         self.save(directory, &task, &event)?;
         io(File::open(directory).and_then(|file| file.sync_all()))?;
@@ -565,6 +570,16 @@ impl Store {
         to: TaskState,
         reason: &str,
     ) -> Result<()> {
+        self.advance_review_event(original, to, reason, None)
+    }
+
+    pub(super) fn advance_review_event(
+        &self,
+        original: &mut Task,
+        to: TaskState,
+        reason: &str,
+        review: Option<serde_json::Value>,
+    ) -> Result<()> {
         let directory = self.path.join(&original.id);
         let _lock = lock(&directory.join(".lock"))?;
         let mut task = self.load_record_with_branch(&original.id, Some(&original.branch))?;
@@ -575,7 +590,7 @@ impl Store {
                 "Task state changed during advancement",
             ));
         }
-        let event = if task.state == to {
+        let mut event = if task.state == to {
             Event {
                 at: now(),
                 from: Some(to),
@@ -584,10 +599,12 @@ impl Store {
                 detail: None,
                 agent: None,
                 precheck: None,
+                review: None,
             }
         } else {
             transition(&mut task, to, reason)?
         };
+        event.review = review;
         task.advance = original.advance.clone();
         task.updated_at = event.at.clone();
         self.save(&directory, &task, &event)?;
@@ -631,6 +648,7 @@ impl Store {
                     detail: None,
                     agent: None,
                     precheck: None,
+                    review: None,
                 },
                 _ => {
                     return Err(Error::status(
@@ -648,6 +666,7 @@ impl Store {
                 detail: None,
                 agent: None,
                 precheck: None,
+                review: None,
             }
         };
         event.agent = Some(data);
@@ -691,11 +710,13 @@ impl Store {
                 detail: None,
                 agent: None,
                 precheck: None,
+                review: None,
             }
         } else {
             transition(&mut task, to, reason)?
         };
         event.precheck = precheck;
+        task.advance = original.advance.clone();
         task.pr_number = pr_number.or(task.pr_number);
         task.updated_at = event.at.clone();
         self.save(&directory, &task, &event)
@@ -759,6 +780,7 @@ fn transition(task: &mut Task, to: TaskState, reason: &str) -> Result<Event> {
         detail: None,
         agent: None,
         precheck: None,
+        review: None,
     };
     task.state = to;
     task.updated_at = event.at.clone();

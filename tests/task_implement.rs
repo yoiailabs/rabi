@@ -705,19 +705,22 @@ printf 'changed worktree content\n' > file
             "rabi executed an agent-written {kind} filter"
         );
     }
-    // Positive controls prove both filters are armed; run only after inspection.
+    // Hash content explicitly to prove both filters are armed, after inspection.
+    // Status can decide a file is modified from index/stat information without
+    // reading its content, so it does not reliably invoke a clean filter.
     repo.git(&[
         "-C",
         repo.workspace.join("nested").to_str().unwrap(),
-        "status",
-        "--porcelain",
+        "hash-object",
+        "--path=file",
+        "file",
     ]);
     repo.git(&[
         "-C",
         repo.workspace.to_str().unwrap(),
-        "status",
-        "--porcelain",
-        "--ignore-submodules=all",
+        "hash-object",
+        "--path=file",
+        "file",
     ]);
     for kind in ["nested", "worktree"] {
         assert!(

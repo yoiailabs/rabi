@@ -2176,7 +2176,7 @@
     "task": {
       "name": "task",
       "description": "Manage local tasks, inspect PR facts, approve commits and gate merges",
-      "usage": "rabi task new|list|show|abandon|implement|publish|advance|risk|classify|status|approve|merge [arguments] [options]",
+      "usage": "rabi task new|list|show|abandon|implement|publish|advance|review|risk|classify|status|approve|merge [arguments] [options]",
       "options": [
         {
           "name": "repo",
@@ -2806,7 +2806,7 @@
     },
     "task advance": {
       "name": "task advance",
-      "description": "Advance a task from implementation through required CI",
+      "description": "Advance a task through implementation, CI and review",
       "usage": "rabi task advance [SEL] [--wait] [--ci-timeout DUR] [options]",
       "options": [
         {
@@ -2819,7 +2819,7 @@
         {
           "name": "wait",
           "type": "boolean",
-          "description": "Repeat steps and poll CI until reviewing or a terminal result"
+          "description": "Repeat steps and poll CI through review until classifying or a terminal result"
         },
         {
           "name": "ci-timeout",
@@ -2851,16 +2851,70 @@
       "notes": [
         "SEL is a full task ID or unique prefix of at least six characters; omitted or dot selects the current branch task. Requires repository trust and an existing linked task workspace.",
         "One step launches the last implementer provider (Codex by default) or accepts clean descendant commits and enters prechecking; prechecking/publishing runs task publish. No new clean commit blocks no_progress.",
-        "CI uses fresh facts for the exact PR head and the base policy required check names/apps. Only the latest matching check run with success passes. Missing or pending checks wait; skipped and neutral fail. Conflicts return implementing with sync-with-base feedback before waiting.",
-        "Failed prechecks and CI return implementing with bounded sanitized untrusted feedback, framed with a random nonce in the implementer prompt. A durable head/check-name signature prevents repeating the same repair.",
-        "Primary-checkout [factory] fix-budget defaults to 3 relaunches; ci-timeout defaults to 60m. Exhausted budget, empty required checks and elapsed pending CI block budget, no_ci and ci_timeout. --ci-timeout overrides the timeout.",
-        "--wait polls pending checks every 30 seconds and stops at reviewing, blocked, merged, abandoned or an error. Stops at reviewing; advance does not launch a reviewer, approve or merge.",
-        "Exit 0 means progressed, reviewing or recorded merged; 10 means waiting; blocked/abandoned use 4. Ordinary provider failures block provider_failed with 4; provider timeout uses 124. SIGINT/SIGTERM during advance, including prechecks, CI log retrieval and polling, stops with 130 without starting another step. Other errors retain their existing codes."
+        "CI uses fresh facts for the exact PR head and base policy required check names/apps. Only the latest matching success passes. Missing or pending checks wait; skipped and neutral fail. Conflicts return implementing with sync-with-base feedback.",
+        "Failed prechecks, CI and review return implementing with bounded untrusted feedback, framed with a random nonce in the implementer prompt. Durable head-bound signatures prevent repeating the same repair; identical consecutive failure fingerprints block repeated_failure even across heads.",
+        "Primary-checkout [factory] fix-budget defaults to 3 relaunches, including review revisions; ci-timeout defaults to 60m. Exhausted budget, empty required checks and elapsed pending CI block budget, no_ci and ci_timeout. --ci-timeout overrides the timeout.",
+        "Reviewing runs task review in a fresh detached exact-head checkout. Passing findings mark the verified PR ready and upsert one sanitized findings comment before classifying. Review output is advisory input to deterministic gates, never an approval.",
+        "--wait polls pending checks every 30 seconds and continues through reviewing until classifying, blocked, merged, abandoned or an error. It does not launch classification, approve or merge.",
+        "Exit 0 means progress, classifying or recorded merged; 10 means waiting; blocked/abandoned use 4. Implementer failures block provider_failed with 4; timeout uses 124. Invalid reviewer output gets one retry then review_invalid with 4. SIGINT/SIGTERM stops with 130. Other errors retain their existing codes."
       ],
       "examples": [
         {
           "command": "rabi task advance --wait --json",
-          "description": "Drive the current task through CI and stop at reviewing"
+          "description": "Drive the current task through CI and review; stop at classifying"
+        }
+      ]
+    },
+    "task review": {
+      "name": "task review",
+      "description": "Review the verified PR head and mark passing changes ready",
+      "usage": "rabi task review [SEL] [options]",
+      "options": [
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Repository to operate on; uses the shared workspace selector rules",
+          "example": "--repo owner/repo"
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "SEL is a full task ID or unique prefix of at least six characters; omitted or dot selects the current branch task. Requires repository trust, a linked task workspace and state reviewing, ready or classifying.",
+        "Verifies the PR repository, branch and headRefOid against the recorded pushed HEAD before using any record or launching a reviewer. A moved head blocks diverged; unavailable remote/base evidence remains retryable.",
+        "Creates a fresh rabi-owned detached checkout of the exact PR head, never reuses the implementer workspace. Base pinning matches task publish; review records bind headSha, baseSha and mergeBaseSha under the Git common directory rabi/reviews.",
+        "Primary-checkout [review] provider accepts codex or claude; absent means the provider other than the last implementer (Codex when unrecorded). Optional model is passed as --model=VALUE; empty and option-like values are rejected.",
+        "Codex uses fresh exec --sandbox read-only with approval_policy=never, network off and no --add-dir. Claude uses -p --permission-mode plan with only Read, Grep and Glob; Bash, Edit, Write, NotebookEdit, WebFetch and WebSearch are explicitly disallowed. The full diff is supplied in the prompt. Both use the shared stripped-credential task boundary and RABI_AGENT=1.",
+        "The built-in prompt requires findings for deleted, disabled or weakened tests, CI entry points, floor paths, security issues and correctness bugs. PR title/body, comments and diff are nonce-framed untrusted data.",
+        "Diffs larger than 400 KiB block as review_diff_too_large without launching a reviewer. Final output must be strict nonce-framed JSON {sha, verdict, findings}; verdict is pass or revise, findings carry id, severity important|nit, path, line and body, and sha must equal reviewed HEAD. Pass requires no important findings; revise requires at least one. Malformed, mismatched or inconsistent output gets one fresh retry, then blocked(review_invalid). Finding strings are sanitized before storage and posting.",
+        "Pass with no important findings moves through ready: rabi records the pass head and record digest in review_passed, runs gh pr ready and upserts one rabi-marked sanitized size-capped findings comment, nits included, then stops at classifying. Repeating ready/classifying reconciles only that earned pass even if the base moved, never launching another reviewer; a missing or invalid earned pass blocks as review_pass_invalid. Review output is advisory input to deterministic gates, never an approval.",
+        "Revise returns implementing with framed untrusted findings. The next fix counts against factory.fix-budget; head plus finding IDs deduplicate launches, and sorted path/severity/normalized-body hashes enforce repeated_failure across heads.",
+        "Exit 0 means progress; blocked outcomes use 4 and retain report data. Invalid arguments use 2, missing tasks 3, SIGINT/SIGTERM 130, and Git/configuration/store errors retain their existing codes."
+      ],
+      "examples": [
+        {
+          "command": "rabi task review --json",
+          "description": "Review the current task and record its result"
         }
       ]
     }
