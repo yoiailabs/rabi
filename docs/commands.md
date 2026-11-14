@@ -4,23 +4,68 @@
 
 The command and option tables below come from [`help-data.json`](../help-data.json). Use `rabi help COMMAND` for current text help or `rabi help --json` for the complete machine-readable contract. Syntax uses `[optional]`, `A|B` for alternatives, and `…`/`...` for repetition; syntax lines are not shell scripts.
 
-rabi manages workspace boundaries and preparation. Use Git for commits and history editing; rabi’s integration scope includes task publication, syncing with the base and guarded PR merges. Task review can launch a restricted reviewer and summarize its findings in one PR comment. Rabi does not assign tasks, schedule agents, manage terminal sessions, or provide operating-system access control. Processes, ports, databases, dependencies, and credentials remain your repository’s responsibility.
+rabi drives a software-factory task lifecycle on ordinary Git workspaces. Agents implement, check and commit locally; deterministic commands publish draft PRs, verify CI, collect restricted reviews, classify risk, gate merges and clean up. Maintainers alone record approval. Workspaces and parent sessions remain available independently. Rabi does not provide operating-system access control or isolate processes, ports, databases or credentials.
 
-## Selecting and inspecting workspaces
+## Task lifecycle
 
-`SEL` accepts a workspace name, `.` (the checkout containing cwd), `pr:N`, `issue:N`, a PR/issue URL, or an absolute path / path starting with `./` or `../`. Linked selectors only find existing records; they never create workspaces. A missing match exits 3 (`not_found`), and multiple matches exit 2 (`ambiguous`). A URL matches its recorded repository and link; `pr:N` and `issue:N` are scoped to the selected repository. Using `.` with a different `-R` exits 2. Outside a repository, current selection exits 3.
+Start with `rabi task new`, create its reserved branch's linked checkout using `rabi create`, and launch `rabi task implement` once. Then `rabi task advance` drives one step, or `--wait` continues through implementation → precheck → publish (draft PR) → CI → review → ready → classify → approval/auto-merge → cleanup. The [quick start](../README.md#quick-start) includes the base-committed configuration required before the first task. Bare `rabi task` prints help; it is not a launch command.
 
-`show [SEL]`, `path [SEL]`, `set [SEL]`, `setup [SEL]`, and `exec [SEL] -- COMMAND [ARG...]` default to `.`. In the primary checkout, `.` refers to that checkout. `show` reports its context with `managed:false`; unrecorded checkouts outside rabi's workspace directory also report `managed:false`. `run SEL -- [TASK | -]` and positional arguments of `sync` and `remove` accept the same selectors. Sync without arguments selects only the current workspace; in primary it behaves as `--main`. Remove requires explicit selectors and retains its safety checks.
+Task lifecycle commands (`implement`, `publish`, `advance`, `review`) take task IDs/unique prefixes, or omit SEL/use `.` for the unique active task on the current branch. `task show` and `task abandon` require an ID. Assessment and PR commands (`risk`, `classify`, `status`, `approve`, `merge`) instead take workspace selectors; `status`, `approve` and `merge` also accept `pr:N` without a workspace record. Do not substitute a task ID for a workspace selector. See each command below.
 
-`path` prints only an absolute path and newline in text mode; JSON is `data: {path}`. `show` and `set` return `data.workspace`. `show`, `path`, `list`, and `exec` never change record contents or mtimes. `set` atomically replaces the supplied purpose, base, PR and issue fields; omitted fields are kept. `--unset FIELD` clears one of purpose/base/pr/issue per occurrence; repeat the flag to clear several fields. It rejects unknown fields or a field that is also being set. `--base` validates and normalizes a ref; commit bases remain supported. `--unset base` records an unknown base without choosing a default. Sync skips it with `base-unknown` until `rabi set <name> --base REF` restores a base. Records with no base field still use the default base.
+| State | Who acts | Guard → next state | Stops or recovery |
+|---|---|---|---|
+| `new` | Operator creates checkout; `task implement` launches agent | Trusted linked checkout on reserved branch → `implementing` | Primary/missing checkout or untrusted repository refuses; `advance` cannot start `new` |
+| `implementing` | Local implementer; `advance` checks commits | Clean descendant commit beyond last evaluated head → `prechecking`; otherwise launch an attempt | No clean new commit → `no_progress`; failed launch → `provider_failed` |
+| `prechecking` | Rabi runs committed checks | Base-matching precheck table, all checks pass, clean unchanged HEAD → `publishing` | Failed check → `implementing`; changed checks → `precheck_changed`; missing tool → `environment` |
+| `publishing` | Rabi pushes and creates/reuses draft PR | Verified GitHub destination, no floor changes, safe remote ancestry, PR head equals checked HEAD → `ci` | `floor_changed`, `destination_not_github`, `diverged`; interrupted publication is reconciled on retry |
+| `ci` | CI runs; rabi reads fresh facts | Latest required name/app runs all succeed on exact head → `reviewing` | Pending/missing checks wait; empty requirements → `no_ci`; deadline → `ci_timeout`; failures/conflicts → `implementing` |
+| `reviewing` | Restricted reviewer in fresh detached checkout | Exact-head valid pass without important findings → `ready` | Revise → `implementing`; two invalid answers → `review_invalid`; oversized diff → `review_diff_too_large`; moved head → `diverged` |
+| `ready` | Rabi reconciles earned review pass | Event-bound pass remains valid; mark PR ready and upsert findings comment → `classifying` | Missing/replaced pass → `review_pass_invalid`; reviewer never approves |
+| `classifying` | Tool-less classifier; deterministic rabi safeguards | Valid assessment in policy auto set with no floor → `merging`; otherwise → `awaiting_approval` | Missing/failed/uncertain assessment is high; mismatched checkout → `record_mismatch`; changed valid head → `implementing` |
+| `awaiting_approval` | Configured maintainer approves; rabi polls | Latest success `rabi/approval` from allowed issuer on exact head → `merging` | Pending approval/approval timeout returns 10; valid new head or changes requested → `implementing`; inconsistent checkout → `record_mismatch` |
+| `merging` | Rabi reruns full preflight and guarded merge | Current-head CI, policy freshness, earned review, classification, approval and mergeability pass → `merged` | Failed/incomplete preflight → `merge_preflight`; unverified merge outcome → `merge_failed` |
+| `merged` | Rabi safely cleans up | Terminal; repeat advance may retry retained cleanup | Keep dirty, stashed, unpushed or unsafe checkout and all local branches; remote deletion requires policy opt-in |
+| `blocked` | Human inspects reason/events | Advance refuses; no general unblock command | Repair the cause and choose explicit recovery; do not edit records or loop advance |
+| `abandoned` | Operator records abandonment | Terminal; no further transitions | Abandon leaves files, branches and remote state intact |
 
-`list` includes the primary checkout of the current or `-R`-selected repository. Use `--kind workspace` or `--kind primary` to filter, and `--names` or `--paths` for shell output. JSON contains `data.workspaces`. Human output starts with the repository name and primary path, then shows current (`*`), name, branch, ahead/behind (`↑a ↓b`), dirty state, PR/issue links (`#12` / `issue #34`), setup state when it is not `ok` (such as `setup:failed`), and purpose. A deleted upstream appears as `upstream:gone`.
+Failure-driven implementation retries share `[factory] fix-budget` (default 3). Exhaustion blocks as `budget`; an unchanged consecutive failure fingerprint blocks as `repeated_failure` even after a new commit. CI and review text are untrusted feedback, not instructions granting permissions. Every non-terminal state can be blocked or abandoned; the [store transition table](#local-task-store) lists all legal bookkeeping edges, not a promise of a public recovery command for each edge.
 
-Exec preserves child output and exit status, ignores `RABI_OUTPUT`, and refuses explicit JSON output. Usage diagnostics and any accompanying help go to stderr, leaving text stdout empty.
+### Blocked reasons
+
+Read `rabi task show ID --json`: compare `data.task.state` with `data.recordedState`, inspect `data.events`, `data.task.advance.fixesUsed`, `data.fixBudget` and `data.fixesRemaining`. A displayed `blocked(record_mismatch)` may be derived without changing the saved state. Waiting is different from blocked: retry waiting tasks when evidence changes; have a human inspect blocked tasks before recovery. All serialized block reasons are listed here, including reasons reserved for evidence/configuration failures.
+
+| Reason | Meaning / next investigation |
+|---|---|
+| `no_progress` | Attempt produced no clean new commit, or its head-bound repair was already consumed; inspect edits and launch events |
+| `repeated_failure`, `budget` | Automatic repair stopped; inspect diagnostics and remaining budget, then revise the approach |
+| `no_ci`, `ci_timeout` | Required CI set is empty, or pending CI exceeded its deadline; inspect base policy/check runs |
+| `environment`, `provider_failed` | Missing precheck tool or failed provider launch; repair tool availability/login and inspect outcomes |
+| `precheck_changed`, `floor_changed` | Protected checks/configuration/workflow paths changed; human inspection/publication is required |
+| `destination_not_github`, `diverged` | Recorded destination is invalid/mismatched, or remote/PR head cannot be safely reconciled; inspect destination and ancestry without forcing |
+| `review_invalid`, `review_diff_too_large`, `review_pass_invalid` | Invalid reviewer result, diff over 400 KiB, or missing/invalid earned pass; inspect review evidence or split the change |
+| `record_mismatch` | Stored state disagrees with local branch/checkout/head; compare displayed and recorded state before acting |
+| `merge_preflight`, `merge_failed` | Gate failed, or merge outcome is unverified; inspect gate reasons and fresh read-only PR facts before any remote write |
+| `conflict`, `policy_invalid`, `evidence_missing`, `internal` | Conflict, invalid policy, missing evidence or internal failure; inspect event details and repair the underlying cause |
+
+A maintainer records approval with `task approve` outside rabi-launched agents on a full exact SHA. Automation never runs approve, removes `RABI_AGENT` to bypass it, or posts success approval. Auto tiers skip the need for approval; they do not create an automated approval. See [merge preflight](#task-status-and-merge-preflight).
+
+### Exit codes at a glance
+
+| Exit | Meaning |
+|---|---|
+| 0 | Progress/success; also high risk/classification verdicts and blocked/incomplete dry-run evaluations |
+| 1 | Operational failure; precheck failures return to implementation |
+| 2 / 3 | Usage or ambiguity / target or repository not found |
+| 4 | Safety refusal or blocked/abandoned advance |
+| 5 / 6 | Sync conflict / partial completion after persistent changes |
+| 10 | Waiting for required CI or maintainer approval, including approval timeout |
+| 124 / 130 | Agent timeout / interruption; provider statuses can also pass through |
+
+Inspect `data` even when `ok:false`; waiting, blocked and partial results retain useful state. [Exit codes](exit-codes.md) describes command-specific exceptions and recovery; [JSON](json.md#task-advance) describes reports. State alone never authorizes a remote write.
 
 ## Local task store
 
-These commands manage local bookkeeping only. They do not launch agents, create branches or workspaces, push, or call GitHub. Records are claims for rabi's own bookkeeping, not GitHub evidence; `task status` and `task merge --dry-run` do not consume them.
+The four store commands below manage local bookkeeping only. They do not launch agents, create branches or workspaces, push, or call GitHub. Saved task state is not GitHub evidence: `task status` collects fresh facts, while merge preflight can use the earned review pass bound to a task's `review_passed` event and record digest. Neither a stored state nor a bare pass record authorizes merge.
 
 | Command | Behavior |
 |---|---|
@@ -209,6 +254,18 @@ rabi -R owner/repo task merge --dry-run pr:7 --base main
 
 The command executes `gh pr merge <N> --repo <owner/repo> --<method> --match-head-commit <head_sha>` using the base policy method (default squash), without admin bypass, deferred auto-merge or branch deletion. `[merge] delete-branch` applies only to `task advance` cleanup. It rereads the PR after the invocation, including on gh failure, and reports whether it merged, the merge commit SHA and merged head SHA. A gh failure or a PR not reported merged exits 1 with the reread facts; no write is retried automatically. Collection failures retain their usual codes. No task records are created.
 
+## Selecting and inspecting workspaces
+
+`SEL` accepts a workspace name, `.` (the checkout containing cwd), `pr:N`, `issue:N`, a PR/issue URL, or an absolute path / path starting with `./` or `../`. Linked selectors only find existing records; they never create workspaces. A missing match exits 3 (`not_found`), and multiple matches exit 2 (`ambiguous`). A URL matches its recorded repository and link; `pr:N` and `issue:N` are scoped to the selected repository. Using `.` with a different `-R` exits 2. Outside a repository, current selection exits 3.
+
+`show [SEL]`, `path [SEL]`, `set [SEL]`, `setup [SEL]`, and `exec [SEL] -- COMMAND [ARG...]` default to `.`. In the primary checkout, `.` refers to that checkout. `show` reports its context with `managed:false`; unrecorded checkouts outside rabi's workspace directory also report `managed:false`. `run SEL -- [TASK | -]` and positional arguments of `sync` and `remove` accept the same selectors. Sync without arguments selects only the current workspace; in primary it behaves as `--main`. Remove requires explicit selectors and retains its safety checks.
+
+`path` prints only an absolute path and newline in text mode; JSON is `data: {path}`. `show` and `set` return `data.workspace`. `show`, `path`, `list`, and `exec` never change record contents or mtimes. `set` atomically replaces the supplied purpose, base, PR and issue fields; omitted fields are kept. `--unset FIELD` clears one of purpose/base/pr/issue per occurrence; repeat the flag to clear several fields. It rejects unknown fields or a field that is also being set. `--base` validates and normalizes a ref; commit bases remain supported. `--unset base` records an unknown base without choosing a default. Sync skips it with `base-unknown` until `rabi set <name> --base REF` restores a base. Records with no base field still use the default base.
+
+`list` includes the primary checkout of the current or `-R`-selected repository. Use `--kind workspace` or `--kind primary` to filter, and `--names` or `--paths` for shell output. JSON contains `data.workspaces`. Human output starts with the repository name and primary path, then shows current (`*`), name, branch, ahead/behind (`↑a ↓b`), dirty state, PR/issue links (`#12` / `issue #34`), setup state when it is not `ok` (such as `setup:failed`), and purpose. A deleted upstream appears as `upstream:gone`.
+
+Exec preserves child output and exit status, ignores `RABI_OUTPUT`, and refuses explicit JSON output. Usage diagnostics and any accompanying help go to stderr, leaving text stdout empty.
+
 ## Workspace handoff
 
 `rabi handoff show [SEL] [--json]` reads the original task and all entries, without a size cap. `rabi handoff path [SEL]` prints the memory directory, including its would-be path before first use. Both commands are read-only. `rabi handoff add [SEL] [--kind checkpoint|decision|note] (TEXT | -)` appends one entry and prints its id; `-` reads all stdin. Default kind is `note`. Both TEXT and stdin have trailing whitespace (including line endings) removed before validation and storage; leading whitespace and internal newlines are preserved. Text must then be nonblank UTF-8, at most 8192 bytes; invalid input and the reserved `request` kind exit 2. I/O failures exit 1. SEL defaults to dot and follows the shared selector rules, including `-R/--repo`; use `--` to protect text starting with a hyphen. Primary checkouts are refused. Unrecorded checkouts require `rabi adopt`.
@@ -225,7 +282,7 @@ Entries append to `handoff.jsonl` under an exclusive dedicated `.lock`, followed
 
 ## Parent sessions
 
-`rabi run [--provider codex|cursor|claude] [--skill VALUE] [--fresh] [--no-handoff] [--no-env] [--timeout DURATION] [TASK | -]` launches one parent session in the checkout containing cwd. To target another workspace, use `rabi run [options] SEL -- [TASK | -]`, for example `rabi run --skill my-skill task/auth -- "Fix authentication"`. The selector follows the shared rules above. `rabi -R /path/to/repo run task/auth --` works from outside the repository. `-R/--repo` requires an explicit SEL; primary checkouts and orphaned workspaces are refused. Repository trust is checked against the selected repository before status inspection (`rabi trust add` or `RABI_TRUST_ALL=1`); untrusted runs exit 4 without prompting.
+`rabi run [--provider codex|cursor|claude] [--skill VALUE] [--fresh] [--no-handoff] [--no-env] [--timeout DURATION] [TASK | -]` launches one parent session in the checkout containing cwd. To target another workspace, use `rabi run [options] SEL -- [TASK | -]`, for example `rabi run --skill my-skill task/auth -- "Fix authentication"`. The selector follows the [workspace selector rules](#selecting-and-inspecting-workspaces). `rabi -R ./your-repo run task/auth --` works from outside the repository. `-R/--repo` requires an explicit SEL; primary checkouts and orphaned workspaces are refused. Repository trust is checked against the selected repository before status inspection (`rabi trust add` or `RABI_TRUST_ALL=1`); untrusted runs exit 4 without prompting.
 
 The explicit `--` separates SEL from TASK: at most one positional before it selects the workspace, and at most one after it supplies the task. Without a positional before `--`, the current workspace is used. Without `--`, a single positional remains TASK: `rabi run "task"`, `rabi run -- "task"`, and `rabi run -` keep their existing meanings. Option values such as `--skill --` are consumed as values, not separators. `rabi run SEL --` resumes that workspace with `Continue.`; running inside it later resumes the same session. The parent runs with that workspace as cwd.
 
@@ -319,15 +376,15 @@ rabi forget review
 
 Forget leaves the checkout and branch in place. See [safety](safety.md) for retirement and [hooks](hooks.md) for preparation.
 
-## Take an issue through cleanup
+## Manual workspace flow
 
-This workflow requires authenticated `gh` and real issue/PR numbers from your repository. Start in a repository with default base `origin/main`. The initial creation needs GitHub; after editing, use Git and gh to commit, push, and open the PR before recording its link.
+For work outside the factory lifecycle, an operator can manage a PR manually and record its link on a workspace. This example needs authenticated `gh` and real issue/PR numbers. Start with default base `origin/main`. Agents only edit, check and commit locally; the operator handles publication outside the agent. Prefer the [task lifecycle](#task-lifecycle) for deterministic publication and merge gates.
 
 ```sh
 export RABI_NO_INPUT=1
 rabi create --issue 812 --base origin/main --json
 cd "$(rabi path issues/812)"
-# Edit, test, commit, push, and open a PR with Git and gh.
+# Edit, test and commit locally; the operator publishes outside the agent.
 rabi set --pr 853 --json
 rabi sync --json
 rabi show pr:853 --json
