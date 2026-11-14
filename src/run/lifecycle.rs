@@ -744,12 +744,14 @@ exit 0"#,
             let root = FixtureDir::new();
             let path = root.0.join("callback");
             // `wait` is interrupted by the TERM trap at once, keeping the
-            // observed TERM status deterministic. Only the non-stop callback
-            // releases the child; a stop must actually terminate it.
+            // observed TERM status deterministic. The trap must not wait for
+            // the child: TERM can reach it between fork and exec, where the
+            // shell copy absorbs it. Process-group cleanup kills a survivor,
+            // and dropping the fixture directory releases it after a panic.
             let child = std::process::Command::new("sh")
                 .args([
                     "-c",
-                    r#"trap 'kill $p 2>/dev/null; wait $p 2>/dev/null; exit 42' TERM
+                    r#"trap 'kill $p 2>/dev/null; exit 42' TERM
 python3 -c '
 import pathlib, sys, time
 root = pathlib.Path(sys.argv[1])
