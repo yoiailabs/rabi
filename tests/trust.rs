@@ -710,3 +710,21 @@ fn trust_add_records_bare_repositories_and_ignores_retired_workflow_files() {
             .contains(common.to_str().unwrap()));
     }
 }
+
+#[test]
+fn trust_add_shows_precheck_declarations_without_running_them() {
+    let repo = Repo::new();
+    fs::write(
+        repo.repo.join(".rabi.toml"),
+        "[precheck]\ncommands = ['touch precheck-ran']\ntimeout = '2m'\n",
+    )
+    .unwrap();
+    let output = repo.rabi(&["trust", "add", "--json"]);
+    assert!(output.status.success(), "{}", text(&output.stderr));
+    let shown = text(&output.stderr);
+    assert!(shown.contains("touch precheck-ran"));
+    assert!(shown.contains("precheck timeout per command: 2m"));
+    assert!(!repo.repo.join("precheck-ran").exists());
+    let value: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(value["data"].get("precheck").is_none());
+}

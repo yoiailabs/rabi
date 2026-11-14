@@ -12,6 +12,7 @@ const FILE_NAME: &str = ".rabi.toml";
 pub struct RabiConfig {
     pub hooks: Hooks,
     pub env: crate::execution_env::Environment,
+    pub precheck: Option<Precheck>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
@@ -19,6 +20,13 @@ pub struct RabiConfig {
 pub struct Hooks {
     pub setup: Vec<String>,
     pub pre_remove: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct Precheck {
+    pub commands: Vec<String>,
+    pub timeout: Option<String>,
 }
 
 /// Load declarations and validate syntax independently of the execution environment.
@@ -62,14 +70,51 @@ pub fn pre_remove_commands(config: Option<&RabiConfig>) -> &[String] {
     }
 }
 
-fn parse_config(content: &str) -> Result<RabiConfig> {
-    toml_edit::de::from_str(content)
-        .map_err(|error| Error::msg(format!("Invalid {FILE_NAME}: {error}")))
+pub(crate) fn parse_config(content: &str) -> Result<RabiConfig> {
+    let config: RabiConfig = toml_edit::de::from_str(content)
+        .map_err(|error| Error::msg(format!("Invalid {FILE_NAME}: {error}")))?;
+    if let Some(precheck) = &config.precheck {
+        if precheck
+            .commands
+            .iter()
+            .any(|command| command.trim().is_empty() || command.contains('\0'))
+        {
+            return Err(Error::msg(
+                "Invalid precheck.commands: commands must be nonempty and contain no NUL",
+            ));
+        }
+        if let Some(timeout) = &precheck.timeout {
+            crate::run::timeout(timeout).map_err(|_| {
+                Error::msg(
+                    "Invalid precheck.timeout: expected a positive duration with s, m or h suffix",
+                )
+            })?;
+        }
+    }
+    Ok(config)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn precheck_schema_and_values_are_validated() {
+        let config =
+            parse_config("[precheck]\ncommands = ['cargo fmt --check']\ntimeout = '2m'").unwrap();
+        assert_eq!(config.precheck.unwrap().commands, vec!["cargo fmt --check"]);
+        for text in [
+            "[precheck]\nunknown = []",
+            "[precheck]\ncommands = 'true'",
+            "[precheck]\ncommands = ['']",
+            "[precheck]\ncommands = [\"\\u0000\"]",
+            "[precheck]\ntimeout = '0s'",
+            "[precheck]\ntimeout = '2'",
+            "[precheck]\ntimeout = 2",
+        ] {
+            assert!(parse_config(text).is_err(), "{text}");
+        }
+    }
 
     #[test]
     fn parses_project_hooks() {

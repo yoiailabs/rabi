@@ -2176,7 +2176,7 @@
     "task": {
       "name": "task",
       "description": "Manage local tasks, inspect PR facts, approve commits and gate merges",
-      "usage": "rabi task new|list|show|abandon|implement|risk|classify|status|approve|merge [arguments] [options]",
+      "usage": "rabi task new|list|show|abandon|implement|publish|risk|classify|status|approve|merge [arguments] [options]",
       "options": [
         {
           "name": "repo",
@@ -2753,6 +2753,56 @@
           "description": "Implement an existing task with additional context"
         }
       ]
+    },
+    "task publish": {
+      "name": "task publish",
+      "description": "Precheck committed task changes and publish a draft PR",
+      "usage": "rabi task publish [SEL] [options]",
+      "options": [
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Repository to operate on; uses the shared workspace selector rules",
+          "example": "--repo owner/repo"
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "SEL is a full task ID or unique prefix of at least six characters; omitted or dot selects the current branch task. Requires trust, a linked workspace, a clean committed tree, and state implementing, prechecking or publishing.",
+        "Runs committed [precheck] commands with task agent credential stripping. Changed precheck declarations block precheck_changed; command failures return implementing; missing tools block environment. Events bind bounded sanitized diagnostics to HEAD.",
+        "Built-in and base-policy floor changes block floor_changed before any push; a human must push and approve them.",
+        "The recorded push URL must be HTTPS or SSH and match the GitHub repository independently resolved by gh for the task checkout, including its configured GitHub host. Other destinations block destination_not_github before any push.",
+        "Pushes without force to the URL recorded by task new with HEAD:refs/heads/<branch>, disabling repository hooks and fsmonitor. Equal remote heads skip push; divergent branches block diverged. Existing same-repository open PRs are reused, otherwise rabi creates a draft PR from intent and commit subjects.",
+        "Requires the resulting PR head to equal the checked HEAD before recording its number and entering ci. Retry publishing after interruption or a partial failure to reconcile remote branch and PR state.",
+        "Precheck failures use exit 1; invalid arguments exit 2; missing tasks exit 3; trust, dirty, state, environment and publication guards exit 4; failures after a branch may have been published exit 6."
+      ],
+      "examples": [
+        {
+          "command": "rabi task publish task_123456 --json",
+          "description": "Precheck and publish one task"
+        }
+      ]
     }
   },
   "globalOptions": [
@@ -2822,7 +2872,13 @@
     "primary": 4,
     "refused": 4,
     "conflict": 5,
-    "partial": 6
+    "partial": 6,
+    "precheck_failed": 1,
+    "precheck_changed": 4,
+    "floor_changed": 4,
+    "diverged": 4,
+    "environment": 4,
+    "destination_not_github": 4
   },
   "warningCodes": [
     "repo_discovery",

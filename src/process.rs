@@ -272,6 +272,14 @@ pub(crate) fn raw_with_timeout(
         use std::os::unix::process::CommandExt;
         cmd.process_group(0);
     }
+    raw_command_with_timeout(cmd, program, timeout)
+}
+
+pub(crate) fn raw_command_with_timeout(
+    mut cmd: Command,
+    program: &str,
+    timeout: Duration,
+) -> Result<Captured> {
     let mut child = cmd.spawn().map_err(|error| spawn_error(program, &error))?;
     let (sender, receiver) = std::sync::mpsc::channel();
     // Separate readers avoid pipe-buffer deadlocks. Messages also let the caller

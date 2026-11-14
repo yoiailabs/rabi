@@ -984,6 +984,29 @@ fn task_implement(args: &[String]) -> Result<i32> {
     Ok(report.exit_code)
 }
 
+fn task_publish(args: &[String]) -> Result<i32> {
+    let parsed = args::parse(args, &command_options("task publish"), true)?;
+    if parsed.positionals.len() > 1 {
+        return Err(Error::validation("Usage: rabi task publish [SEL]"));
+    }
+    let _git = crate::task::boundary::git_read_scope();
+    let repository = selected_repository(&parsed)?;
+    let cwd = std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?;
+    let root = repository.as_deref().unwrap_or(&cwd);
+    crate::git::git_root(root)?;
+    let report =
+        crate::task::publish::execute(root, parsed.positionals.first().map(String::as_str))?;
+    emit_json(&report)?;
+    if !crate::output::json() {
+        outln!(
+            "Task {} published as PR #{}; state ci",
+            report.task_id,
+            report.pr_number
+        );
+    }
+    Ok(SUCCESS)
+}
+
 fn task_status(args: &[String]) -> Result<i32> {
     task_github(args, "task status")
 }
@@ -2181,7 +2204,7 @@ fn command_options(key: &str) -> Vec<Opt> {
             value_flag("base", None),
         ],
         "task list" => vec![repo_flag(), flag("all", None)],
-        "task show" => vec![repo_flag()],
+        "task show" | "task publish" => vec![repo_flag()],
         "task abandon" => vec![repo_flag(), value_flag("reason", None)],
         "task risk" => vec![repo_flag(), value_flag("base", None)],
         "task implement" => vec![
@@ -2475,6 +2498,9 @@ fn trust_cmd(args: &[String]) -> Result<i32> {
         visible_text(&project.project),
         trust::format_hooks(&project.setup, &project.pre_remove)
     );
+    if let Some(precheck) = &project.precheck {
+        errln!("{}", trust::format_precheck(precheck));
+    }
     if !project.env.is_empty() {
         errln!("{}", project.env.declaration());
     }
@@ -2779,6 +2805,12 @@ static COMMANDS: &[Command] = &[
         help_key: "task",
         run: task_root,
         children: &[
+            Command {
+                name: "publish",
+                help_key: "task publish",
+                run: task_publish,
+                children: &[],
+            },
             Command {
                 name: "implement",
                 help_key: "task implement",

@@ -4,7 +4,7 @@
 
 The command and option tables below come from [`help-data.json`](../help-data.json). Use `rabi help COMMAND` for current text help or `rabi help --json` for the complete machine-readable contract. Syntax uses `[optional]`, `A|B` for alternatives, and `…`/`...` for repetition; syntax lines are not shell scripts.
 
-rabi manages workspace boundaries and preparation. Use Git for commits, pushes, and history editing; rabi’s integration scope includes syncing with the base and guarded PR merges. It does not assign tasks, review or comment on PRs, schedule agents, manage terminal sessions, or provide sandboxing or access control. Processes, ports, databases, dependencies, and credentials remain your repository’s responsibility.
+rabi manages workspace boundaries and preparation. Use Git for commits and history editing; rabi’s integration scope includes task publication, syncing with the base and guarded PR merges. It does not assign tasks, review or comment on PRs, schedule agents, manage terminal sessions, or provide sandboxing or access control. Processes, ports, databases, dependencies, and credentials remain your repository’s responsibility.
 
 ## Selecting and inspecting workspaces
 
@@ -44,7 +44,7 @@ Allowed transitions are defined in one data table in the implementation:
 | `new` | `implementing`, `blocked`, `abandoned` |
 | `implementing` | `prechecking`, `blocked`, `abandoned` |
 | `prechecking` | `publishing`, `implementing`, `blocked`, `abandoned` |
-| `publishing` | `ci`, `blocked`, `abandoned` |
+| `publishing` | `ci`, `implementing`, `blocked`, `abandoned` |
 | `ci` | `reviewing`, `implementing`, `blocked`, `abandoned` |
 | `reviewing` | `ready`, `implementing`, `blocked`, `abandoned` |
 | `ready` | `classifying`, `blocked`, `abandoned` |
@@ -54,7 +54,7 @@ Allowed transitions are defined in one data table in the implementation:
 | `blocked` | Any non-terminal state (including itself), or `abandoned` |
 | `merged`, `abandoned` | None (terminal) |
 
-Creation and abandonment mutate the store directly. `task implement` also records launches and advances `new` to `implementing`; the remaining states and edges describe the local model without executing a workflow.
+Creation and abandonment mutate the store directly. `task implement` records launches and advances `new` to `implementing`. `task publish` executes prechecks and publication through `ci`; the later states and edges describe the local model without executing a workflow.
 
 ## Task implement
 
@@ -69,6 +69,25 @@ Codex uses `exec` with the `workspace-write` sandbox, network access disabled, a
 On the first launch, `new` transitions to `implementing`. Repeated launches stay in `implementing`; even exit 0 does not mark implementation complete or move to prechecks/publication. Append-only task events record launch ID, provider, exit status, pre/post HEAD, whether new commits exist and whether the tree is dirty. Failed and interrupted launches also retain their outcomes. Provider output goes to stderr, leaving stdout for the task result or schema 2 JSON envelope.
 
 The default timeout is `60m`; DUR is a positive integer with suffix `s`, `m` or `h`. Timeout and SIGINT/SIGTERM terminate the whole process group and reap the provider. Provider statuses pass through, including 128+signal; timeout exits 124 and interruption received by rabi exits 130. Invalid arguments use 2, missing tasks 3, safety refusals 4, and launcher/store failures 1. Changes and commits are retained after failure. See [exit codes](exit-codes.md).
+
+## Task publish
+
+`rabi task publish [SEL] [--json|--output text|json]` runs prechecks and publishes one task. SEL accepts a full task ID or a unique prefix of at least six characters; omitted SEL or `.` selects the unique active task on the current branch. Global `-R/--repo` selects the repository. The repository must already be trusted, the task must be `implementing`, `prechecking` or `publishing`, and its branch must have an existing linked workspace with a clean committed HEAD. An active implementer or publisher prevents another launch. Publication refuses populated submodules or retained submodule data rather than executing Git through submodule configuration. The recorded base must name a branch; commit-only bases are refused before pushing. Fully qualified `refs/heads/BRANCH` selects BRANCH, and `refs/remotes/REMOTE/BRANCH` selects BRANCH. Short names without a slash select that branch directly. Slash shorthand such as `origin/main` is checked as both a literal branch name and a tracking-style name (`main`); exactly one must exist at the destination. Ambiguous remote matches fail before state changes; use a fully qualified base spelling to disambiguate.
+
+Before changing task state, rabi verifies the GitHub destination and resolves the named base branch there with hardened `ls-remote`. It fetches that exact commit with hardened Git and requires a verifiable common ancestor with HEAD. The recorded base spelling supplies candidate branch names; local refs never select the base. Resolution or object retrieval failures are retryable errors that leave task state unchanged.
+
+From `implementing`, rabi enters `prechecking`. Optional `[precheck]` commands come from the committed `.rabi.toml`, run sequentially in the task workspace through `sh -c`, and use the [task credential boundary](safety.md#task-agent-launch-boundary). Repository `[env]` is not applied. The precheck table must match the verified remote base commit's table; changes block as `precheck_changed` without executing commands. No declaration passes through. Events bind pass/fail, the failing command and a sanitized bounded output tail to the checked HEAD. Command failure or a changed HEAD/tree returns directly to `implementing`, including on a retry from `publishing`; a missing command blocks as `environment`. See [precheck configuration](configuration.md#task-prechecks).
+
+Before pushing, rabi compares merge-base..HEAD against the verified remote base commit's path floors, including `.github/**`, `.rabi.toml`, `.rabi/policy.toml` and policy `floor` rules. Any floor blocks as `floor_changed` with no push: a human must inspect and push/approve the change.
+
+Publication pushes only to the URL saved by `task new`. Before any push, rabi independently resolves the task checkout's GitHub repository with `gh repo view` and requires the saved URL to identify that same host, owner and repository. HTTPS and Git SSH URLs (including `git@host:owner/repo.git`) are accepted for github.com and the configured GitHub Enterprise host resolved by gh. Local paths, file/http/git URLs, other hosts and mismatched repositories block as `destination_not_github` without pushing. Later remote edits cannot redirect the saved push URL; edits that change gh's resolved repository require human reconciliation. Rabi disables Git hooks and filesystem monitors and pushes with the explicit `HEAD:refs/heads/<branch>` refspec, without force or credential prompts. It skips the push when the remote tip already equals HEAD. A different remote tip must be a locally verifiable ancestor of HEAD; otherwise the task blocks as `diverged` without overwriting remote work. Abandonment is refused while publication holds its operation lock.
+
+Rabi looks for an open same-repository PR for the branch, reusing it or creating a draft with `gh pr create --draft`. Rabi generates a bounded title/body from task intent and commit subjects as data, rendering JSON strings in code blocks and marking truncation. It records the PR number and verifies `headRefOid` equals the checked HEAD before advancing to `ci`. Rerunning an interrupted `publishing` task reconciles the remote branch and PR, including a push or PR creation that succeeded before its local record was written. Publication requires authenticated Git and `gh`; no agent performs these operations. Later CI/review stages are not launched by this command. See [exit codes](exit-codes.md).
+
+```sh
+rabi task publish
+rabi task publish task_<uuid> --json
+```
 
 ## Task risk
 

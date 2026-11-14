@@ -52,7 +52,7 @@ pub(crate) struct Report {
     stop_reason: &'static str,
 }
 
-fn workspace(root: &Path, task: &Task) -> Result<PathBuf> {
+pub(super) fn workspace(root: &Path, task: &Task) -> Result<PathBuf> {
     let trees = crate::git::list_worktrees(root)?;
     let tree = trees
         .iter()
@@ -114,7 +114,7 @@ fn prompt(intent: &str, message: Option<&str>) -> String {
 /// Immutable links binding a launch to its registered checkout. Re-reading this
 /// structure uses only filesystem operations, before trusting Git with agent data.
 #[derive(Debug, PartialEq, Eq)]
-struct GitMetadata {
+pub(super) struct GitMetadata {
     workspace: PathBuf,
     git_dir: PathBuf,
     common: PathBuf,
@@ -143,7 +143,7 @@ fn metadata_path(bytes: &[u8]) -> PathBuf {
     ))
 }
 
-fn git_metadata_snapshot(workspace: &Path) -> Result<GitMetadata> {
+pub(super) fn git_metadata_snapshot(workspace: &Path) -> Result<GitMetadata> {
     let workspace = fs::canonicalize(workspace)
         .map_err(|_| Error::status(REFUSED, "Cannot resolve task workspace"))?;
     let pointer = metadata_file(&workspace.join(".git"))?;

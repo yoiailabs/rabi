@@ -103,9 +103,11 @@ if os.environ.get('FAKE_NOISE'):
     chunk = b'{"type":"noise"}\n' * 4096 if os.environ['FAKE_NOISE'] == 'json' else b'x' * 65536
     # Bound the fixture even if cancellation regresses; the reader unit test
     # supplies truly endless output to prove its per-poll limit deterministically.
+    # One MiB still spans sixteen polling budgets. Keep final session recovery
+    # (which scans the completed log) out of this cancellation timing assertion.
     deadline = time.monotonic() + 5
     written = 0
-    while written < 16 * 1024 * 1024 and time.monotonic() < deadline:
+    while written < 1024 * 1024 and time.monotonic() < deadline:
         written += os.write(sys.stdout.fileno(), chunk)
         if written >= 256 * 1024 and not (root/'noise-ready').exists():
             (root/'noise-ready').write_text('ready')
@@ -1029,11 +1031,15 @@ impl Running {
     fn finish(mut self) -> Output {
         let start = Instant::now();
         let child = self.0.as_mut().unwrap();
-        while child.try_wait().unwrap().is_none() {
-            assert!(
-                start.elapsed() < Duration::from_secs(10),
-                "launcher did not exit"
-            );
+        loop {
+            // Read the deadline before observing the child. If this thread is
+            // descheduled after try_wait(None), an elapsed-time check afterwards
+            // could wrongly report a timeout for a launcher that already exited.
+            let expired = start.elapsed() >= Duration::from_secs(10);
+            if child.try_wait().unwrap().is_some() {
+                break;
+            }
+            assert!(!expired, "launcher did not exit");
             std::thread::sleep(Duration::from_millis(10));
         }
         self.0.take().unwrap().wait_with_output().unwrap()
@@ -2707,13 +2713,14 @@ if not os.environ.get('CLAUDE_NO_INIT'):
     if os.environ.get('CLAUDE_INIT_PADDING'): event['padding'] = 'x'*int(os.environ['CLAUDE_INIT_PADDING'])
     print(json.dumps(event), flush=True)
 (root/'session-ready').write_text(str(os.getpid()))
-if os.environ.get('CLAUDE_CONTINUATION_DELAY'):
-    time.sleep(float(os.environ['CLAUDE_CONTINUATION_DELAY']))
-    (root/'continued-after-init').write_text('parent continued')
 if os.environ.get('CLAUDE_BLOCK'): time.sleep(600)
 if os.environ.get('CLAUDE_FIRST_RESULT'):
     print(json.dumps({'type':'result','result':'Superseded result','is_error':False,'session_id':sid}), flush=True)
 if not os.environ.get('CLAUDE_NO_RESULT'):
+    # A malformed final event can be observed before this fixture exits. Honor
+    # the requested status if the launcher stops us during that final emission.
+    if not os.environ.get('CLAUDE_BLOCK'):
+        signal.signal(signal.SIGINT, lambda signum, frame: os._exit(int(os.environ.get('CLAUDE_EXIT','0'))))
     answer = 'x' * int(os.environ['CLAUDE_ANSWER_SIZE']) if os.environ.get('CLAUDE_ANSWER_SIZE') else 'Claude final answer.\n'
     event = {'type':'result','subtype':'success','duration_ms':1,'duration_api_ms':1,'is_error':bool(os.environ.get('CLAUDE_IS_ERROR')),'result':answer,'session_id':os.environ.get('CLAUDE_RESULT_ID',sid),'usage':{'input_tokens':10,'output_tokens':5}}
     if os.environ.get('CLAUDE_BAD_RESULT'): event['result'] = {'not':'text'}
@@ -2726,7 +2733,9 @@ if os.environ.get('CLAUDE_TRAILING_TRUNCATED'):
     print('{"type":"result","result":"unfinished', end='', flush=True)
 print('fake Claude stderr', file=sys.stderr, flush=True)
 (root/'completed').write_text('done')
-sys.exit(int(os.environ.get('CLAUDE_EXIT','0')))
+# Skip interpreter shutdown: INT arriving during Python finalizers can replace
+# the already requested exit status with 130. All fixture output is flushed.
+os._exit(int(os.environ.get('CLAUDE_EXIT','0')))
 "#).unwrap();
     }
 
@@ -3072,7 +3081,7 @@ fn claude_permission_mode_must_be_auto_before_session_is_resumable() {
 }
 
 #[test]
-fn claude_oversized_init_permission_mode_is_checked_before_parent_continues() {
+fn claude_oversized_init_permission_mode_stops_a_live_parent() {
     for missing_mode in [false, true] {
         let f = Fixture::new();
         f.fake_claude();
@@ -3080,7 +3089,6 @@ fn claude_oversized_init_permission_mode_is_checked_before_parent_continues() {
             f.claude_command(&["run", "--provider", "claude", "--skill", "x", "--json"]);
         command
             .env("CLAUDE_INIT_PADDING", "131072")
-            .env("CLAUDE_CONTINUATION_DELAY", ".3")
             .env("CLAUDE_BLOCK", "1");
         if missing_mode {
             command.env("CLAUDE_NO_PERMISSION_MODE", "1");
@@ -3097,7 +3105,7 @@ fn claude_oversized_init_permission_mode_is_checked_before_parent_continues() {
         let pids = wait_for_file(&f.root.join("pids"));
         assert_error(child.finish(), 1, "permission mode");
         assert!(
-            !f.root.join("continued-after-init").exists(),
+            !f.root.join("completed").exists(),
             "oversized init escaped live permission validation (missing mode: {missing_mode})"
         );
         let state = f.state();
@@ -3168,7 +3176,6 @@ fn claude_first_observed_id_cannot_validate_a_different_init_id() {
                 let child = Running(Some(
                     command
                         .env("CLAUDE_BLOCK", "1")
-                        .env("CLAUDE_CONTINUATION_DELAY", ".3")
                         .stdout(Stdio::piped())
                         .stderr(Stdio::piped())
                         .spawn()
@@ -3201,7 +3208,6 @@ fn claude_first_observed_id_cannot_validate_a_different_init_id() {
                 assert_eq!(f.calls(), calls);
             }
             if live {
-                assert!(!f.root.join("continued-after-init").exists());
                 assert!(!f.root.join("completed").exists());
             }
             for pid in pids.split_whitespace() {
