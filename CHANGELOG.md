@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Post-launch `task implement` Git inspections pin the Git directory and common directory validated before the agent ran. Redirected metadata stops with exit 4 (`refused`), `stopReason: "metadata_changed"` and null post-launch Git facts; command, exit-code and JSON references now document this outcome.
+
 ## v8.0.0 (2026-11-14)
 
 See [Upgrading to v8](docs/upgrading-to-v8.md) for migration steps and the [v8.0.0 release notes](docs/release-notes/v8.0.0.md).
@@ -27,8 +33,6 @@ See [Upgrading to v8](docs/upgrading-to-v8.md) for migration steps and the [v8.0
 - Repository `.rabi.toml` supports trusted `[env]` declarations for `run` and `exec`: ordered `path-prepend`, validated `set` variables, and limited HOME/workspace/repository expansion. Declarations always come from the primary checkout, including resume. Loading validates syntax; expansion happens only during application, with clear errors for referenced non-UTF-8 paths. `--no-env` bypasses environment-value validation while retaining TOML/schema parsing; untrusted exec warns and continues without env. Run resolves provider binaries before applying PATH, skips workspace PATH entries and workspace-token set values with `env_workspace_path_skipped`, and reports only retained entries. Exec retains workspace declarations. Reserved variables protect rabi state/configuration and Git repository selection. `trust add` shows escaped `KEY=value` assignments and PATH entries for review; never commit secrets in `[env]`. Hooks keep their existing environment. (#938)
 
 ### Fixed
-
-- Post-launch `task implement` Git inspections pin the Git directory and common directory validated before the agent ran. Redirected metadata stops with exit 4 (`refused`), `stopReason: "metadata_changed"` and null post-launch Git facts; command, exit-code and JSON references now document this outcome.
 
 - Landing blocks remote-only PR head movement, non-descendant local heads and dirty re-derivation before an implementer can launch. Standalone `task merge` requires the same event-bound earned review pass as advance unless `--external-review` is supplied. (#959)
 

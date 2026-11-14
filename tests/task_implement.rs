@@ -655,6 +655,8 @@ touch "$RABI_IMPLEMENT_FIXTURE/provider-finished"
                 4,
             );
             assert_eq!(report["data"]["stopReason"], "metadata_changed");
+            assert_eq!(report["data"]["exitCode"], 4);
+            assert_eq!(report["error"]["code"], "refused");
             for field in ["postHead", "newCommits", "dirty"] {
                 assert!(
                     report["data"][field].is_null(),
@@ -731,6 +733,8 @@ exec '{}' "$@"
         let output = capture.finish(&mut child);
         let report = decode(output, 4);
         assert_eq!(report["data"]["stopReason"], "metadata_changed");
+        assert_eq!(report["data"]["exitCode"], 4);
+        assert_eq!(report["error"]["code"], "refused");
         for field in ["postHead", "newCommits", "dirty"] {
             assert!(report["data"][field].is_null(), "{provider}: {field}");
         }

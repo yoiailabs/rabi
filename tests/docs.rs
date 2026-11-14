@@ -351,7 +351,7 @@ fn repository_selection_guidance_has_no_registry_or_cross_repository_help() {
     assert!(!json.contains("`--all-repos` also adds `repos`"));
     let breaking = include_str!("../CHANGELOG.md")
         .split("\n## ")
-        .nth(1)
+        .find(|section| section.starts_with("v8.0.0"))
         .unwrap();
     for removal in ["registry", "--all-repos", "discover-ghq", "-R"] {
         assert!(breaking.contains(removal), "{removal}");
