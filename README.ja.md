@@ -62,7 +62,7 @@ rabi task show "$task_id" --json
 
 `task new` は作業内容の記録と未使用ブランチ名の予約だけを行います。`create` でリンクされたチェックアウトを作り、`--no-setup` でコピーとセットアップフックを省略します。最初の実装は `task implement` で開始します。その後は `advance` で1段階ずつ、または `--wait` で進行と待機を繰り返します。流れは、実装 → 事前チェック → 公開（ドラフト PR）→ CI → レビュー → ready → リスク判定 → 承認または自動マージ → クリーンアップです。レビューの指摘で実装に戻る場合も、共通の修正回数制限（既定3回）が適用されます。必須チェックは名前と app ごとに最新の実行を見て、それが成功している必要があります。
 
-`rabi task new --issue N` は、作成者に write・maintain・admin のいずれかの権限があることを確認してから issue を取り込みます。`rabi task intake --label L [--limit N] [--dry-run]` は、大文字と小文字を区別せずにラベルを照合し、最後にそのラベルを付けたユーザーの権限も確認して、既存タスクに紐づく issue をスキップします。ラベルを付けたユーザーを特定できない場合は `label_actor_unknown`、権限不足の場合は共同作業者の権限照会で HTTP 404 が返った場合も含めて `intake_not_permitted` を返します。取り込みではエージェントを起動しません。外部の文章は制御文字などを除去したうえで冒頭を残してサイズを制限し、省略時は末尾にマーカーを付けます。後のプロンプトでは信頼できないデータとして毎回異なる nonce で囲みます。その後は上記の手順でチェックアウトを作り、`task implement`、明示的な `task advance` の順に実行します。[外部からの取り込み](docs/commands.md#external-issue-intake)を参照してください。
+`rabi task new --issue N` は、作成者に write・maintain・admin のいずれかの権限があることを確認してから issue を取り込みます。`rabi task intake --label L [--limit N] [--dry-run]` は、大文字と小文字を区別せずにラベルを照合し、最後にそのラベルを付けたユーザーの権限も確認して、既存タスクに紐づく issue をスキップします。ラベルを付けたユーザーを特定できない場合（ボットが付けた場合を含む）は `label_actor_unknown`、権限不足の場合は共同作業者の権限照会で HTTP 404 が返った場合も含めて `intake_not_permitted` を返します。取り込みではエージェントを起動しません。外部の文章は制御文字などを除去したうえで冒頭を残してサイズを制限し、省略時は末尾にマーカーを付けます。後のプロンプトでは信頼できないデータとして毎回異なる nonce で囲みます。その後は上記の手順でチェックアウトを作り、`task implement`、明示的な `task advance` の順に実行します。[外部からの取り込み](docs/commands.md#external-issue-intake)を参照してください。
 
 終了コード10は CI またはメンテナーの承認待ち、4はブロックまたは拒否を表します。`task show --json` の `task.state.reason` とイベントを確認してください。1段階の終了コードが0でも、マージ済みとは限りません。[状態と復旧の表](docs/commands.md#task-lifecycle)、[終了コード](docs/exit-codes.md)を参照してください。
 

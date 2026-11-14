@@ -2686,7 +2686,7 @@
         }
       ],
       "notes": [
-        "List open issues and paginate issue events with GET-only gh APIs. Label names match case-insensitively. The actor who most recently added that label must have write, maintain or admin repository permission. A later removal or missing actor cannot reuse an older authorized addition; no matching label event or actor skips with label_actor_unknown.",
+        "List open issues and paginate issue events with GET-only gh APIs. Label names match case-insensitively. The actor who most recently added that label must have write, maintain or admin repository permission. A later removal or missing actor cannot reuse an older authorized addition; no matching label event, or a missing or non-user (for example bot) actor, skips with label_actor_unknown.",
         "Accepted issues use the same path as task new --issue, including the author permission check, sanitized size-capped text and issue link. Skip unauthorized issues with intake_not_permitted, including collaborator-permission HTTP 404, and continue with other issues. Skip issues already linked to any task, including terminal tasks. Other unavailable API evidence fails closed with exit 1.",
         "The limit counts examined issues, including skips. Issue and event enumerations use up to 100 pages of 100; PR-only pages do not consume the issue limit. Exceeding a pagination safety limit fails before creation. No issue comments, labels or state are written. Dry runs report a plan only.",
         "Intake does not launch implementation. Create the linked checkout, run task implement, then explicitly run task advance. Later prompts frame issue text with a fresh nonce as untrusted data; permission checks do not make external text trusted."

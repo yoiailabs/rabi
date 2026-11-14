@@ -232,7 +232,7 @@ checks the latest actor who added that label, matching case-insensitively. It sk
 already-linked issues, including terminal tasks, and never comments on, labels or
 closes issues.
 An unauthorized direct import refuses with `intake_not_permitted` (4).
-No matching label event or actor skips with `label_actor_unknown`; a known actor
+No matching label event, or a missing or non-user (for example bot) actor, skips with `label_actor_unknown`; a known actor
 or author lacking permission skips with `intake_not_permitted`. A
 collaborator-permission HTTP 404 counts as no permission for that issue; bulk
 intake skips it and continues.
