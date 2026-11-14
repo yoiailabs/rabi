@@ -52,3 +52,13 @@ Approval timeout in `task advance --wait` returns 10 (`waiting`), retaining `awa
 `task report` and `task events` succeed with 0, including an empty store or empty filtered result. Invalid `--since`/arguments use 2, missing event task selectors use 3, and corrupt/unreadable records/events or malformed timestamps use 1. Events emits JSON lines only on success; errors use the ordinary envelope before any rows.
 
 `task advance --all` retains each task's exit code and continues after failures. Its aggregate severity precedence is `130 > 124 > 6 > 1 > 5 > 4 > 3 > 2 > 10 > 0`; other operational failures rank alongside 1, and the first outcome wins ties. This is not the numeric maximum and does not synthesize 6 merely because some tasks progressed. New tasks are non-failing skipped items (`report.reason: "skipped_new"`, item exit 0); terminal/blocked tasks are omitted. Empty/skipped-only batches succeed with 0. Explicit single-task advance still refuses new tasks with 4. Interruption stops further launches and returns 130. Batch `--wait` returns 10 at each pending CI/approval result instead of polling it; the aggregate can be more severe when another task fails. Global invocation/repository/trust failures abort before task execution with their ordinary codes.
+
+`task override` succeeds with 0 after appending an observation, changing no task
+state or approval. Invalid tier/note/SHA or a nonempty `RABI_AGENT` uses 2;
+authenticated logins outside the base policy's `[approval] approvers` use 4
+(`refused`) before recording. Missing tasks use 3; unavailable identity/classification/policy
+or corrupt records use operational errors. `task tune` succeeds with 0 for no
+evidence (`nothing to propose`), valid dry-run proposals and published draft PRs.
+Two malformed/invalid proposal answers fail with a clear operational error.
+Normal invocation, trust, Git/store and `task publish` refusal/partial-failure
+codes still apply; tune never runs approval or merge.

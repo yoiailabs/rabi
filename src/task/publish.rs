@@ -1226,7 +1226,10 @@ fn execute_inner(root: &Path, selector: Option<&str>, locked: bool) -> Result<Re
             if signals.interrupted() {
                 return Err(Error::Signaled("SIGINT".into()));
             }
-            let body = pr_body(&task.intent, &commits)?;
+            let mut body = pr_body(&task.intent, &commits)?;
+            if let Some(proposal) = &task.proposal {
+                body.push_str(&super::tune::publication_body(proposal, &workspace)?);
+            }
             let body_path = publisher.temporary.path().join("body.txt");
             fs::write(&body_path, body).map_err(|_| Error::msg("Cannot prepare PR body"))?;
             let body_path = body_path

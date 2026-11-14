@@ -183,7 +183,7 @@ pub(crate) fn inspect(
     Ok(report)
 }
 
-fn directory(root: &Path, writing: bool) -> Result<Option<PathBuf>> {
+pub(super) fn directory(root: &Path, writing: bool) -> Result<Option<PathBuf>> {
     let common = crate::git::canonical_common_dir(root)?;
     let mut path = common;
     for component in ["rabi", "classifications"] {

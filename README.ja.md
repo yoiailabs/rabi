@@ -72,6 +72,8 @@ rabi task show "$task_id" --json
 
 ## 承認
 
+メンテナーは `rabi task override` でリスク判定への訂正を記録できます。`rabi task tune --since 30d --dry-run --json` は、判定方針の文書と `AGENTS.md` への変更案を表示します。`rabi task tune` は通常のタスクを作成し、ドラフト PR を公開します。レビュー・リスク判定・承認・マージには進みません。内容を確認してから、通常の `task advance` の条件に従って進めてください。方針文書の変更も、その条件を満たす場合に限り自動マージできます。[訂正の記録と変更案の詳細](docs/commands.md#task-override-and-tune)を参照してください。
+
 承認なしでマージできるのは、ポリシーで指定した low/medium で floor に該当しない変更だけです。自動マージ対象は既定では空です。high、floor、リスク判定の欠落・失敗・不確実な結果にはメンテナーの承認が必要です。レビュー結果は承認にはなりません。自動化は `rabi task approve` を実行せず、`RABI_AGENT` を解除して回避せず、成功の `rabi/approval` ステータスも投稿しません。
 
 設定されたメンテナーが rabi 起動のエージェントの外で、PR の現在の HEAD と各条件を確認します。`reviewed_sha` に確認した40桁の完全な SHA を設定してから承認を記録します。
@@ -116,7 +118,7 @@ run にもタスクエージェントと共通の制限が適用されます。�
 
 | 分類 | コマンド |
 |---|---|
-| タスクの記録 | `rabi task`, `rabi task new`, `rabi task intake`, `rabi task list`, `rabi task show`, `rabi task report`, `rabi task events`, `rabi task abandon` |
+| タスクの記録 | `rabi task`, `rabi task new`, `rabi task intake`, `rabi task list`, `rabi task show`, `rabi task report`, `rabi task events`, `rabi task override`, `rabi task tune`, `rabi task abandon` |
 | 工程の実行 | `rabi task implement`, `rabi task advance`, `rabi task publish`, `rabi task review` |
 | 条件の確認 | `rabi task risk`, `rabi task classify`, `rabi task status`, `rabi task approve`, `rabi task merge` |
 | ワークスペース | `rabi create`, `rabi list`, `rabi show`, `rabi path`, `rabi set`, `rabi exec` |

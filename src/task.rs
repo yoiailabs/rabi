@@ -16,6 +16,7 @@ pub(crate) mod publish;
 pub(crate) mod review;
 mod reviewer_provider;
 pub(crate) mod store;
+pub(crate) mod tune;
 
 use std::path::Path;
 

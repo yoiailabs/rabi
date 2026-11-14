@@ -507,3 +507,51 @@ fn task_reporting_and_batch_guidance_matches_the_help_contract() {
     assert!(include_str!("../docs/json.md").contains("no recognized feedback"));
     assert!(include_str!("../CHANGELOG.md").contains("## Unreleased"));
 }
+
+#[test]
+fn task_override_and_tune_guidance_matches_proposal_only_help_contract() {
+    let help: serde_json::Value = serde_json::from_str(include_str!("../help-data.json")).unwrap();
+    for (command, flags) in [
+        ("task override", vec!["tier", "note", "sha"]),
+        ("task tune", vec!["since", "dry-run"]),
+    ] {
+        let options = help["helps"][command]["options"].as_array().unwrap();
+        for flag in flags {
+            assert!(
+                options.iter().any(|option| option["name"] == flag),
+                "{command} lacks {flag}"
+            );
+        }
+        for document in [
+            README,
+            README_JA,
+            include_str!("../docs/commands.md"),
+            include_str!("../skills/rabi/SKILL.md"),
+        ] {
+            assert!(document.contains(&format!("rabi {command}")));
+        }
+    }
+    for (name, document) in [
+        ("commands", include_str!("../docs/commands.md")),
+        ("json", include_str!("../docs/json.md")),
+        ("safety", include_str!("../docs/safety.md")),
+        ("configuration", include_str!("../docs/configuration.md")),
+        ("skill", include_str!("../skills/rabi/SKILL.md")),
+    ] {
+        for text in ["AGENTS.md", "[classifier]", "approvers", "task", "tune"] {
+            assert!(document.contains(text), "{name} lacks {text}");
+        }
+    }
+    for document in [
+        include_str!("../docs/commands.md"),
+        include_str!("../docs/safety.md"),
+        include_str!("../skills/rabi/SKILL.md"),
+    ] {
+        for text in ["RABI_AGENT", "nonce", "draft PR", "task advance"] {
+            assert!(document.contains(text), "missing {text}");
+        }
+    }
+    assert!(include_str!("../docs/json.md").contains("classifiedTier"));
+    assert!(include_str!("../docs/json.md").contains("plan, proposal, diff, taskId, prNumber"));
+    assert!(include_str!("../CHANGELOG.md").contains("rabi task tune"));
+}

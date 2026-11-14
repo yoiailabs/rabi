@@ -72,6 +72,8 @@ Use `rabi task advance --all --wait --json` to advance active tasks sequentially
 
 ## Approval
 
+Maintainers can record classification corrections with `rabi task override`. `rabi task tune --since 30d --dry-run --json` previews proposed changes to the written policy and `AGENTS.md`; `rabi task tune` creates a normal task and publishes a draft PR. Tune stops before review, classification, approval or merge. Continue through the ordinary `task advance` gates; policy-document changes may auto-merge only when those gates allow it. See [override and tune](docs/commands.md#task-override-and-tune).
+
 Only policy-listed low/medium tiers without a floor may merge without approval; the default auto set is empty. High, floors, and missing/failed/uncertain classification require a maintainer. Review output is never approval. Automation never runs `rabi task approve`, unsets `RABI_AGENT` to bypass it, or posts a success `rabi/approval` status.
 
 A configured maintainer, outside rabi-launched agents, inspects the exact current PR head and gates, sets `reviewed_sha` to its full 40-hex SHA, then records approval:
@@ -116,7 +118,7 @@ Use `rabi help` for syntax or `rabi help --json` for the full command/flag contr
 
 | Area | Commands |
 |---|---|
-| Task records | `rabi task`, `rabi task new`, `rabi task intake`, `rabi task list`, `rabi task show`, `rabi task report`, `rabi task events`, `rabi task abandon` |
+| Task records | `rabi task`, `rabi task new`, `rabi task intake`, `rabi task list`, `rabi task show`, `rabi task report`, `rabi task events`, `rabi task override`, `rabi task tune`, `rabi task abandon` |
 | Factory steps | `rabi task implement`, `rabi task advance`, `rabi task publish`, `rabi task review` |
 | Gates | `rabi task risk`, `rabi task classify`, `rabi task status`, `rabi task approve`, `rabi task merge` |
 | Workspaces | `rabi create`, `rabi list`, `rabi show`, `rabi path`, `rabi set`, `rabi exec` |

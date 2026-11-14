@@ -135,6 +135,24 @@ rabi task report --since 7d --json
 rabi task events --since 7d --json
 ```
 
+## Task override and tune
+
+`rabi task override SEL --tier low|medium|high --note TEXT [--sha <40 hex>] [--json]` records a maintainer's correction to how a task was treated. SEL is a task ID or unique prefix. The command refuses a nonempty `RABI_AGENT` before GitHub access and requires the authenticated GitHub login to appear in the base policy's `[approval] approvers` (case-insensitive). The SHA defaults to the latest classified task head; an override requires a classification recorded for that SHA. The note must contain 1 to 8192 bytes. The append-only observation stores the treated tier, classified tier, exact SHA, sanitized note and timestamp. It changes no task state, approval or merge result. Use an override for either direction of correction: a change classified too conservatively or a change that should have required stronger gates.
+
+`rabi task tune [--since DUR|DATE] [--dry-run] [--json]` collects override observations, classification tiers/reasons and the repeated review finding fingerprints used by `task report`. Its inclusive cutoff uses report's syntax. With no evidence it succeeds with `nothing to propose` and does not launch a provider. Otherwise repository trust is required before a fresh tool-less Claude session proposes written-policy edits. Tune uses the existing `[classifier] model` setting; it adds no configuration keys.
+
+The strict answer is `{edits:[{path, find, replace, rationale, evidence:[...]}], summary}`. Only the base policy's `[classifier] doc` and `AGENTS.md` are eligible. Rabi allows at most 16 edits, limits each find/replace to 8 KiB and their combined text to 64 KiB, and limits the summary to 512 bytes. Rationale is limited to 2048 bytes per edit, with at most 32 known evidence references and a 24 KiB cap for the rendered rationale/evidence PR section. It requires each nonempty `find` to occur exactly once (including overlapping occurrences); it rejects other paths and invalid proposals. Malformed output receives one retry before a clear error. Evidence references identify recorded events or PR numbers. All input is framed as untrusted data; the provider cannot write files.
+
+`--dry-run` prints the validated proposal and would-be diff without creating tasks, workspaces or commits, or publishing. Without it, tune records a normal task with intent `tune: <summary>`, creates a linked workspace from the current base without setup hooks or copying, applies the exact replacements itself, commits with evidence references, then calls the existing `task publish` path to create a draft PR. The sanitized PR body includes rationale and evidence. Tune stops there and prints the task ID and PR number. Existing publication checks and floors still apply; failures retain ordinary task recovery behavior.
+
+Tune never runs review, classify, approve or merge. Continue explicitly with `task advance` after inspecting the proposal. Policy-document changes may still auto-merge only if the base policy's ordinary gates allow it. An override is evidence, never permission to bypass a gate.
+
+```sh
+rabi task override "$task_id" --tier medium --note "This change required additional review"
+rabi task tune --since 30d --dry-run --json
+rabi task tune --since 30d --json
+```
+
 ## Task implement
 
 `rabi task implement [SEL] [--provider codex|claude] [--timeout DUR] [MESSAGE|-] [--json|--output text|json]` launches one fresh implementer session in the foreground. Codex is the default. SEL accepts a full task ID or a unique prefix of at least six characters, like `task show`; omitted SEL or `.` selects the unique non-terminal task on the current branch. Give SEL before a quoted MESSAGE; `-` reads the message from stdin. Global `-R/--repo` selects the task's repository.

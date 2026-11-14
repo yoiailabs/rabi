@@ -192,6 +192,24 @@ impl<'a> Client<'a> {
         crate::task::publish::log_tail(command)
     }
 
+    /// Authenticated identity on the same GitHub host used for approvals.
+    pub(crate) fn authenticated_login(&self) -> Result<String> {
+        let response = gh_api(self.root, &self.repo.host, "user")?;
+        let value: Value = serde_json::from_str(&response.stdout)
+            .map_err(|_| Error::msg("Cannot read authenticated GitHub identity"))?;
+        value["login"]
+            .as_str()
+            .filter(|login| {
+                !login.is_empty()
+                    && login
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || c == b'-')
+            })
+            .filter(|_| response.code == 0)
+            .map(str::to_owned)
+            .ok_or_else(|| Error::msg("Cannot read authenticated GitHub identity"))
+    }
+
     pub fn approve(&self, sha: &str, description: &str) -> Result<()> {
         super::post_approval(self.root, &self.repo, sha, description)
     }

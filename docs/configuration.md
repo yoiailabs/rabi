@@ -249,3 +249,13 @@ Every provider launched by `rabi run` receives `RABI_AGENT=1` unconditionally, i
 ## External intake
 
 External intake has no repository or user configuration keys. Select the label (matched case-insensitively) and examination limit with `task intake --label L --limit N` (default 30, range 1..1000), and preview with `--dry-run`. Authentication comes from the invoking operator's `gh` configuration. Both issue authors and the latest label actor require current write/maintain/admin permission; no label grants permission by itself. A collaborator-permission HTTP 404 counts as no permission for that issue. Intake creates records only. The existing trusted checkout and task lifecycle setup is still required before launching agents. See [external intake](commands.md#external-issue-intake).
+
+## Task tuning
+
+`task override` and `task tune` add no configuration keys. Override requires the
+authenticated GitHub login in the base policy's `[approval] approvers`. Tune reads
+the base policy's `[classifier] doc` as its only editable policy-document path,
+alongside `AGENTS.md`, and reuses `[classifier] model` with the tool-less Claude
+provider. Configure those files on the base first. Normal trust, publication
+prechecks, floors and advance gates remain in force; tune grants no approval or
+merge permission. See [override and tune](commands.md#task-override-and-tune).
