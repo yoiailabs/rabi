@@ -353,12 +353,27 @@ noAttestationProcesses() {
     for pidFile in "$TEST_GH_PID" "$TEST_SLEEP_PIDS"; do
         [ -f "$pidFile" ] || continue
         while read -r pid; do
+            # kill -0 also succeeds for exited, unreaped processes. Allow only
+            # zombies a bounded interval for reaping; a running gh, watchdog,
+            # or sleep must still fail immediately, even during the grace period.
+            attempts=0
+            while kill -0 "$pid" 2>/dev/null && [ "$attempts" -lt 5 ]; do
+                processState=$(ps -p "$pid" -o stat= 2>/dev/null || :)
+                case $processState in *Z*) ;; *) break ;; esac
+                sleep 1
+                attempts=$((attempts+1))
+            done
             if kill -0 "$pid" 2>/dev/null; then
+                ps -p "$pid" -o pid=,ppid=,stat=,comm= >&2 || :
                 kill -KILL "$pid" 2>/dev/null || :
                 fail "Leaked attestation process $pid"
             fi
         done < "$pidFile"
     done
+    # Each check covers only processes recorded since the previous check. A
+    # stale PID from an earlier case could be reused by an unrelated process.
+    : > "$TEST_GH_PID"
+    : > "$TEST_SLEEP_PIDS"
 }
 # Leave time for the watchdog's sleep to start before success/failure cancellation.
 export TEST_GH_MODE=delay
@@ -402,6 +417,7 @@ count=$((count+1))
 cp "$HOME/.local/bin/rabi" "$root/before"
 for TEST_GH_MODE in stall ignore-term; do
     export TEST_GH_MODE RABI_ATTESTATION_TIMEOUT=1
+    : > "$TEST_GH_PID"
     : > "$TEST_SLEEP_PIDS"
     started=$(date +%s)
     runFail 1 'Attestation verification timed out after 1 seconds for rabi-v7.0.0-linux-x64.tar.gz.' \
