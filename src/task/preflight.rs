@@ -209,13 +209,22 @@ pub(crate) fn evaluate(
     });
     let checks: Vec<_> = policy.ci.required.iter().map(|required| {
         let name = required.name();
-        let app = required.app(&policy.ci);
-        let latest = facts.check_runs.iter().filter(|run| run.name == name && run.app.as_deref() == Some(app)).max_by_key(|run| run.id);
-        let pass = latest.is_some_and(|run| run.status == "completed" && run.conclusion.as_deref() == Some("success"));
-        let observed = latest.map_or_else(|| "missing".into(), |run| format!("{}:{}", run.status, run.conclusion.as_deref().unwrap_or("none")));
-        let ignored_runs: Vec<_> = facts.check_runs.iter().filter(|run| run.name == name && run.app.as_deref() != Some(app)).collect();
-        let ignored_statuses: Vec<_> = facts.statuses.iter().filter(|status| status.context == name).collect();
-        json!({"name":name,"app":app,"pass":pass,"observed":observed,"ignoredCheckRuns":ignored_runs,"ignoredStatuses":ignored_statuses})
+        if let Some(creator) = required.creator() {
+            let latest = facts.required_status(name, creator);
+            let pass = latest.is_some_and(|status| status.creator.is_some() && status.state == "success");
+            let observed = latest.map_or("missing", |status| if status.creator.is_none() { "missing_creator" } else { &status.state });
+            let ignored_runs: Vec<_> = facts.check_runs.iter().filter(|run| run.name == name).collect();
+            let ignored_statuses: Vec<_> = facts.statuses.iter().filter(|status| status.context == name && (!status.sha.eq_ignore_ascii_case(&pr.head_sha) || !status.creator.as_deref().is_some_and(|login| login.eq_ignore_ascii_case(creator)))).collect();
+            json!({"name":name,"creator":creator,"pass":pass,"observed":observed,"state":latest.map(|status| &status.state),"ignoredCheckRuns":ignored_runs,"ignoredStatuses":ignored_statuses})
+        } else {
+            let app = required.app(&policy.ci);
+            let latest = facts.check_runs.iter().filter(|run| run.name == name && run.app.as_deref() == app).max_by_key(|run| run.id);
+            let pass = latest.is_some_and(|run| run.status == "completed" && run.conclusion.as_deref() == Some("success"));
+            let observed = latest.map_or_else(|| "missing".into(), |run| format!("{}:{}", run.status, run.conclusion.as_deref().unwrap_or("none")));
+            let ignored_runs: Vec<_> = facts.check_runs.iter().filter(|run| run.name == name && run.app.as_deref() != app).collect();
+            let ignored_statuses: Vec<_> = facts.statuses.iter().filter(|status| status.context == name).collect();
+            json!({"name":name,"app":app,"pass":pass,"observed":observed,"ignoredCheckRuns":ignored_runs,"ignoredStatuses":ignored_statuses})
+        }
     }).collect();
     let passed = !facts.checks_incomplete
         && !checks.is_empty()
@@ -237,7 +246,11 @@ pub(crate) fn evaluate(
                             .as_array()
                             .is_some_and(|rows| !rows.is_empty())
                     {
-                        " (other apps and commit statuses ignored)"
+                        if check.get("creator").is_some() {
+                            " (check runs and non-matching commit statuses ignored)"
+                        } else {
+                            " (other apps and commit statuses ignored)"
+                        }
                     } else {
                         ""
                     }
@@ -509,6 +522,148 @@ impl Evaluation {
 mod tests {
     use super::*;
     const POLICY: &str = "schema = 1\ndefault-tier = 'low'\n[ci]\nrequired = ['Rust test']";
+
+    #[test]
+    fn required_status_contract() {
+        let policy =
+            Policy::parse("schema=1\n[ci]\nrequired=[{name='signoff',creator='maintainer-login'}]")
+                .unwrap();
+        for (state, creator, sha, expected, observed) in [
+            (
+                "success",
+                Some("maintainer-login"),
+                "abcdef",
+                true,
+                "success",
+            ),
+            (
+                "success",
+                Some("MAINTAINER-LOGIN"),
+                "ABCDEF",
+                true,
+                "success",
+            ),
+            (
+                "pending",
+                Some("maintainer-login"),
+                "abcdef",
+                false,
+                "pending",
+            ),
+            (
+                "failure",
+                Some("maintainer-login"),
+                "abcdef",
+                false,
+                "failure",
+            ),
+            ("error", Some("maintainer-login"), "abcdef", false, "error"),
+            (
+                "unknown",
+                Some("maintainer-login"),
+                "abcdef",
+                false,
+                "unknown",
+            ),
+            ("success", Some("other-login"), "abcdef", false, "missing"),
+            ("success", None, "abcdef", false, "missing_creator"),
+            ("pending", None, "abcdef", false, "missing_creator"),
+            (
+                "success",
+                Some("maintainer-login"),
+                "123456",
+                false,
+                "missing",
+            ),
+        ] {
+            let mut facts: Snapshot =
+                serde_json::from_str(include_str!("../../tests/fixtures/task_facts.json")).unwrap();
+            facts.pr.head_sha = "abcdef".into();
+            facts.statuses = vec![crate::github::facts::CommitStatus {
+                id: 10,
+                sha: sha.into(),
+                context: "signoff".into(),
+                state: state.into(),
+                creator: creator.map(str::to_owned),
+            }];
+            facts.check_runs[0].name = "signoff".into();
+            let local = Local {
+                head: None,
+                kinds: None,
+                policy_matches_base_tip: Some(true),
+                classification_record: None,
+            };
+            let evaluation = evaluate(&facts, &policy, &local, None);
+            let item = &evaluation.items[2];
+            let detail = &item.detail["checks"][0];
+            assert_eq!(detail["pass"], expected, "{state} {creator:?} {sha}");
+            assert_eq!(detail["observed"], observed);
+            assert_eq!(
+                detail["state"],
+                if observed == "missing" {
+                    Value::Null
+                } else {
+                    json!(state)
+                }
+            );
+            assert_eq!(detail["creator"], "maintainer-login");
+            assert_eq!(detail["ignoredCheckRuns"].as_array().unwrap().len(), 1);
+            assert_eq!(
+                detail["ignoredStatuses"].as_array().unwrap().len(),
+                usize::from(matches!(observed, "missing" | "missing_creator"))
+            );
+            assert_eq!(matches!(item.result, Outcome::Pass), expected);
+            assert!(!item
+                .reason
+                .contains("other apps and commit statuses ignored"));
+        }
+    }
+
+    #[test]
+    fn latest_matching_status_wins_and_missing_status_fails() {
+        let policy =
+            Policy::parse("schema=1\n[ci]\nrequired=[{name='signoff',creator='maintainer-login'}]")
+                .unwrap();
+        let mut facts: Snapshot =
+            serde_json::from_str(include_str!("../../tests/fixtures/task_facts.json")).unwrap();
+        facts.statuses.clear();
+        let local = Local {
+            head: None,
+            kinds: None,
+            policy_matches_base_tip: Some(true),
+            classification_record: None,
+        };
+        assert_eq!(
+            evaluate(&facts, &policy, &local, None).items[2].detail["checks"][0]["observed"],
+            "missing"
+        );
+        for (id, state, creator) in [
+            (30, "success", Some("maintainer-login")),
+            (10, "failure", Some("maintainer-login")),
+            (50, "failure", Some("other-login")),
+            (60, "failure", None),
+        ] {
+            facts.statuses.push(crate::github::facts::CommitStatus {
+                id,
+                context: "signoff".into(),
+                sha: facts.pr.head_sha.clone(),
+                state: state.into(),
+                creator: creator.map(str::to_owned),
+            });
+        }
+        let report = evaluate(&facts, &policy, &local, None);
+        assert_eq!(report.items[2].detail["checks"][0]["pass"], true);
+        facts.statuses[0].state = "pending".into();
+        assert_eq!(
+            evaluate(&facts, &policy, &local, None).items[2].detail["checks"][0]["pass"],
+            false
+        );
+        facts.statuses[0].context = "Signoff".into();
+        assert_eq!(
+            evaluate(&facts, &policy, &local, None).items[2].detail["checks"][0]["observed"],
+            "failure"
+        );
+    }
 
     #[test]
     fn preflight_table() {
@@ -818,7 +973,7 @@ mod tests {
             if name == "wrong app and status" {
                 fixture["checkRuns"][0]["app"] = json!("another-app");
                 fixture["statuses"].as_array_mut().unwrap().push(
-                    json!({"sha":"2222222222222222222222222222222222222222","context":"Rust test","state":"success","creator":"issuer-1"}));
+                    json!({"id":1,"sha":"2222222222222222222222222222222222222222","context":"Rust test","state":"success","creator":"issuer-1"}));
             }
             let facts: Snapshot = serde_json::from_value(fixture).unwrap();
             let policy_text = match name {
@@ -1038,6 +1193,7 @@ mod tests {
             facts.statuses = statuses
                 .into_iter()
                 .map(|(state, creator, old)| crate::github::facts::CommitStatus {
+                    id: 1,
                     sha: if old {
                         facts.pr.base_sha.clone()
                     } else {

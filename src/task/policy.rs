@@ -114,11 +114,17 @@ impl Policy {
         }
         if policy.ci.app.trim().is_empty()
             || policy.ci.required.iter().any(|check| {
-                check.name().trim().is_empty() || check.app(&policy.ci).trim().is_empty()
+                check.name().trim().is_empty()
+                    || check
+                        .app(&policy.ci)
+                        .is_some_and(|app| app.trim().is_empty())
+                    || check
+                        .creator()
+                        .is_some_and(|creator| creator.trim().is_empty())
             })
         {
             return Err(Error::msg(
-                "Invalid risk policy ci: names and apps must not be empty",
+                "Invalid risk policy ci: names, apps and creators must not be empty",
             ));
         }
         if policy.merge.auto.contains(&Tier::High) {
@@ -216,6 +222,7 @@ impl Default for Ci {
 pub(crate) enum RequiredCheck {
     Name(String),
     Issued(CheckIssuer),
+    Status(StatusIssuer),
 }
 
 #[derive(Debug, Deserialize)]
@@ -225,17 +232,32 @@ pub(crate) struct CheckIssuer {
     app: String,
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct StatusIssuer {
+    name: String,
+    creator: String,
+}
+
 impl RequiredCheck {
     pub fn name(&self) -> &str {
         match self {
             Self::Name(name) => name,
             Self::Issued(check) => &check.name,
+            Self::Status(status) => &status.name,
         }
     }
-    pub fn app<'a>(&'a self, ci: &'a Ci) -> &'a str {
+    pub fn app<'a>(&'a self, ci: &'a Ci) -> Option<&'a str> {
         match self {
-            Self::Name(_) => &ci.app,
-            Self::Issued(check) => &check.app,
+            Self::Name(_) => Some(&ci.app),
+            Self::Issued(check) => Some(&check.app),
+            Self::Status(_) => None,
+        }
+    }
+    pub fn creator(&self) -> Option<&str> {
+        match self {
+            Self::Status(status) => Some(&status.creator),
+            _ => None,
         }
     }
 }
@@ -456,6 +478,33 @@ mod tests {
 mod ci_tests {
     use super::*;
     #[test]
+    fn status_policy_tables() {
+        let policy = Policy::parse("schema=1\n[ci]\nrequired=['Rust fmt', {name='Rust test',app='github-actions'}, {name='signoff',creator='maintainer-login'}]").unwrap();
+        let status = &policy.ci.required[2];
+        assert_eq!(status.name(), "signoff");
+        assert_eq!(status.creator(), Some("maintainer-login"));
+        assert_eq!(status.app(&policy.ci), None);
+        assert_eq!(policy.ci.required[0].creator(), None);
+        for table in [
+            "{name='signoff'}",
+            "{creator='maintainer-login'}",
+            "{name='',creator='maintainer-login'}",
+            "{name='  ',creator='maintainer-login'}",
+            "{name='signoff',creator=''}",
+            "{name='signoff',creator='  '}",
+            "{name='signoff',creator=1}",
+            "{name='signoff',creator='maintainer-login',app='github-actions'}",
+            "{name='signoff',creator='maintainer-login',extra=true}",
+        ] {
+            assert!(
+                Policy::parse(&format!("schema=1\n[ci]\nrequired=[{table}]")).is_err(),
+                "{table}"
+            );
+        }
+        assert!(Policy::parse("schema=1\n[ci]\ncreator='maintainer-login'").is_err());
+    }
+
+    #[test]
     fn ci_policy_table() {
         for (text, valid, names) in [
             ("[ci]", true, vec![]),
@@ -495,7 +544,7 @@ mod ci_tests {
                         .ci
                         .required
                         .iter()
-                        .map(|check| (check.name(), check.app(&policy.ci)))
+                        .map(|check| (check.name(), check.app(&policy.ci).unwrap()))
                         .collect::<Vec<_>>(),
                     names,
                     "{text}"

@@ -429,7 +429,7 @@ exec '{}' "$@"
         fs::write(
             self.root.join("statuses.json"),
             serde_json::to_vec(
-                &json!([{ "context":"rabi/approval","state":state,"creator":{"login":creator} }]),
+                &json!([{ "id":1,"context":"rabi/approval","state":state,"creator":{"login":creator} }]),
             )
             .unwrap(),
         )
@@ -605,6 +605,49 @@ fn ci_fact_sequences_require_latest_success_from_expected_app() {
         }
         assert_eq!(repo.launches(), 0, "{name}");
     }
+}
+
+#[test]
+fn required_status_failure_repairs_without_check_run_log_or_retry_requests() {
+    let repo = Repo::new(&[], "", None);
+    fs::write(
+        repo.repo.join(".rabi/policy.toml"),
+        "schema=1\n[ci]\nrequired=[{name='signoff',creator='maintainer-login'}]\n",
+    )
+    .unwrap();
+    repo.git(&["add", ".rabi/policy.toml"]);
+    repo.git(&["commit", "-m", "status policy"]);
+    repo.ci();
+    let head = repo.git(&["rev-parse", "topic"]);
+    fs::write(repo.root.join("approval-sha"), &head).unwrap();
+    fs::write(
+        repo.root.join("statuses.json"),
+        serde_json::to_vec(&json!([
+            {"id":2,"context":"signoff","state":"failure","creator":{"login":"maintainer-login"}},
+            {"id":3,"context":"signoff","state":"success","creator":{"login":"other-login"}}
+        ]))
+        .unwrap(),
+    )
+    .unwrap();
+    let report = decode(repo.advance().output().unwrap(), 0);
+    assert_eq!(report["data"]["state"]["name"], "implementing");
+    let task = repo.view();
+    let feedback = &task["task"]["advance"]["pendingFeedback"];
+    assert!(feedback["signature"].as_str().unwrap().contains("signoff"));
+    assert!(feedback["signature"].as_str().unwrap().contains(&head));
+    assert!(feedback["fingerprint"]
+        .as_str()
+        .unwrap()
+        .contains("signoff"));
+    assert!(feedback["message"]
+        .as_str()
+        .unwrap()
+        .contains("operator or integration"));
+    let trace = fs::read_to_string(repo.root.join("gh-trace")).unwrap();
+    assert!(!trace.contains("/check-runs/"), "{trace}");
+    assert!(!trace.contains("run view"), "{trace}");
+    assert!(!trace.contains("rerun"), "{trace}");
+    assert_eq!(repo.launches(), 0);
 }
 
 #[test]

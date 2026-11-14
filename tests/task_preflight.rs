@@ -149,7 +149,7 @@ impl Repo {
                 "repos/example/project/commits/{}/statuses?per_page=100&page=1",
                 self.head
             ),
-            json!([{"context":"legacy","state":"success","creator":{"login":"issuer-1"}}, {"context":"rabi/approval","state":"success","creator":{"login":"maintainer"}}]),
+            json!([{"id":1,"context":"legacy","state":"success","creator":{"login":"issuer-1"}}, {"id":1,"context":"rabi/approval","state":"success","creator":{"login":"maintainer"}}]),
         );
         responses.insert("repos/example/project/pulls/7/reviews?per_page=100&page=1".into(), json!([{"id":2,"state":"APPROVED","user":{"login":"reviewer-1"}},{"id":1,"state":"CHANGES_REQUESTED","user":{"login":"reviewer-1"}}]));
         responses
@@ -253,6 +253,7 @@ fn status_and_preflight_paginate_and_leave_git_unchanged() {
     assert_eq!(status["data"]["checksIncomplete"], false);
     assert_eq!(status["data"]["reviews"][0]["state"], "APPROVED");
     assert_eq!(status["data"]["statuses"][0]["creator"], "issuer-1");
+    assert_eq!(status["data"]["statuses"][0]["id"], 1);
     let merge = repo.json(&["task", "merge", "--dry-run", "pr:7", "--json"]);
     assert_eq!(merge["command"], "task merge");
     assert_eq!(merge["data"]["verdict"], "incomplete");
@@ -269,6 +270,46 @@ fn status_and_preflight_paginate_and_leave_git_unchanged() {
         .iter()
         .any(|args| args[1].contains("/check-runs?filter=all&per_page=100&page=2")));
     repo.assert_get_only();
+}
+
+#[test]
+fn status_requirements_paginate_and_gate_both_merge_modes() {
+    for (state, expected) in [("success", "pass"), ("pending", "fail"), ("error", "fail")] {
+        let mut repo = Repo::new();
+        repo.git(&["checkout", "main"]);
+        repo.write(".rabi/policy.toml", "schema=1\ndefault-tier='low'\n[ci]\nrequired=[{name='signoff',creator='maintainer-login'}]\n[merge]\nauto=['low']\n");
+        repo.git(&["add", "."]);
+        repo.git(&["commit", "-m", "status policy"]);
+        repo.base = repo.git(&["rev-parse", "HEAD"]);
+        repo.git(&["checkout", "topic"]);
+        let mut responses = repo.responses();
+        let ignored: Vec<_> = (0..100).map(|index| json!({"id":300+index,"context":"signoff","state":"success","creator":{"login":"other-login"}})).collect();
+        responses.insert(
+            format!(
+                "repos/example/project/commits/{}/statuses?per_page=100&page=1",
+                repo.head
+            ),
+            json!(ignored),
+        );
+        responses.insert(format!("repos/example/project/commits/{}/statuses?per_page=100&page=2", repo.head), json!([{"id":200,"context":"signoff","state":state,"creator":{"login":"MAINTAINER-LOGIN"}}]));
+        repo.serve(&responses);
+        let dry_run = repo.json(&["task", "merge", ".", "--dry-run", "--json"]);
+        let item = &dry_run["data"]["items"][2];
+        assert_eq!(item["result"], expected);
+        assert_eq!(item["detail"]["checks"][0]["observed"], state);
+        assert_eq!(
+            item["detail"]["checks"][0]["ignoredStatuses"]
+                .as_array()
+                .unwrap()
+                .len(),
+            100
+        );
+        let output = repo.rabi(&["task", "merge", ".", "--external-review", "--json"]);
+        assert_eq!(output.status.success(), state == "success");
+        assert!(repo.trace().iter().any(|args| args
+            .get(1)
+            .is_some_and(|path| path.contains("/statuses?per_page=100&page=2"))));
+    }
 }
 
 #[test]
@@ -612,8 +653,8 @@ fn dry_run_and_real_merge_share_evaluation_table() {
             }
             "pending" => {
                 responses.insert(statuses, json!([
-                {"context":"rabi/approval","state":"pending","creator":{"login":"maintainer"}},
-                {"context":"rabi/approval","state":"success","creator":{"login":"maintainer"}}
+                {"id":2,"context":"rabi/approval","state":"pending","creator":{"login":"maintainer"}},
+                {"id":1,"context":"rabi/approval","state":"success","creator":{"login":"maintainer"}}
             ]));
             }
             "review" => {

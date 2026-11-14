@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- `[ci] required` in `.rabi/policy.toml` accepts `{ name, creator }` to require a GitHub commit status from an explicit creator login. Advance and merge preflight evaluate the latest matching status on the current PR head; existing string and `{ name, app }` Check Run requirements keep their behavior.
+
 ## v8.1.0 (2026-11-14)
 
 ### Added

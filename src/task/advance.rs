@@ -356,10 +356,30 @@ fn publishing(root: &Path, store: &Store, task: &mut Task) -> Result<Report> {
     }
 }
 
+#[derive(Clone, Copy)]
+enum Failure<'a> {
+    CheckRun(&'a CheckRun),
+    Status(&'a crate::github::facts::CommitStatus),
+}
+impl Failure<'_> {
+    fn name(&self) -> &str {
+        match self {
+            Self::CheckRun(check) => &check.name,
+            Self::Status(status) => &status.context,
+        }
+    }
+    fn identity(&self) -> (&str, &str, Option<&str>) {
+        match self {
+            Self::CheckRun(check) => ("check", &check.name, check.app.as_deref()),
+            Self::Status(status) => ("status", &status.context, status.creator.as_deref()),
+        }
+    }
+}
+
 enum Checks<'a> {
     Success,
     Waiting,
-    Failed(Vec<&'a CheckRun>),
+    Failed(Vec<Failure<'a>>),
 }
 fn checks<'a>(facts: &'a Snapshot, policy: &Policy) -> Checks<'a> {
     // An omitted newer run may supersede either observed success or failure.
@@ -370,12 +390,21 @@ fn checks<'a>(facts: &'a Snapshot, policy: &Policy) -> Checks<'a> {
     let mut waiting = false;
     let mut failures = Vec::new();
     for required in &policy.ci.required {
+        if let Some(creator) = required.creator() {
+            match facts.required_status(required.name(), creator) {
+                None => waiting = true,
+                Some(status) if status.creator.is_none() => failures.push(Failure::Status(status)),
+                Some(status) if status.state == "pending" => waiting = true,
+                Some(status) if status.state == "success" => {}
+                Some(status) => failures.push(Failure::Status(status)),
+            }
+            continue;
+        }
         let latest = facts
             .check_runs
             .iter()
             .filter(|check| {
-                check.name == required.name()
-                    && check.app.as_deref() == Some(required.app(&policy.ci))
+                check.name == required.name() && check.app.as_deref() == required.app(&policy.ci)
             })
             .max_by_key(|check| check.id);
         match latest {
@@ -391,7 +420,7 @@ fn checks<'a>(facts: &'a Snapshot, policy: &Policy) -> Checks<'a> {
             Some(check)
                 if check.status == "completed"
                     && check.conclusion.as_deref() == Some("success") => {}
-            Some(check) => failures.push(check),
+            Some(check) => failures.push(Failure::CheckRun(check)),
         }
     }
     if !failures.is_empty() {
@@ -402,8 +431,8 @@ fn checks<'a>(facts: &'a Snapshot, policy: &Policy) -> Checks<'a> {
         Checks::Success
     }
 }
-fn signature(head: &str, failures: &[&CheckRun]) -> String {
-    let mut names: Vec<_> = failures.iter().map(|check| check.name.as_str()).collect();
+fn signature(head: &str, failures: &[Failure<'_>]) -> String {
+    let mut names: Vec<_> = failures.iter().map(Failure::name).collect();
     names.sort_unstable();
     names.dedup();
     // JSON framing keeps names containing separators unambiguous.
@@ -570,8 +599,8 @@ pub(super) fn output_hash(tail: &str) -> String {
     crate::hash::sha256_hex(normalized_output(tail).as_bytes())
 }
 
-fn ci_fingerprint(failures: &[&CheckRun], sanitized_tail: &str) -> String {
-    let mut names: Vec<_> = failures.iter().map(|check| check.name.as_str()).collect();
+fn ci_fingerprint(failures: &[Failure<'_>], sanitized_tail: &str) -> String {
+    let mut names: Vec<_> = failures.iter().map(Failure::name).collect();
     names.sort_unstable();
     names.dedup();
     let hash = output_hash(sanitized_tail);
@@ -696,10 +725,18 @@ fn ci(root: &Path, store: &Store, task: &mut Task, timeout: Duration) -> Result<
             // A name may be required from several issuer apps. Order by the
             // full check identity and collapse duplicate policy declarations;
             // neither declaration order nor run IDs are failure evidence.
-            failures.sort_unstable_by(|a, b| (&a.name, &a.app).cmp(&(&b.name, &b.app)));
-            failures.dedup_by(|a, b| a.name == b.name && a.app == b.app);
+            failures.sort_unstable_by(|a, b| a.identity().cmp(&b.identity()));
+            failures.dedup_by(|a, b| a.identity() == b.identity());
             let mut diagnostics = String::new();
-            for check in &failures {
+            for failure in &failures {
+                let check = match failure {
+                    Failure::CheckRun(check) => check,
+                    Failure::Status(status) => {
+                        diagnostics.push_str(&format!("\nCommit status {} ({}) failed. Fix the work locally; an operator or integration must post a new status on the current or new head.\n", status.context, if status.creator.is_none() { "missing creator" } else { &status.state }));
+                        diagnostics = publish::sanitized(diagnostics.as_bytes(), &workspace);
+                        continue;
+                    }
+                };
                 let tail = match client.failed_log(check.id, &head) {
                     Ok(tail) => tail,
                     Err(Error::Signaled(_)) => {
@@ -1066,6 +1103,79 @@ mod tests {
     }
 
     #[test]
+    fn required_status_contract() {
+        let policy =
+            Policy::parse("schema=1\n[ci]\nrequired=[{name='signoff',creator='maintainer-login'}]")
+                .unwrap();
+        for (state, creator, sha, expected) in [
+            ("success", Some("maintainer-login"), "abcdef", "success"),
+            ("success", Some("MAINTAINER-LOGIN"), "ABCDEF", "success"),
+            ("pending", Some("maintainer-login"), "abcdef", "waiting"),
+            ("failure", Some("maintainer-login"), "abcdef", "failed"),
+            ("error", Some("maintainer-login"), "abcdef", "failed"),
+            ("unknown", Some("maintainer-login"), "abcdef", "failed"),
+            ("success", None, "abcdef", "failed"),
+            ("pending", None, "abcdef", "failed"),
+            ("success", Some("other-login"), "abcdef", "waiting"),
+            ("success", Some("maintainer-login"), "123456", "waiting"),
+        ] {
+            let mut facts: Snapshot =
+                serde_json::from_str(include_str!("../../tests/fixtures/task_facts.json")).unwrap();
+            facts.pr.head_sha = "abcdef".into();
+            facts.check_runs[0].name = "signoff".into();
+            facts.statuses = vec![crate::github::facts::CommitStatus {
+                id: 10,
+                sha: sha.into(),
+                context: "signoff".into(),
+                state: state.into(),
+                creator: creator.map(str::to_owned),
+            }];
+            let observed = match checks(&facts, &policy) {
+                Checks::Success => "success",
+                Checks::Waiting => "waiting",
+                Checks::Failed(failures) => {
+                    assert!(matches!(failures[0], Failure::Status(_)));
+                    assert!(signature("abcdef", &failures).contains("signoff"));
+                    assert!(signature("abcdef", &failures).contains("abcdef"));
+                    assert!(ci_fingerprint(&failures, "").contains("signoff"));
+                    "failed"
+                }
+            };
+            assert_eq!(observed, expected, "{state} {creator:?} {sha}");
+        }
+    }
+
+    #[test]
+    fn latest_matching_status_and_missing_status() {
+        let policy =
+            Policy::parse("schema=1\n[ci]\nrequired=[{name='signoff',creator='maintainer-login'}]")
+                .unwrap();
+        let mut facts: Snapshot =
+            serde_json::from_str(include_str!("../../tests/fixtures/task_facts.json")).unwrap();
+        facts.statuses.clear();
+        assert!(matches!(checks(&facts, &policy), Checks::Waiting));
+        for (id, state, creator) in [
+            (30, "success", Some("maintainer-login")),
+            (10, "failure", Some("maintainer-login")),
+            (50, "failure", Some("other-login")),
+            (60, "failure", None),
+        ] {
+            facts.statuses.push(crate::github::facts::CommitStatus {
+                id,
+                context: "signoff".into(),
+                sha: facts.pr.head_sha.clone(),
+                state: state.into(),
+                creator: creator.map(str::to_owned),
+            });
+        }
+        assert!(matches!(checks(&facts, &policy), Checks::Success));
+        facts.statuses[0].state = "pending".into();
+        assert!(matches!(checks(&facts, &policy), Checks::Waiting));
+        facts.statuses[0].state = "failure".into();
+        assert!(matches!(checks(&facts, &policy), Checks::Failed(_)));
+    }
+
+    #[test]
     fn failure_signature_is_head_bound_sorted_and_unambiguous() {
         let make = |name| CheckRun {
             id: 1,
@@ -1080,13 +1190,23 @@ mod tests {
         let b = make("b");
         let separator = make("a,b");
         assert_eq!(
-            signature("head", &[&a, &b, &a]),
-            signature("head", &[&b, &a])
+            signature(
+                "head",
+                &[
+                    Failure::CheckRun(&a),
+                    Failure::CheckRun(&b),
+                    Failure::CheckRun(&a)
+                ]
+            ),
+            signature("head", &[Failure::CheckRun(&b), Failure::CheckRun(&a)])
         );
-        assert_ne!(signature("head", &[&a]), signature("other-head", &[&a]));
         assert_ne!(
-            signature("head", &[&a, &b]),
-            signature("head", &[&separator])
+            signature("head", &[Failure::CheckRun(&a)]),
+            signature("other-head", &[Failure::CheckRun(&a)])
+        );
+        assert_ne!(
+            signature("head", &[Failure::CheckRun(&a), Failure::CheckRun(&b)]),
+            signature("head", &[Failure::CheckRun(&separator)])
         );
     }
 
@@ -1164,14 +1284,27 @@ mod tests {
         let a = make("a");
         let b = make("b");
         assert_eq!(
-            ci_fingerprint(&[&a, &b], "tail"),
-            ci_fingerprint(&[&b, &a, &a], "tail")
+            ci_fingerprint(&[Failure::CheckRun(&a), Failure::CheckRun(&b)], "tail"),
+            ci_fingerprint(
+                &[
+                    Failure::CheckRun(&b),
+                    Failure::CheckRun(&a),
+                    Failure::CheckRun(&a)
+                ],
+                "tail"
+            )
         );
         assert_ne!(
-            ci_fingerprint(&[&a, &b], "tail"),
-            ci_fingerprint(&[&a, &b], "other tail")
+            ci_fingerprint(&[Failure::CheckRun(&a), Failure::CheckRun(&b)], "tail"),
+            ci_fingerprint(
+                &[Failure::CheckRun(&a), Failure::CheckRun(&b)],
+                "other tail"
+            )
         );
-        assert_ne!(ci_fingerprint(&[&a], "tail"), ci_fingerprint(&[&b], "tail"));
+        assert_ne!(
+            ci_fingerprint(&[Failure::CheckRun(&a)], "tail"),
+            ci_fingerprint(&[Failure::CheckRun(&b)], "tail")
+        );
         let first = precheck_feedback(&json!({"failingCommand":"cargo test"}), "first");
         let second = precheck_feedback(&json!({"failingCommand":"cargo test"}), "second");
         assert_eq!(first.fingerprint, second.fingerprint);

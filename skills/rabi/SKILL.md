@@ -67,8 +67,9 @@ Trust is required for execution and is keyed to the Git common-directory path.
 `rabi trust add` shows hooks, prechecks and declared environment and grants trust
 without prompting; grant it only within the user's authorized setup scope.
 
-A maintainer must establish prechecks, required CI check names/apps, auto tiers,
-approvers and the written classification policy on the base branch first.
+A maintainer must establish prechecks, required CI names/apps or status
+contexts/creators, auto tiers, approvers and the written classification policy on
+the base branch first.
 Changing prechecks or built-in/policy floor paths blocks task publication.
 Built-in floors include `.github/**`, `.rabi.toml` and `.rabi/policy.toml`.
 Do not weaken them to make a task proceed.
@@ -194,7 +195,7 @@ inspect events and involve the operator instead of repeatedly advancing.
 |---|---|
 | Exit 10, CI/approval waiting | Inspect exact-head facts; retry advance after evidence changes. Approval timeout leaves `awaiting_approval` |
 | `no_progress`, `repeated_failure`, `budget` | Inspect commits, tree, diagnostics and budget; stop automatic repair and change approach with the operator |
-| `no_ci`, `ci_timeout` | Inspect base policy/check runs; do not invent successes or remove required checks |
+| `no_ci`, `ci_timeout` | Inspect base policy, check runs and statuses; do not invent successes or remove required checks |
 | `precheck_changed`, `floor_changed` | Protected changes need human inspection/publication, not an agent workaround |
 | `environment`, `provider_failed` | Inspect tool availability/login, launch exit and retained edits |
 | `destination_not_github`, `diverged` | Inspect recorded destination and remote ancestry; never force or redirect publication |
@@ -218,7 +219,13 @@ without force to the recorded GitHub URL with repository hooks disabled.
 Interrupted publication can be retried in `implementing`, `prechecking` or
 `publishing` to reconcile remote results. A blocked task needs human intervention.
 
-For each base-policy name/app, CI uses the newest check run, and it must have succeeded.
+Base-policy `[ci] required` strings and `{ name, app }` select Check Runs;
+`{ name, creator }` selects a commit status with an explicit creator login.
+CI uses the highest-ID matching run or status on the current head; only success
+passes. Status creators compare case-insensitively. Pending or missing statuses
+wait in advance and fail merge preflight. Missing creators fail closed when no
+matching status exists; other creators never hide a matching status. Failed
+statuses enter repair without Check Run reruns.
 Review runs in a fresh detached exact-head checkout with restricted read tools;
 a valid pass marks the PR ready and upserts sanitized findings. Classification
 uses the base's written policy, currently with tool-less Claude; failures and
