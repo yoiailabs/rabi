@@ -75,6 +75,7 @@ pub(crate) struct CheckRun {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct CommitStatus {
+    pub id: u64,
     pub sha: String,
     pub context: String,
     pub state: String,
@@ -450,13 +451,16 @@ impl<'a> Client<'a> {
             .map(|value| {
                 #[derive(Deserialize)]
                 struct RawStatus {
+                    id: u64,
+                    sha: Option<String>,
                     context: String,
                     state: String,
                     creator: Option<User>,
                 }
                 let status: RawStatus = decode(value)?;
                 Ok(CommitStatus {
-                    sha: raw.head.sha.clone(),
+                    id: status.id,
+                    sha: status.sha.unwrap_or_else(|| raw.head.sha.clone()),
                     context: status.context,
                     state: status.state,
                     creator: status.creator.map(|user| user.login),
@@ -749,6 +753,29 @@ impl Snapshot {
             self.inconsistent,
             self.final_head_sha
         );
+    }
+}
+
+impl Snapshot {
+    pub(crate) fn required_status(&self, name: &str, creator: &str) -> Option<&CommitStatus> {
+        let candidates = || {
+            self.statuses.iter().filter(|status| {
+                status.context == name && status.sha.eq_ignore_ascii_case(&self.pr.head_sha)
+            })
+        };
+        candidates()
+            .filter(|status| {
+                status
+                    .creator
+                    .as_deref()
+                    .is_some_and(|login| login.eq_ignore_ascii_case(creator))
+            })
+            .max_by_key(|status| status.id)
+            .or_else(|| {
+                candidates()
+                    .filter(|status| status.creator.is_none())
+                    .max_by_key(|status| status.id)
+            })
     }
 }
 
