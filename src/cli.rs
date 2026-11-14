@@ -1060,6 +1060,19 @@ fn task_advance(args: &[String]) -> Result<i32> {
             report.budget.fix_budget,
             report.budget.fixes_remaining
         );
+        if let Some(sha) = &report.merge_commit_sha {
+            outln!("Merge commit: {sha}");
+        }
+        if let Some(cleanup) = &report.cleanup {
+            outln!(
+                "Workspace cleanup: {} ({})",
+                cleanup.outcome,
+                cleanup.reason
+            );
+        }
+        if let Some(deleted) = report.remote_branch_deleted {
+            outln!("Remote branch deleted: {deleted}");
+        }
     }
     if report.exit_code != 0 {
         crate::output::failure(

@@ -29,6 +29,8 @@ pub(crate) enum BlockReason {
     Budget,
     Internal,
     RecordMismatch,
+    MergePreflight,
+    MergeFailed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -69,7 +71,13 @@ const TRANSITIONS: &[(&str, &[&str])] = &[
     ("ready", &["classifying", "blocked", "abandoned"]),
     (
         "classifying",
-        &["merging", "awaiting_approval", "blocked", "abandoned"],
+        &[
+            "merging",
+            "awaiting_approval",
+            "implementing",
+            "blocked",
+            "abandoned",
+        ],
     ),
     (
         "awaiting_approval",
@@ -952,6 +960,7 @@ mod tests {
             (Publishing, Implementing),
             (Ci, Implementing),
             (Reviewing, Implementing),
+            (Classifying, Implementing),
             (AwaitingApproval, Implementing),
         ];
         for from in states {

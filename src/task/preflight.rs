@@ -66,7 +66,7 @@ pub(super) fn classify_files(
     classify_files_inner(facts, policy, kinds, true)
 }
 
-fn classify_files_inner(
+pub(super) fn classify_files_inner(
     facts: &Snapshot,
     policy: &Policy,
     kinds: Option<&[ChangedEntry]>,
@@ -437,6 +437,33 @@ pub(crate) fn evaluate(
 }
 
 impl Evaluation {
+    pub(super) fn review_pass(&mut self, record: &super::review::Record) {
+        if let Some(item) = self
+            .items
+            .iter_mut()
+            .find(|item| item.id == "review_record")
+        {
+            item.result = Outcome::Pass;
+            item.reason = "Head-bound rabi review record passed".into();
+            item.detail = json!(record);
+        }
+        self.verdict = if self
+            .items
+            .iter()
+            .any(|item| matches!(item.result, Outcome::Fail))
+        {
+            "blocked"
+        } else if self
+            .items
+            .iter()
+            .any(|item| matches!(item.result, Outcome::NotEvaluated))
+        {
+            "incomplete"
+        } else {
+            "ready"
+        };
+    }
+
     pub fn permits_merge(&self, external_review: bool) -> bool {
         self.items.iter().all(|item| match item.result {
             Outcome::Pass => true,

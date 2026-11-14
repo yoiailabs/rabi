@@ -87,7 +87,7 @@ rabi remove task/auth
 | `rabi task abandon` | 未完了のローカルタスクを中止 |
 | `rabi task implement` | Run one implementer in an existing task workspace; record commits and dirty state |
 | `rabi task publish` | Run prechecks, push the task branch and create or reuse a draft PR |
-| `rabi task advance` | Drive implementation, publication, CI and review; stop at classifying |
+| `rabi task advance` | Drive implementation through approval, merge and safe cleanup |
 | `rabi task review` | Review the exact PR head in a detached checkout; mark passing changes ready |
 | `rabi task risk` | ベースコミットのリスクポリシーでコミット済みの変更を分類 |
 | `rabi task classify` | Assess committed diffs using the written policy and record an exact-head verdict |

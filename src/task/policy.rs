@@ -148,10 +148,11 @@ pub(crate) struct Classifier {
 }
 
 #[derive(Debug, Default, Deserialize)]
-#[serde(default, deny_unknown_fields)]
+#[serde(default, deny_unknown_fields, rename_all = "kebab-case")]
 pub(crate) struct Merge {
     pub auto: Vec<Tier>,
     pub method: MergeMethod,
+    pub delete_branch: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, Deserialize)]
@@ -481,6 +482,9 @@ mod merge_tests {
                 true,
             ),
             ("[merge]\nmethod='squash'", true),
+            ("[merge]\ndelete-branch=true", true),
+            ("[merge]\ndelete-branch=false", true),
+            ("[merge]\ndelete-branch='true'", false),
             ("[merge]\nauto=['high']", false),
             ("[merge]\nauto=['unknown']", false),
             ("[merge]\nauto='low'", false),
@@ -498,6 +502,7 @@ mod merge_tests {
         }
         let policy = Policy::default();
         assert!(policy.merge.auto.is_empty());
+        assert!(!policy.merge.delete_branch);
         assert!(policy.approval.approvers.is_empty());
         assert_eq!(policy.merge.method.flag(), "--squash");
     }

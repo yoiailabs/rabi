@@ -109,7 +109,13 @@ These checks limit accidental publication. Shared objects and task records remai
 
 CI job logs are untrusted data. Advance retrieves a bounded tail for failing checks, strips terminal escape sequences and control characters, redacts sensitive environment values and paths, and frames feedback with a random nonce before giving it to the implementer. Log text cannot grant permissions or override the implementer's role restrictions. Prompt framing reduces ambiguity; it does not establish a security boundary against a determined same-user process or malicious provider output. Failed-log retrieval does not turn a failed check into success.
 
-Failure signatures and fix-budget usage are persisted before a fix launch to prevent duplicate automatic launches after interruption. Conflicts return to implementation before waiting for CI. Polling and retries preserve all publication safeguards; the command never approves or merges a PR.
+Failure signatures and fix-budget usage are persisted before a fix launch to prevent duplicate automatic launches after interruption. Conflicts return to implementation before waiting for CI. Polling and retries preserve all publication safeguards. Auto-merge is allowed only for tiers explicitly in the policy auto set and without any built-in or policy floor. An empty auto set, missing/failed/invalid/uncertain classification, or a floor requires a maintainer. Floors are recomputed from fresh GitHub PR files against the base-tip policy; a classifier cannot lower them.
+
+Advance writes only pending `rabi/approval` statuses, once per head, with sanitized reasons. It never creates success approval, even outside `RABI_AGENT=1`. A maintainer must supply the latest successful exact-head status from a configured approver. A changed head voids previous approval; changes requested return nonce-framed untrusted feedback to implementation within the shared fix budget. Approval polling expires after `[factory] approval-timeout` (default 24h), returning waiting rather than blocking.
+
+Every merge reruns the full preflight with a valid head-bound pass review and classification record. Failures block with the preflight reason, without a retry loop. The merge write uses `--match-head-commit` and the configured method. Remote branch deletion is permitted only by `[merge] delete-branch = true` (default false).
+
+After merge, cleanup uses existing remove checks and trusted pre-remove hooks without force permissions. Only the recorded linked task workspace can be removed; dirty, stashed, unpushed, primary, mismatched or unverifiable checkouts are retained with reasons. Checks run again after hooks. Ignored files follow ordinary remove behavior. Local branches, task history, review and classification records are retained. Cleanup failure does not reverse a verified merge.
 
 ## Task approval and merge
 
@@ -123,7 +129,7 @@ Local Git state is trusted input, like your credentials. Policy and file kinds a
 
 Approval binds to the exact commit, not to a PR or base. The same commit in another same-repository PR into another base carries the same approval status; that merge must still satisfy its target’s policy and preflight.
 
-The write uses `--match-head-commit` to guard against head movement after collection. It does not use `--admin`, `--auto` or `--delete-branch`. Facts are reread even when gh fails; a nonzero result does not prove the remote write had no effect. No automatic write retry occurs. Task status and merge dry-run remain read-only.
+The write uses `--match-head-commit` to guard against head movement after collection. It does not use `--admin`, `--auto` or `--delete-branch`. Advance may separately delete the remote branch only with `[merge] delete-branch = true`, after verifying its tip still matches the merged head; standalone merge retains branches. Facts are reread even when gh fails; a nonzero result does not prove the remote write had no effect. No automatic write retry occurs. Task status and merge dry-run remain read-only.
 
 ## Task agent launch boundary
 

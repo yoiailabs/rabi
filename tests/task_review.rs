@@ -720,9 +720,9 @@ fn review_revise_honors_budget_signatures_and_repeated_fingerprints() {
 }
 
 #[test]
-fn untrusted_pr_body_is_inside_a_fresh_nonce_frame_and_wait_reaches_classifying() {
+fn untrusted_pr_body_is_inside_a_fresh_nonce_frame_and_step_reaches_classifying() {
     let repo = Repo::new(&["test"], "", None);
-    let result = decode(repo.advance().arg("--wait").output().unwrap(), 0);
+    let result = decode(repo.advance().output().unwrap(), 0);
     assert_eq!(result["data"]["state"]["name"], "classifying");
     let prompt = fs::read_to_string(repo.root.join("prompt.1")).unwrap();
     let start = prompt.find("<rabi-review-data-").unwrap();
@@ -802,8 +802,12 @@ fn findings_comment_is_sanitized_and_bounded() {
     let repo = Repo::new(&["test"], "", None);
     let body = format!(
         "{}\n\u{1b}[31mDiagnostic fixture-secret {}\u{1b}[0m",
-        "detail ".repeat(900),
+        "detail ".repeat(500),
         repo.workspace.display()
+    );
+    assert!(
+        body.len() <= 4096,
+        "Each finding must be valid before comment bounding"
     );
     repo.answer(
         "pass",

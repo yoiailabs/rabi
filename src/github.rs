@@ -521,18 +521,43 @@ pub fn current_repo_name(cwd: &Path) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
-/// The only status write used by task approve; callers cannot select an endpoint or state.
+/// Approval success remains maintainer-only; advance can request pending only.
 pub(crate) fn post_approval(
     directory: &Path,
     repo: &RepoIdentity,
     sha: &str,
     description: &str,
 ) -> Result<()> {
+    if std::env::var_os("RABI_AGENT").is_some_and(|value| !value.is_empty()) {
+        return Err(Error::validation(
+            "Approvals must come from outside rabi-launched agents (RABI_AGENT is set)",
+        ));
+    }
+    post_approval_status(directory, repo, sha, description, "success")
+}
+
+pub(crate) fn request_approval(
+    directory: &Path,
+    repo: &RepoIdentity,
+    sha: &str,
+    description: &str,
+) -> Result<()> {
+    post_approval_status(directory, repo, sha, description, "pending")
+}
+
+fn post_approval_status(
+    directory: &Path,
+    repo: &RepoIdentity,
+    sha: &str,
+    description: &str,
+    state: &str,
+) -> Result<()> {
     if sha.len() != 40 || !sha.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err(Error::validation("Approval requires a full 40-hex SHA"));
     }
     let path = format!("repos/{}/{}/statuses/{sha}", repo.owner, repo.name);
     let description = format!("description={description}");
+    let state = format!("state={state}");
     let response = process::raw(
         "gh",
         &[
@@ -543,7 +568,7 @@ pub(crate) fn post_approval(
             "--method",
             "POST",
             "-f",
-            "state=success",
+            &state,
             "-f",
             "context=rabi/approval",
             "-f",

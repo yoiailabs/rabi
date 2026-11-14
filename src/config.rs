@@ -44,12 +44,14 @@ pub struct Review {
 pub struct Factory {
     pub fix_budget: u32,
     pub ci_timeout: String,
+    pub approval_timeout: String,
 }
 impl Default for Factory {
     fn default() -> Self {
         Self {
             fix_budget: 3,
             ci_timeout: "60m".into(),
+            approval_timeout: "24h".into(),
         }
     }
 }
@@ -119,6 +121,11 @@ pub(crate) fn parse_config(content: &str) -> Result<RabiConfig> {
     crate::run::timeout(&config.factory.ci_timeout).map_err(|_| {
         Error::msg("Invalid factory.ci-timeout: expected a positive duration with s, m or h suffix")
     })?;
+    crate::run::timeout(&config.factory.approval_timeout).map_err(|_| {
+        Error::msg(
+            "Invalid factory.approval-timeout: expected a positive duration with s, m or h suffix",
+        )
+    })?;
     if config
         .review
         .provider
@@ -176,13 +183,20 @@ mod tests {
         let config = parse_config("").unwrap();
         assert_eq!(config.factory.fix_budget, 3);
         assert_eq!(config.factory.ci_timeout, "60m");
-        let config = parse_config("[factory]\nfix-budget=0\nci-timeout='2h'").unwrap();
+        assert_eq!(config.factory.approval_timeout, "24h");
+        let config =
+            parse_config("[factory]\nfix-budget=0\nci-timeout='2h'\napproval-timeout='1s'")
+                .unwrap();
         assert_eq!(config.factory.fix_budget, 0);
+        assert_eq!(config.factory.approval_timeout, "1s");
         for declaration in [
             "fix-budget=-1",
             "fix-budget='3'",
             "ci-timeout='0m'",
             "ci-timeout=60",
+            "approval-timeout='0s'",
+            "approval-timeout='24'",
+            "approval-timeout=24",
             "extra=true",
         ] {
             assert!(
