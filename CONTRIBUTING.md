@@ -75,6 +75,22 @@ cargo test --locked
 cargo test --locked --test cli
 ```
 
+Integration-test waits for eventual process completion or fixture readiness use
+`tests/common/wait.rs`: the hang guard defaults to 120 seconds. Set
+`RABI_TEST_HANG_GUARD_SECS` to a positive integer to adjust it for a slow or
+oversubscribed machine, for example:
+
+```bash
+RABI_TEST_HANG_GUARD_SECS=240 cargo test --locked
+```
+
+These guards diagnose hangs; they are not performance assertions. Tests of
+cancellation and shutdown should assert observed events, signal ordering, and
+exit status. Keep any necessary wall-clock behavior bounds generous and explain
+what they prove. While polling children, capture output with the shared
+`OutputCapture` helper (temporary files) or drain both pipes concurrently; waiting
+for exit before reading pipes can deadlock when the output buffer fills.
+
 ### Writing Tests
 
 - Add tests for all new features

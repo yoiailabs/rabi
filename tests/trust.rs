@@ -1,5 +1,7 @@
 #[path = "common/git.rs"]
 mod test_git;
+#[path = "common/wait.rs"]
+mod test_wait;
 use std::fs;
 use std::path::PathBuf;
 use std::process::Command;
@@ -568,8 +570,10 @@ os.close(slave)
 answer = os.environ.get("RABI_TEST_ANSWER", "").encode()
 buf = b""
 sent = False
-deadline = time.time() + 15
-while time.time() < deadline:
+guard = float(os.environ["RABI_TEST_HANG_GUARD_SECS"])
+deadline = time.monotonic() + guard
+while True:
+    expired = time.monotonic() >= deadline
     if proc.poll() is not None:
         while select.select([master], [], [], 0)[0]:
             try:
@@ -579,6 +583,8 @@ while time.time() < deadline:
             if not chunk:
                 break
             buf += chunk
+        break
+    if expired:
         break
     ready, _, _ = select.select([master], [], [], 0.2)
     if not ready:
@@ -593,12 +599,22 @@ while time.time() < deadline:
     if answer and not sent and b"Trust this project and run its hooks? [y/N]" in buf:
         os.write(master, answer)
         sent = True
-code = proc.wait(timeout=5)
+try:
+    # After PTY EOF no output can fill its buffer; allow the child to be reaped.
+    code = proc.wait(timeout=max(0, deadline - time.monotonic()))
+except subprocess.TimeoutExpired:
+    proc.kill()
+    proc.wait()
+    sys.stdout.buffer.write(buf)
+    raise AssertionError("PTY command did not exit before the hang guard")
 sys.stdout.buffer.write(buf)
 raise SystemExit(code if code is not None else 1)
 "#;
     let mut command = repo.command("python3", &[]);
-    command.arg("-c").arg(script);
+    command.arg("-c").arg(script).env(
+        "RABI_TEST_HANG_GUARD_SECS",
+        test_wait::hang_guard_duration().as_secs().to_string(),
+    );
     command.arg(env!("CARGO_BIN_EXE_rabi"));
     command.args(args);
     if let Some(answer) = answer {

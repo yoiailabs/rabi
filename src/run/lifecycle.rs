@@ -498,8 +498,28 @@ fn code(status: ExitStatus) -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_wait;
     use std::cell::Cell;
     use std::rc::Rc;
+
+    // Removing the root releases any surviving fixture even when a test panics.
+    // Keep it alive until after all process-death assertions have passed.
+    struct FixtureDir(PathBuf);
+
+    impl FixtureDir {
+        fn new() -> Self {
+            let root =
+                std::env::temp_dir().join(format!("rabi-lifecycle-{}", uuid::Uuid::new_v4()));
+            fs::create_dir(&root).unwrap();
+            Self(root)
+        }
+    }
+
+    impl Drop for FixtureDir {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
 
     #[cfg(target_os = "linux")]
     #[test]
@@ -609,9 +629,9 @@ mod tests {
                 let mut group = Group::new(child, provider.stop_policy());
                 assert!(!group.reaped);
                 if poll {
-                    let start = Instant::now();
+                    let deadline = test_wait::hang_guard();
                     while group.try_wait().unwrap().is_none() {
-                        assert!(start.elapsed() < Duration::from_secs(5));
+                        assert!(Instant::now() < deadline);
                         std::thread::sleep(Duration::from_millis(10));
                     }
                 } else {
@@ -636,24 +656,35 @@ mod tests {
     #[test]
     fn group_members_are_killed_after_the_leader_exits_and_is_reaped() {
         for provider in [Provider::Codex, Provider::Cursor] {
-            let path =
-                std::env::temp_dir().join(format!("rabi-group-survivor-{}", uuid::Uuid::new_v4()));
+            let root = FixtureDir::new();
+            let path = root.0.join("survivor");
             // The leader leaves a same-group child behind and exits normally.
+            // The survivor cannot finish naturally before the death assertion.
             let child = std::process::Command::new("sh")
-                .arg("-c")
-                .arg(format!(
-                    "sh -c 'trap \"\" INT TERM; sleep 30' & echo $! > {}; exit 0",
-                    path.display()
-                ))
+                .args([
+                    "-c",
+                    r#"python3 -c '
+import os, pathlib, signal, sys, time
+root = pathlib.Path(sys.argv[1])
+signal.signal(signal.SIGINT, signal.SIG_IGN)
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+(root / "survivor").write_text(str(os.getpid()))
+while root.exists() and not (root / "release").exists():
+    time.sleep(.01)
+' "$1" &
+exit 0"#,
+                    "sh",
+                ])
+                .arg(&root.0)
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
                 .process_group(0)
                 .spawn()
                 .unwrap();
             let mut group = Group::new(child, provider.stop_policy());
-            let start = Instant::now();
+            let deadline = test_wait::hang_guard();
             while group.try_wait().unwrap().is_none() {
-                assert!(start.elapsed() < Duration::from_secs(5));
+                assert!(Instant::now() < deadline);
                 std::thread::sleep(Duration::from_millis(10));
             }
             let pid: i32 = loop {
@@ -662,15 +693,15 @@ mod tests {
                         break pid;
                     }
                 }
-                assert!(start.elapsed() < Duration::from_secs(5));
+                assert!(Instant::now() < deadline);
                 std::thread::sleep(Duration::from_millis(10));
             };
             assert!(running(pid), "survivor should still run");
             drop(group);
-            let start = Instant::now();
+            let deadline = test_wait::hang_guard();
             while running(pid) {
                 assert!(
-                    start.elapsed() < Duration::from_secs(5),
+                    Instant::now() < deadline,
                     "{provider:?} left a group member running after leader reap"
                 );
                 std::thread::sleep(Duration::from_millis(10));
@@ -681,22 +712,24 @@ mod tests {
 
     #[test]
     fn cursor_stop_sends_int_then_term_before_kill() {
-        let path =
-            std::env::temp_dir().join(format!("rabi-cursor-signals-{}", uuid::Uuid::new_v4()));
+        let root = FixtureDir::new();
+        let path = root.0.join("signals");
         let child = std::process::Command::new("sh")
             .args([
                 "-c",
-                "trap 'printf INT' INT; trap 'printf TERM' TERM; printf ready; while :; do :; done",
+                "trap 'printf INT' INT; trap 'printf TERM' TERM; printf ready; while [ -d \"$1\" ]; do :; done",
+                "sh",
             ])
+            .arg(&root.0)
             .stdout(File::create(&path).unwrap())
             .stderr(std::process::Stdio::null())
             .process_group(0)
             .spawn()
             .unwrap();
         let mut group = Group::new(child, Provider::Cursor.stop_policy());
-        let start = Instant::now();
+        let deadline = test_wait::hang_guard();
         while fs::read_to_string(&path).unwrap().is_empty() {
-            assert!(start.elapsed() < Duration::from_secs(5));
+            assert!(Instant::now() < deadline);
             std::thread::sleep(Duration::from_millis(10));
         }
         group.stop();
@@ -708,35 +741,47 @@ mod tests {
     #[test]
     fn session_callback_can_request_a_controlled_error_stop() {
         for stop in [false, true] {
-            let path = std::env::temp_dir().join(format!("rabi-callback-{}", uuid::Uuid::new_v4()));
-            // `sh` runs a TERM trap only after a foreground child exits, and a
-            // TERM that lands between fork and exec leaves `sleep` running, so
-            // the stop escalates to KILL (137). `wait` is interrupted by the
-            // trap at once, keeping the observed TERM status deterministic.
-            let pause = if stop { "60" } else { ".05" };
+            let root = FixtureDir::new();
+            let path = root.0.join("callback");
+            // `wait` is interrupted by the TERM trap at once, keeping the
+            // observed TERM status deterministic. The trap must not wait for
+            // the child: TERM can reach it between fork and exec, where the
+            // shell copy absorbs it. Process-group cleanup kills a survivor,
+            // and dropping the fixture directory releases it after a panic.
             let child = std::process::Command::new("sh")
                 .args([
                     "-c",
-                    &format!(
-                        "trap 'kill $p 2>/dev/null; exit 42' TERM; printf ready; sleep {pause} & p=$!; wait $p; printf completed; exit 42"
-                    ),
+                    r#"trap 'kill $p 2>/dev/null; exit 42' TERM
+python3 -c '
+import pathlib, sys, time
+root = pathlib.Path(sys.argv[1])
+while root.exists() and not (root / "release").exists():
+    time.sleep(.01)
+' "$1" &
+p=$!
+printf ready
+wait "$p"
+printf completed
+exit 42"#,
+                    "sh",
                 ])
+                .arg(&root.0)
                 .stdout(File::create(&path).unwrap())
                 .stderr(std::process::Stdio::null())
                 .process_group(0)
                 .spawn()
                 .unwrap();
             let group = Group::new(child, Provider::Codex.stop_policy());
-            let start = Instant::now();
+            let deadline = test_wait::hang_guard();
             while fs::read_to_string(&path).unwrap().is_empty() {
-                assert!(start.elapsed() < Duration::from_secs(5), "child not ready");
+                assert!(Instant::now() < deadline, "child not ready");
                 std::thread::sleep(Duration::from_millis(10));
             }
             let event = b"{\"type\":\"thread.started\",\"thread_id\":\"observed-thread\"}\n";
             let mut calls = 0;
             let result = monitor(
                 group,
-                Duration::from_secs(5),
+                test_wait::hang_guard_duration(),
                 Some(crate::provider::SessionIdReader::new(
                     Provider::Codex,
                     std::io::Cursor::new(event),
@@ -744,6 +789,9 @@ mod tests {
                 |id| {
                     calls += 1;
                     assert_eq!(id.session_id.as_deref(), Some("observed-thread"));
+                    if !stop {
+                        fs::write(root.0.join("release"), "").unwrap();
+                    }
                     Ok(stop)
                 },
             )
@@ -771,8 +819,13 @@ mod tests {
                 Err(std::io::Error::other("injected Claude read failure"))
             }
         }
-        let child = std::process::Command::new("sh")
-            .args(["-c", "sleep 30"])
+        let root = FixtureDir::new();
+        let child = std::process::Command::new("python3")
+            .args([
+                "-c",
+                "import pathlib, sys, time\nroot = pathlib.Path(sys.argv[1])\nwhile root.exists(): time.sleep(.01)",
+            ])
+            .arg(&root.0)
             .process_group(0)
             .spawn()
             .unwrap();
@@ -781,7 +834,7 @@ mod tests {
         // grace durations, whose Claude values are covered by provider tests.
         let result = monitor(
             Group::new(child, Provider::Codex.stop_policy()),
-            Duration::from_secs(5),
+            test_wait::hang_guard_duration(),
             Some(crate::provider::SessionIdReader::new(
                 Provider::Claude,
                 FailedRead,
@@ -823,7 +876,7 @@ mod tests {
             let reads = Rc::new(Cell::new(0));
             let result = monitor(
                 Group::new(child, Provider::Codex.stop_policy()),
-                Duration::from_secs(5),
+                test_wait::hang_guard_duration(),
                 Some(crate::provider::SessionIdReader::new(
                     Provider::Codex,
                     FailedRead(reads.clone()),

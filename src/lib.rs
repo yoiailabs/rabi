@@ -69,6 +69,10 @@ mod test_git;
 pub(crate) mod test_support;
 
 #[cfg(test)]
+#[path = "../tests/common/wait.rs"]
+pub(crate) mod test_wait;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

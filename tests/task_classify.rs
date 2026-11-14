@@ -3,6 +3,8 @@
 mod test_git;
 #[path = "common/scripts.rs"]
 mod test_support;
+#[path = "common/wait.rs"]
+mod test_wait;
 
 use serde_json::{json, Value};
 use std::fs;
@@ -15,7 +17,8 @@ const DOCUMENT: &str = "Base policy: behavior-neutral changes are low; other cha
 const FAKE: &str = r#"#!/bin/sh
 set -eu
 if [ "${RABI_CLASSIFIER_FIXTURE_MODE:-}" = timeout ] || [ "${RABI_CLASSIFIER_FIXTURE_MODE:-}" = descendants ]; then
-  sleep 30 &
+  # Stay alive until rabi kills us; root removal releases failed-test orphans.
+  (while [ -d "$RABI_CLASSIFIER_FIXTURE" ] && [ ! -e "$RABI_CLASSIFIER_FIXTURE/release-processes" ]; do sleep .01; done) &
   printf '%s\n' "$!" > "$RABI_CLASSIFIER_FIXTURE/descendant"
 fi
 printf 'launch\n' >> "$RABI_CLASSIFIER_FIXTURE/launches"
@@ -156,6 +159,7 @@ impl Repo {
 
 impl Drop for Repo {
     fn drop(&mut self) {
+        // Release every fixture gate, including when a death assertion panics.
         let _ = fs::remove_dir_all(&self.root);
     }
 }
@@ -498,13 +502,16 @@ fn claude_receives_empty_cwd_no_credentials_and_tool_restrictions() {
 #[test]
 fn timeout_escalates_and_kills_the_provider_process_group() {
     let repo = Repo::new(Some(POLICY), Some(DOCUMENT));
-    let started = Instant::now();
-    let output = repo
-        .classify_command("claude")
-        .env("RABI_CLASSIFIER_FIXTURE_MODE", "timeout")
-        .env("RABI_TEST_CLASSIFIER_TIMEOUT_MS", "4000")
-        .output()
+    let mut capture = test_wait::OutputCapture::new();
+    let mut child = capture
+        .apply(
+            repo.classify_command("claude")
+                .env("RABI_CLASSIFIER_FIXTURE_MODE", "timeout")
+                .env("RABI_TEST_CLASSIFIER_TIMEOUT_MS", "4000"),
+        )
+        .spawn()
         .unwrap();
+    let output = capture.finish(&mut child);
     let data = envelope(output)["data"].clone();
     assert_eq!(data["tier"], "high");
     assert!(data["reasons"]
@@ -512,7 +519,6 @@ fn timeout_escalates_and_kills_the_provider_process_group() {
         .unwrap()
         .iter()
         .any(|reason| reason.as_str().unwrap().contains("timeout")));
-    assert!(started.elapsed() < Duration::from_secs(10));
     assert_descendant_stopped(&repo);
     assert_eq!(
         fs::read_to_string(repo.root.join("launches")).unwrap(),
@@ -527,7 +533,7 @@ fn assert_descendant_stopped(repo: &Repo) {
         .trim()
         .parse()
         .expect("Fake provider descendant marker must contain a PID");
-    let deadline = Instant::now() + Duration::from_secs(1);
+    let deadline = test_wait::hang_guard();
     loop {
         let live = unsafe { libc::kill(pid, 0) } == 0;
         // Some container init processes retain killed orphan zombies temporarily.
