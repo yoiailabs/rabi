@@ -401,7 +401,14 @@ fn remote_tracking_branch_is_refused_before_the_task_record() {
         "{message}"
     );
     assert!(
-        !message.contains("was recorded") && !message.contains("Recover with"),
+        !message.contains("was recorded")
+            && !message.contains("Recover with")
+            && !message.contains("rabi create --branch"),
+        "{message}"
+    );
+    assert!(
+        message.contains("Choose another --branch")
+            || message.contains("delete the stale remote-tracking ref"),
         "{message}"
     );
     assert_eq!(

@@ -425,7 +425,27 @@ impl Store {
                 "Task branch already exists or is checked out in a checkout",
             ));
         }
-        tracking::reject_remote_create(&self.root, branch)?;
+        if let Err(error) = tracking::reject_remote_create(&self.root, branch) {
+            return Err(match error {
+                Error::Status {
+                    code: "exists_remote",
+                    message,
+                } => {
+                    let detail = message
+                        .split(". Run ")
+                        .next()
+                        .unwrap_or(message.as_str())
+                        .trim_end_matches('.');
+                    Error::Status {
+                        code: "exists_remote",
+                        message: format!(
+                            "{detail}. Choose another --branch, or delete the stale remote-tracking ref."
+                        ),
+                    }
+                }
+                other => other,
+            });
+        }
         Ok(())
     }
 

@@ -21,6 +21,8 @@ fn task_new_guidance_creates_workspace_after_record_and_keeps_recovery() {
         "rabi create <branch> --base <base>",
         "task implement",
         "task advance explicitly",
+        "exists_remote",
+        "remote-tracking",
     ] {
         assert!(notes.contains(text), "{text}");
     }
@@ -35,6 +37,12 @@ fn task_new_guidance_creates_workspace_after_record_and_keeps_recovery() {
         assert!(document.contains("rabi create <branch> --base <base>"));
         assert!(!document.contains("rabi create task/docs --base main --no-setup"));
     }
+    let commands = include_str!("../docs/commands.md");
+    assert!(!commands.contains("create its checkout separately"));
+    assert!(commands.contains("exists_remote"));
+    let exits = include_str!("../docs/exit-codes.md");
+    assert!(exits.contains("exists_remote"));
+    assert!(exits.contains("remote-tracking"));
     assert!(include_str!("../docs/json.md").contains("Linked checkout path bound by `task new`"));
 }
 
