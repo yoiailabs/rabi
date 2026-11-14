@@ -9,6 +9,7 @@ mod diff;
 pub(crate) mod implement;
 pub(crate) mod intake;
 mod land;
+pub(crate) mod learning;
 mod policy;
 mod preflight;
 pub(crate) mod publish;

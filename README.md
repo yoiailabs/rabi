@@ -68,6 +68,8 @@ Exit 10 means waiting for CI or maintainer approval; exit 4 means blocked/refuse
 
 `task implement` also exits 4 with `stopReason: "metadata_changed"` if its post-launch Git metadata recheck fails. Inspect and repair Git registration before retrying; see [implementation outcomes](docs/json.md#local-task-store).
 
+Use `rabi task advance --all --wait --json` to advance active tasks sequentially until each waits, blocks or finishes; failures retain per-task results and later tasks continue. New tasks are reported as non-failing skips; start them with `task implement` first. Blocked and terminal tasks are skipped. `rabi task report --since 7d --json` summarizes local outcomes, retries, waits and repeated findings without writing. `rabi task events --since 7d --json` exports event JSON lines. See [reporting and batch behavior](docs/commands.md#task-report-and-events).
+
 ## Approval
 
 Only policy-listed low/medium tiers without a floor may merge without approval; the default auto set is empty. High, floors, and missing/failed/uncertain classification require a maintainer. Review output is never approval. Automation never runs `rabi task approve`, unsets `RABI_AGENT` to bypass it, or posts a success `rabi/approval` status.
@@ -114,7 +116,7 @@ Use `rabi help` for syntax or `rabi help --json` for the full command/flag contr
 
 | Area | Commands |
 |---|---|
-| Task records | `rabi task`, `rabi task new`, `rabi task intake`, `rabi task list`, `rabi task show`, `rabi task abandon` |
+| Task records | `rabi task`, `rabi task new`, `rabi task intake`, `rabi task list`, `rabi task show`, `rabi task report`, `rabi task events`, `rabi task abandon` |
 | Factory steps | `rabi task implement`, `rabi task advance`, `rabi task publish`, `rabi task review` |
 | Gates | `rabi task risk`, `rabi task classify`, `rabi task status`, `rabi task approve`, `rabi task merge` |
 | Workspaces | `rabi create`, `rabi list`, `rabi show`, `rabi path`, `rabi set`, `rabi exec` |

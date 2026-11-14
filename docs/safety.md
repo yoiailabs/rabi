@@ -117,6 +117,14 @@ Every advance merge reruns the full preflight with the earned pass bound by its 
 
 After merge, cleanup uses existing remove checks and trusted pre-remove hooks without force permissions. Only the recorded linked task workspace can be removed; dirty, stashed, unpushed, primary, mismatched or unverifiable checkouts are retained with reasons. Checks run again after hooks. Ignored files follow ordinary remove behavior. Local branches, task history, review and classification records are retained. Cleanup failure does not reverse a verified merge.
 
+## Task reporting
+
+`task report` and `task events` read only the current repository's local task records/events and branch existence. They do not load execution configuration, require trust, acquire locks, create files, launch providers, fetch or call GitHub. They do not repair history or authorize any lifecycle action. Append-before-record replacement means concurrent readers can see a newer event than the record; reports are observations, not transactional snapshots.
+
+Report examples are bounded and passed through the existing diagnostic redactor and terminal-safe display rules. Review fingerprints use normalized body hashes; historical missing evidence remains unknown. Redaction cannot recognize every secret. Event export retains stored event fields, including optional launch diagnostics and user-supplied abandonment reasons; inspect it before sharing. JSON escaping makes event strings data, not terminal instructions.
+
+Batch `task advance --all` uses the same per-task locks, trust, credential boundary, publication checks and merge gates as single advance, and skips blocked/terminal tasks. It anchors execution and cleanup hook selection to the primary checkout, allowing later tasks to proceed if the invoking linked checkout is removed. A failed task does not prevent later tasks from being attempted; cancellation stops further launches. `--all --wait` stops each task at waiting, so one pending CI or approval does not occupy the entire batch. Merged cleanup retries require single-task selection.
+
 ## Task approval and merge
 
 `rabi/approval` means a process holding a GitHub token with status write for this repository ran `rabi task approve`, or called the API, for this exact commit. It does not prove a human looked. Any process running as your user, including agents rabi launches, can produce it. It prevents skipped steps. It does not stop a compromised agent.

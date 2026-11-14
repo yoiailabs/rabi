@@ -65,7 +65,7 @@ Inspect `data` even when `ok:false`; waiting, blocked and partial results retain
 
 ## Local task store
 
-The store commands below manage local bookkeeping. They do not launch agents, create branches or workspaces, or push. Local text creation, list, show and abandon do not call GitHub; `new --issue` and `intake` perform the read-only checks described below. Saved task state is not GitHub evidence: `task status` collects fresh facts, while merge preflight can use the earned review pass bound to a task's `review_passed` event and record digest. Neither a stored state nor a bare pass record authorizes merge.
+The store commands below manage local bookkeeping. They do not launch agents, create branches or workspaces, or push. Local text creation, list, show, report, events and abandon do not call GitHub; `new --issue` and `intake` perform the read-only checks described below. Saved task state is not GitHub evidence: `task status` collects fresh facts, while merge preflight can use the earned review pass bound to a task's `review_passed` event and record digest. Neither a stored state nor a bare pass record authorizes merge.
 
 | Command | Behavior |
 |---|---|
@@ -73,9 +73,11 @@ The store commands below manage local bookkeeping. They do not launch agents, cr
 | `rabi task intake --label L [--limit N] [--dry-run] [-R REPO] [--json]` | Import permitted open labeled issues without launching agents |
 | `rabi task list [-R REPO] [--all] [--json]` | List non-terminal tasks; `--all` also includes `merged` and `abandoned` |
 | `rabi task show ID [-R REPO] [--json]` | Show the record and events |
+| `rabi task report [--since DUR\|DATE] [-R REPO] [--json]` | Aggregate task outcomes, retries, waits and repeated findings without writing |
+| `rabi task events [SEL] [--since DUR\|DATE] [-R REPO] [--json]` | Read one task or all task histories; JSON success uses JSON lines |
 | `rabi task abandon ID [--reason TEXT] [-R REPO] [--json]` | Transition to `abandoned`; reason defaults to `abandoned` |
 
-ID accepts the full `task_<uuid>` ID or a unique prefix of at least six characters, including the `task_` prefix. Ambiguous or short prefixes exit 2; missing IDs exit 3. Global `-R/--repo` uses ordinary repository selection. All store commands support `--output text|json` and the schema 2 JSON envelope.
+ID accepts the full `task_<uuid>` ID or a unique prefix of at least six characters, including the `task_` prefix. Ambiguous or short prefixes exit 2; missing IDs exit 3. Global `-R/--repo` uses ordinary repository selection. Store commands support `--output text|json`; events uses JSON lines on success, and the others use the schema 2 JSON envelope.
 
 A new task's branch defaults to an ASCII slug of its intent with an eight-character UUID suffix. Explicit names must be valid branch names. Creation refuses a local branch, a branch used by any worktree (including an unborn branch), or a branch reserved by another non-terminal task, with exit 2 and no task written. The default base is `origin/<default branch>` and must resolve locally; `--base` can select another local commit-ish. The push remote URL is captured once using `branch.<name>.pushRemote`, `remote.pushDefault`, `branch.<name>.remote`, then `origin`, with Git's push URL rewrites applied. A missing push URL fails creation. URL userinfo and URL query/fragment data are stripped before storage; command errors never include the remote URL.
 
@@ -116,6 +118,21 @@ Issue titles and bodies remain untrusted data despite permission checks. Termina
 rabi task new --issue 42 --json
 rabi task intake --label ready --limit 20 --dry-run --json
 rabi task intake --label ready --limit 20 --json
+```
+
+## Task report and events
+
+`rabi task report [--since DUR|DATE] [--json]` reads all task records and append-only events in the current repository, including terminal tasks. It reports current/final state counts, historical and current blocked reasons, fix relaunches per task and by cause (`precheck`, `ci`, `conflict`, `review`, `changes-requested`, or `unknown`), review rounds, classification tiers versus auto-merged/awaited-approval outcomes, completed approval/CI waits and time to merge. The top 20 repeated review findings use path plus a normalized body hash, with one sanitized example of at most 240 characters each. Text is compact; [report JSON](json.md#task-report) defines the versioned fields and counting rules.
+
+`--since` accepts a positive integer plus `s`, `m`, `h`, `d` or `w`, a `YYYY-MM-DD` date at midnight UTC, or an RFC3339 timestamp. The cutoff is inclusive. Report cohorts include tasks created or active since it; event counters count qualifying events, and completed duration samples use their full historical start when their ending event qualifies. Open waits are excluded. Current state counts describe the selected tasks now. Historical tiers without recorded evidence are `unknown`.
+
+`rabi task events [SEL] [--since DUR|DATE] [--json]` reads all events by default, or the selected full task ID/unique prefix. Output order is sorted task ID, then stored append order. Filtering uses the same inclusive cutoff. JSON success is one compact `{taskId, ...event}` object per line, with no envelope; empty results print nothing. Errors use the ordinary schema 2 envelope before any event rows. `task show ID --json` still returns the complete history in one envelope; it has no `--events` flag.
+
+Both commands are read-only: no trust, providers, GitHub calls, configuration loading, file creation or locks. Readers can observe events before the corresponding atomic record update and do not provide a transaction across tasks. Corrupt records/events fail the command with exit 1 and the task ID. Invalid arguments/cutoffs use 2; missing selectors use 3. See [safety](safety.md#task-reporting).
+
+```sh
+rabi task report --since 7d --json
+rabi task events --since 7d --json
 ```
 
 ## Task implement
@@ -182,6 +199,18 @@ Merged cleanup uses the existing `rabi remove` checks and trusted pre-remove hoo
 ```sh
 rabi task advance task_<uuid> --json
 rabi task advance --wait --ci-timeout 30m
+```
+
+### Advance every active task
+
+`rabi task advance --all [--wait] [--ci-timeout DUR] [--json]` snapshots sorted task IDs in the current repository and advances each implementing-or-later, non-terminal, non-blocked task sequentially. SEL conflicts with `--all`. Batch execution is anchored to the primary checkout, which supplies cleanup hooks, so removing the invoking linked checkout cannot invalidate later targets. Derived `blocked(record_mismatch)` tasks are also skipped; corrupt task records produce per-task errors. Each task holds the same advance lock as a single advance, and state is rechecked under that lock. Failures retain their results and do not stop later tasks. Interruption stops further launches.
+
+Without `--wait`, each selected task takes one ordinary step. With `--all --wait`, each task continues until its first waiting, blocked, terminal or failing result, then rabi proceeds to the next task. It does not poll waiting tasks. Single-task `--wait` retains its CI/approval polling behavior. `new` tasks still need `task implement` first; batches report them with reason `skipped_new` and exit 0, without launching a provider or changing task records/events. Explicit single-task advance still refuses `new` tasks with exit 4. Terminal tasks are skipped, so retry retained merged cleanup with a single-task advance.
+
+Batch JSON retains all per-task reports and errors, including non-failing `skipped_new` reports; terminal/blocked tasks are omitted. Empty or skipped-only batches exit 0. The aggregate exit uses severity precedence `130 > 124 > 6 > 1 > 5 > 4 > 3 > 2 > 10 > 0`, with other operational failures ranked alongside 1 and the first outcome winning ties; it is not the numeric maximum. See [batch JSON](json.md#task-batch-advance) and [exit codes](exit-codes.md).
+
+```sh
+rabi task advance --all --wait --json
 ```
 
 ## Task review

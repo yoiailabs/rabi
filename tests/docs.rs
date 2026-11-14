@@ -460,3 +460,50 @@ fn repository_selection_guidance_has_no_registry_or_cross_repository_help() {
         assert!(breaking.contains(removal), "{removal}");
     }
 }
+
+#[test]
+fn task_reporting_and_batch_guidance_matches_the_help_contract() {
+    let help: serde_json::Value = serde_json::from_str(include_str!("../help-data.json")).unwrap();
+    for command in ["task report", "task events"] {
+        assert!(help["helps"][command]["usage"]
+            .as_str()
+            .unwrap()
+            .contains("--since"));
+        for document in [
+            README,
+            README_JA,
+            include_str!("../docs/commands.md"),
+            include_str!("../skills/rabi/SKILL.md"),
+        ] {
+            assert!(document.contains(&format!("rabi {command}")));
+        }
+    }
+    assert!(help["helps"]["task advance"]["usage"]
+        .as_str()
+        .unwrap()
+        .contains("--all"));
+    for document in [
+        include_str!("../docs/commands.md"),
+        include_str!("../docs/exit-codes.md"),
+        include_str!("../docs/json.md"),
+        include_str!("../skills/rabi/SKILL.md"),
+    ] {
+        assert!(document.contains("130 > 124 > 6 > 1 > 5 > 4 > 3 > 2 > 10 > 0"));
+    }
+    assert!(include_str!("../docs/configuration.md").contains("--all --wait"));
+    assert!(include_str!("../docs/safety.md").contains("## Task reporting"));
+    assert!(include_str!("../docs/json.md").contains("reportVersion"));
+    for document in [
+        include_str!("../help-data.json"),
+        include_str!("../docs/commands.md"),
+        include_str!("../docs/exit-codes.md"),
+        include_str!("../docs/json.md"),
+        include_str!("../skills/rabi/SKILL.md"),
+        include_str!("../CHANGELOG.md"),
+    ] {
+        assert!(document.contains("skipped_new"));
+    }
+    assert!(include_str!("../docs/json.md").contains("precheck.passed: false"));
+    assert!(include_str!("../docs/json.md").contains("no recognized feedback"));
+    assert!(include_str!("../CHANGELOG.md").contains("## Unreleased"));
+}

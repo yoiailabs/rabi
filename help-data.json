@@ -1886,7 +1886,7 @@
     "task": {
       "name": "task",
       "description": "Manage tasks and external issue intake, inspect PR facts and gate merges",
-      "usage": "rabi task new|intake|list|show|abandon|implement|publish|advance|review|risk|classify|status|approve|merge [arguments] [options]",
+      "usage": "rabi task new|intake|list|show|report|events|abandon|implement|publish|advance|review|risk|classify|status|approve|merge [arguments] [options]",
       "options": [
         {
           "name": "repo",
@@ -2525,7 +2525,7 @@
     "task advance": {
       "name": "task advance",
       "description": "Advance a task through classification, approval, merge and cleanup",
-      "usage": "rabi task advance [SEL] [--wait] [--ci-timeout DUR] [options]",
+      "usage": "rabi task advance [SEL | --all] [--wait] [--ci-timeout DUR] [options]",
       "options": [
         {
           "name": "repo",
@@ -2535,9 +2535,14 @@
           "example": "--repo owner/repo"
         },
         {
+          "name": "all",
+          "type": "boolean",
+          "description": "Advance every non-terminal, non-blocked task sequentially; conflicts with SEL"
+        },
+        {
           "name": "wait",
           "type": "boolean",
-          "description": "Repeat steps and poll CI or approval through merge and safe cleanup"
+          "description": "Continue steps; single-task mode polls CI/approval, while --all stops each task at its first waiting result"
         },
         {
           "name": "ci-timeout",
@@ -2574,7 +2579,10 @@
         "Primary-checkout [factory] fix-budget defaults to 3 relaunches, including review revisions; ci-timeout defaults to 60m. Exhausted budget, empty required checks and elapsed pending CI block budget, no_ci and ci_timeout. --ci-timeout overrides the timeout.",
         "Reviewing runs task review in a fresh detached exact-head checkout. Passing findings mark the verified PR ready and upsert one sanitized findings comment before classifying. Review output is advisory input to deterministic gates, never an approval.",
         "--wait polls pending checks or approval every 30 seconds until merged, blocked, abandoned, a waiting deadline or an error. Approval timeout defaults to 24h through [factory] approval-timeout and returns waiting, never blocked.",
-        "Classification reuses valid head-bound records or launches the classifier. Missing, failed, invalid or uncertain classification is high. Only [merge] auto tiers without built-in or policy floor hits may auto-merge; the default auto set is empty. Otherwise awaiting_approval posts pending rabi/approval once per head, never success. Exact-head success from [approval] approvers is required; head movement voids approval and changes requested return implementing within the fix budget. Merge reruns the full preflight using a valid pass review, uses --match-head-commit and records the merge commit; preflight failure blocks with its reason, without retry. Cleanup uses remove safety checks and keeps dirty, stashed or unpushed workspaces and local branches. Remote branch deletion requires [merge] delete-branch=true (default false). Exit 0 means progress or merged; 10 means CI or approval waiting, including approval timeout; blocked/abandoned use 4. Implementer failures block provider_failed with 4; timeout uses 124. Invalid reviewer output gets one retry then review_invalid with 4. SIGINT/SIGTERM stops with 130. Other errors retain their existing codes."
+        "Classification reuses valid head-bound records or launches the classifier. Missing, failed, invalid or uncertain classification is high. Only [merge] auto tiers without built-in or policy floor hits may auto-merge; the default auto set is empty. Otherwise awaiting_approval posts pending rabi/approval once per head, never success. Exact-head success from [approval] approvers is required; head movement voids approval and changes requested return implementing within the fix budget. Merge reruns the full preflight using a valid pass review, uses --match-head-commit and records the merge commit; preflight failure blocks with its reason, without retry. Cleanup uses remove safety checks and keeps dirty, stashed or unpushed workspaces and local branches. Remote branch deletion requires [merge] delete-branch=true (default false). Exit 0 means progress or merged; 10 means CI or approval waiting, including approval timeout; blocked/abandoned use 4. Implementer failures block provider_failed with 4; timeout uses 124. Invalid reviewer output gets one retry then review_invalid with 4. SIGINT/SIGTERM stops with 130. Other errors retain their existing codes.",
+        "--all snapshots sorted current-repository task IDs, skips terminal and derived/stored blocked tasks, and advances each remaining task under its own advance lock. A failure does not stop later tasks; interruption stops new launches. New tasks are reported with reason skipped_new and exit 0 without launching a provider or changing task records/events; they need task implement first. Explicit single-task advance still refuses new tasks with exit 4. --all --wait continues each task only until waiting, blocked or terminal, without polling waiting tasks. Merged tasks are skipped, including retained cleanup.",
+        "Batch JSON data is {items:[{taskId,exitCode,report,error}]}; report and error are nullable. Exit severity is 130 > 124 > 6 > 1 (and other operational failures) > 5 > 4 > 3 > 2 > 10 > 0; first outcome wins ties. New-task skips appear as successful reports with reason skipped_new; terminal/blocked tasks are omitted. Empty/skipped-only batches succeed. Single-task behavior is unchanged.",
+        "Batch execution and cleanup hooks are anchored to the primary checkout so removing the invoking linked checkout does not invalidate later targets. Single-task hook source selection is unchanged."
       ],
       "examples": [
         {
@@ -2690,6 +2698,109 @@
         "Accepted issues use the same path as task new --issue, including the author permission check, sanitized size-capped text and issue link. Skip unauthorized issues with intake_not_permitted, including collaborator-permission HTTP 404, and continue with other issues. Skip issues already linked to any task, including terminal tasks. Other unavailable API evidence fails closed with exit 1.",
         "The limit counts examined issues, including skips. Issue and event enumerations use up to 100 pages of 100; PR-only pages do not consume the issue limit. Exceeding a pagination safety limit fails before creation. No issue comments, labels or state are written. Dry runs report a plan only.",
         "Intake does not launch implementation. Create the linked checkout, run task implement, then explicitly run task advance. Later prompts frame issue text with a fresh nonce as untrusted data; permission checks do not make external text trusted."
+      ]
+    },
+    "task report": {
+      "name": "task report",
+      "description": "Summarize local task outcomes, waits, retries and repeated review findings",
+      "usage": "rabi task report [--since DUR|DATE] [options]",
+      "options": [
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "example": "--repo owner/repo"
+        },
+        {
+          "name": "since",
+          "type": "string",
+          "description": "Include activity since a positive s/m/h/d/w duration ago, UTC YYYY-MM-DD date, or RFC3339 timestamp (inclusive)"
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one schema 2 envelope (schema, command, ok, data, warnings, error) on stdout. Progress and child output go to stderr"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json. Overrides RABI_OUTPUT (text or json; empty means unset). --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "Read-only aggregation of all current-repository task records and append-only events, including terminal tasks. No trust, agents, configuration loading or GitHub calls; creates no files or locks.",
+        "--since selects tasks created or active since the cutoff; event counters use that cutoff, while completed timing intervals retain their full historical start. Open intervals are excluded. Invalid timestamps and corrupt records/events fail with exit 1. Invalid --since uses exit 2.",
+        "Report version 1 JSON uses the schema 2 envelope. Current/final state counts, blocked reason histograms, fix relaunches by cause, review rounds, tier outcomes and completed wait/merge durations are documented in docs/json.md. Missing historical classification is unknown, never inferred from current policy.",
+        "Top repeated findings are bounded to 20 path/body-hash fingerprints with a sanitized example of at most 240 characters each. Reports are local bookkeeping, never merge authorization."
+      ],
+      "examples": [
+        {
+          "command": "rabi task report --since 7d --json",
+          "description": "Summarize recent task activity"
+        }
+      ]
+    },
+    "task events": {
+      "name": "task events",
+      "description": "Read local task events as text or JSON lines",
+      "usage": "rabi task events [SEL] [--since DUR|DATE] [options]",
+      "options": [
+        {
+          "name": "repo",
+          "short": "R",
+          "type": "string",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "example": "--repo owner/repo"
+        },
+        {
+          "name": "since",
+          "type": "string",
+          "description": "Include activity since a positive s/m/h/d/w duration ago, UTC YYYY-MM-DD date, or RFC3339 timestamp (inclusive)"
+        },
+        {
+          "name": "json",
+          "type": "boolean",
+          "description": "Alias for --output json: one compact JSON object per event (JSON lines), without a success envelope; errors use the schema 2 envelope"
+        },
+        {
+          "name": "output",
+          "type": "string",
+          "description": "Output text or json (JSON lines on success). Overrides RABI_OUTPUT; --json is an alias for --output json"
+        },
+        {
+          "name": "no-input",
+          "type": "boolean",
+          "description": "Never prompt for input. Also enabled by nonempty CI, JSON output, RABI_NO_INPUT other than empty or 0, or stdin/stderr without a TTY"
+        },
+        {
+          "name": "help",
+          "short": "h",
+          "type": "boolean",
+          "description": "Show text help"
+        }
+      ],
+      "notes": [
+        "Omit SEL for all tasks, including terminal tasks, in sorted task ID then append order. SEL is a full task ID or unique prefix of at least six characters.",
+        "--since filters event timestamps inclusively; accepts positive s/m/h/d/w durations, UTC YYYY-MM-DD dates or RFC3339 timestamps. No files or locks are created; no trust, providers, configuration loading or GitHub calls.",
+        "JSON success is JSON lines: each row has taskId plus the stored event fields. Empty results print nothing. Errors use the ordinary schema 2 envelope before any rows. task show ID --json still includes the entire history in one envelope."
+      ],
+      "examples": [
+        {
+          "command": "rabi task events --since 7d --json",
+          "description": "Read recent events across the repository"
+        }
       ]
     }
   },

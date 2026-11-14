@@ -267,7 +267,12 @@ fn step(
     };
     task.advance.approval_head = Some(head.clone());
     if !floor && record.is_some() && policy.merge.auto.contains(&tier) {
-        store.advance_event(task, TaskState::Merging, "auto_tier")?;
+        store.advance_classification_event(
+            task,
+            TaskState::Merging,
+            "auto_tier",
+            json!({"tier":tier,"floor":floor,"headSha":head}),
+        )?;
         return Ok(advance::report(task, "auto_tier", Some(head), 0));
     }
     let why = if floor {
@@ -297,7 +302,12 @@ fn step(
         task.advance.approval_pending_head = Some(head.clone());
     }
     task.advance.approval_started_at = Some(now().to_rfc3339());
-    store.advance_event(task, TaskState::AwaitingApproval, "approval_required")?;
+    store.advance_classification_event(
+        task,
+        TaskState::AwaitingApproval,
+        "approval_required",
+        json!({"tier":tier,"floor":floor,"headSha":head}),
+    )?;
     Ok(advance::report(
         task,
         "approval_required",

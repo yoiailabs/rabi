@@ -2,7 +2,7 @@
 
 [README](../README.md) · [Commands](commands.md) · [JSON](json.md)
 
-`--json` (an alias for `--output json`) prints exactly one schema 2 envelope to **stdout**. Every JSON command uses the same contract, including errors. Parsers must ignore unknown fields. Progress, hooks, Git output go to **stderr**. Human output is selected with `--output text`.
+`--json` (an alias for `--output json`) prints exactly one schema 2 envelope to **stdout**. JSON commands use this contract, including errors, except successful `task events`, which emits JSON lines as documented below. Parsers must ignore unknown fields. Progress, hooks, Git output go to **stderr**. Human output is selected with `--output text`.
 
 ## Envelope examples
 
@@ -326,6 +326,49 @@ Implementation appends `implementation_started` and `implementation_finished` ev
 `task new --issue N` returns the same `{task, recordedState, events}` as local creation. `task.issue` stores the positive issue `number`, `author` login and canonical `url`. The title and body are sanitized and redacted before truncation; each keeps its beginning and is capped at 4096 UTF-8 bytes, including a trailing `[truncated]` marker when cut at a character boundary, then combined with the URL into `task.intent`. Both commands create tasks in `new`; they never launch agents. Local task records keep schema 1, and older records without `issue` remain readable.
 
 `task intake` returns `{plan, items: [{issueNumber, action, taskId, reason}]}`. `plan` equals `--dry-run`; actions are `created`, `would_create` and `skipped`. `taskId` is nonnull only for a created task. Skips use `already_linked`, `label_actor_unknown` (no matching label event, or a missing or non-user actor such as a bot), or `intake_not_permitted` (known actor or author lacks permission); otherwise `reason` is null. Label names match case-insensitively. Both label actor and issue author require write/maintain/admin permission. HTTP 404 from a collaborator-permission lookup means no permission for that issue, so bulk intake skips it and continues. `--limit` counts examined issues including skips, excluding PRs. Direct unauthorized imports, including permission-lookup HTTP 404, return `error.code: "intake_not_permitted"` (exit 4); duplicate direct imports use `exists` (4). Bulk unauthorized skips are successful results (0). Other unavailable API evidence uses `failed` (1), never grants permission, and evidence reads finish before local creation. Retrying a local creation failure skips issue links already saved, including terminal tasks.
+
+## Task report
+
+`rabi task report [--since DUR|DATE] --json` returns the schema 2 envelope with `command: "task report"`. Its `data` has `reportVersion: 1`; this report version is separate from the envelope schema and stored task schema. All counters are nonnegative integers, times are milliseconds, and field names are camelCase. Parsers must ignore unknown fields.
+
+| Field | Meaning |
+|---|---|
+| `reportVersion`, `since` | Integer 1; inclusive UTC RFC3339 cutoff, or null for all history |
+| `taskCount` | Number of selected tasks, including terminal tasks |
+| `states` | Current displayed state histogram; all task state names are present, including zeros |
+| `finalStates` | Current terminal counts `{merged, abandoned}` |
+| `blockedReasons` | Histogram of transitions into a blocked reason within the event window; same-state observations do not count |
+| `currentBlockedReasons` | Current displayed blocked reason histogram for selected tasks, including derived `record_mismatch` |
+| `fixRelaunches`, `fixesByCause` | Implementation starts following `fix_reserved`, counted at start time, with all keys `precheck`, `ci`, `conflict`, `review`, `changes-requested`, `unknown` |
+| `reviewRounds` | Count of valid `review_passed` and `review_revise` events in the window; invalid provider attempts are excluded |
+| `tierOutcomes` | Keys `low`, `medium`, `high`, `unknown`, each `{autoMerged, awaitedApproval}` |
+| `approvalWait`, `ciWait`, `timeToMerge` | Completed interval statistics `{count, totalMs, meanMs, minMs, maxMs}` |
+| `topFindings` | At most 20 `{path, bodyHash, count, example}` fingerprints observed at least twice |
+| `tasks` | Sorted `{taskId, state, fixRelaunches, fixesByCause, reviewRounds, approvalWait, ciWait, timeToMerge}` per selected task |
+
+`--since` accepts positive integer durations with `s`, `m`, `h`, `d`, `w`, `YYYY-MM-DD` at midnight UTC, or RFC3339. Durations are resolved once at invocation time. Tasks enter the cohort when created or any event occurs at/after the cutoff. Current state counters describe that cohort now, while event counters use only qualifying events. Historical context before the cutoff remains available to pair starts and identify fix causes. No cutoff means all tasks and events. An empty store returns zero counters, empty reason maps/finding/task arrays and null timing extrema/means, without creating storage.
+
+A fix relaunch counts a recorded `implementation_started` after a `fix_reserved` event, excluding the initial attempt and reservations without a start event. The start event is written before process spawn, so this measures launch attempts and can include a subsequent spawn failure. The most recent preceding feedback event assigns its cause. Any event with `precheck.passed: false` identifies a `precheck` cause regardless of its reason, including standalone `task publish` failures. `unknown` means no recognized feedback identifies the cause before the reservation, either in older histories or after a progress/head-change event has cleared the previous cause. This may differ from `task.advance.fixesUsed`, which consumes reservations before a launch. Review rounds count accepted results, not invalid retries. Event histories written before finding snapshots remain countable but do not supply finding fingerprints.
+
+`autoMerged` counts a first merge transition in the window whose latest recorded classification decision was `auto_tier`. `awaitedApproval` counts a task whose latest classification decision is `approval_required`, when that decision is in the window, whether still waiting or subsequently merged. These counters use each task's latest decision; repeated classification does not inflate the awaited count. Missing historical tier snapshots are `unknown`; reports never read current policy or mutable classification files to invent historical evidence.
+
+Approval duration pairs an entry into `awaiting_approval` with the next exit only when it goes to `merging`. CI duration pairs entry into `ci` with its next exit, including failure/blocking. Time to merge is task `createdAt` to its first transition into `merged`. Same-state observations and cleanup events do not restart timers or add merge samples. Only completed nonnegative intervals count; open, interrupted-by-other-state approval waits and reversed-clock intervals are excluded. A duration qualifies by its ending timestamp, retaining the full start even when it precedes `--since`. `meanMs` may be fractional; `meanMs`, `minMs` and `maxMs` are null for zero samples, with `count` and `totalMs` zero.
+
+Finding fingerprints combine a sanitized path with SHA-256 of the normalized body (the [advance normalization](commands.md#task-advance): whitespace, volatile timestamps, durations, IDs and temporary paths). Severity, finding ID and line number do not enter this key. Findings come from valid review result event snapshots. Output sorts descending count, then path and body hash, with one sanitized single-line example of at most 240 Unicode characters. The report is bounded in displayed fingerprints/examples; local histories are retained in full.
+
+Classification decision events now optionally include `classification: {tier, floor, headSha}`; existing events can omit it. Valid review result events include their already sanitized findings along with the existing record binding. These additive fields do not change task schema 1 or rewrite history.
+
+## Task events
+
+`rabi task events [SEL] [--since DUR|DATE] --json` (also `--output json` or `RABI_OUTPUT=json`) emits one compact JSON object per event line on success. Each object is `{taskId, at, from, to, reason}` with the stored optional `detail`, `agent`, `precheck`, `review` and `classification` fields. There is no success envelope; an empty result emits no bytes. SEL is a full task ID or unique prefix of at least six characters; omit it for all tasks, including terminal tasks. Rows sort by task ID, then retain append order rather than sorting by timestamp. The inclusive cutoff syntax matches report.
+
+All selected records/events are read and timestamps validated before output, so a read/validation error emits the ordinary schema 2 error envelope (`command: "task events"`) before any event rows. Invalid arguments use 2 and absent tasks use 3. Corrupt/unreadable records/events use 1 and identify the task. `task show ID --json` remains a complete-history envelope with no `--events` flag. Text escapes terminal control characters; JSON retains stored text as JSON strings. Events can include user-supplied reasons and diagnostics: review exports before sharing.
+
+## Task batch advance
+
+`rabi task advance --all [--wait] --json` returns a schema 2 envelope with `command: "task advance"` and `data: {items: [{taskId, exitCode, report, error}]}`. `report` is the ordinary [advance report](#task-advance), or null for execution errors; `error` is a shared `{code, message}` error object (optional shared error details may also appear), or null when a report exists. Waiting/blocked reports retain their own `exitCode`; their item `error` is null. New tasks appear as non-failing skipped items: `exitCode: 0`, `error: null`, and a report with `state: {name: "new"}` and `reason: "skipped_new"`. They need `task implement` first; no provider is launched and no task record or event is changed. Terminal/blocked tasks are omitted. Cancellation can leave later tasks unattempted. Empty batches return `items: []` and exit 0.
+
+Execution and cleanup hooks are anchored to the primary checkout even when invoked from a linked checkout. IDs are snapshotted in sorted order within the current repository and state is rechecked under each task's advance lock. Each task takes one step, or with batch `--wait`, continues until waiting/blocked/terminal/failure without polling a waiting task. Single-task `--wait` retains polling. A task failure does not stop later tasks. Aggregate exit severity is `130 > 124 > 6 > 1 > 5 > 4 > 3 > 2 > 10 > 0`; other operational failures rank with 1, first outcome wins ties. This is not numeric maximum. `ok` reflects the aggregate exit; all attempted results remain in `data` even when false. Interruption stops further launches. Global invocation/repository/trust errors retain the ordinary null-data envelope. Batch does not synthesize partial status merely because other tasks progressed.
 
 ## Task advance
 

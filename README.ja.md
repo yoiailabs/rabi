@@ -68,6 +68,8 @@ rabi task show "$task_id" --json
 
 `task implement` は、エージェント終了後の Git メタデータの再検証に失敗した場合も、`stopReason: "metadata_changed"` を記録して終了コード4を返します。再試行する前に Git のワークツリー登録を確認・修復してください。詳しくは[実装の実行結果](docs/json.md#local-task-store)を参照してください。
 
+`rabi task advance --all --wait --json` は、進行中のタスクを順番に処理し、それぞれが待機・ブロック・完了に達すると次へ進みます。失敗してもタスクごとの結果を残して処理を続けます。未開始のタスクはエラーにせず、スキップした結果として返します。開始するには先に `task implement` を実行してください。ブロック中・終了済みのタスクもスキップします。`rabi task report --since 7d --json` は、ローカルの結果・再試行・待ち時間・繰り返される指摘を読み取り専用で集計します。`rabi task events --since 7d --json` はイベントを JSON Lines 形式で出力します。[集計と一括処理の詳細](docs/commands.md#task-report-and-events)を参照してください。
+
 ## 承認
 
 承認なしでマージできるのは、ポリシーで指定した low/medium で floor に該当しない変更だけです。自動マージ対象は既定では空です。high、floor、リスク判定の欠落・失敗・不確実な結果にはメンテナーの承認が必要です。レビュー結果は承認にはなりません。自動化は `rabi task approve` を実行せず、`RABI_AGENT` を解除して回避せず、成功の `rabi/approval` ステータスも投稿しません。
@@ -114,7 +116,7 @@ run にもタスクエージェントと共通の制限が適用されます。�
 
 | 分類 | コマンド |
 |---|---|
-| タスクの記録 | `rabi task`, `rabi task new`, `rabi task intake`, `rabi task list`, `rabi task show`, `rabi task abandon` |
+| タスクの記録 | `rabi task`, `rabi task new`, `rabi task intake`, `rabi task list`, `rabi task show`, `rabi task report`, `rabi task events`, `rabi task abandon` |
 | 工程の実行 | `rabi task implement`, `rabi task advance`, `rabi task publish`, `rabi task review` |
 | 条件の確認 | `rabi task risk`, `rabi task classify`, `rabi task status`, `rabi task approve`, `rabi task merge` |
 | ワークスペース | `rabi create`, `rabi list`, `rabi show`, `rabi path`, `rabi set`, `rabi exec` |

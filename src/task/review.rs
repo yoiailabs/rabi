@@ -690,7 +690,12 @@ fn execute_inner(root: &Path, selector: Option<&str>, locked: bool) -> Result<ad
         }
         task.advance.evaluated_head = Some(head.clone());
         task.advance.pending_feedback = Some(feedback);
-        store.advance_event(&mut task, TaskState::Implementing, "review_revise")?;
+        store.advance_review_event(
+            &mut task,
+            TaskState::Implementing,
+            "review_revise",
+            Some(json!({"headSha":head,"recordId":record_id(&record)?,"findings":record.answer.findings})),
+        )?;
         return Ok(advance::report(&task, "review_revise", Some(head), 0));
     }
     let after = pull(cwd, &repository, number)?;
@@ -707,7 +712,7 @@ fn execute_inner(root: &Path, selector: Option<&str>, locked: bool) -> Result<ad
         &mut task,
         TaskState::Ready,
         "review_passed",
-        Some(json!({"headSha":head,"recordId":record_id(&record)?})),
+        Some(json!({"headSha":head,"recordId":record_id(&record)?,"findings":record.answer.findings})),
     )?;
     reconcile_pass(
         cwd,
