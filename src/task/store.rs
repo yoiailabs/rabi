@@ -11,6 +11,7 @@ use std::path::{Path, PathBuf};
 #[serde(rename_all = "snake_case")]
 pub(crate) enum BlockReason {
     NoProgress,
+    RepeatedFailure,
     Environment,
     NoCi,
     CiTimeout,
@@ -151,6 +152,8 @@ pub(crate) struct Event {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct View {
+    #[serde(flatten)]
+    pub budget: Option<super::advance::Budget>,
     pub task: Task,
     recorded_state: TaskState,
     events: Vec<Event>,
@@ -384,6 +387,7 @@ impl Store {
         let recorded_state = task.state;
         task.state = self.derived(&task)?;
         Ok(View {
+            budget: None,
             task,
             recorded_state,
             events,
@@ -495,6 +499,7 @@ impl Store {
         io(fs::rename(directory, self.path.join(&task.id)))?;
         io(File::open(&self.path).and_then(|file| file.sync_all()))?;
         Ok(View {
+            budget: None,
             recorded_state: task.state,
             task,
             events: vec![event],
@@ -727,6 +732,7 @@ impl Store {
         self.save(&directory, &task, &event)?;
         events.push(event);
         Ok(View {
+            budget: None,
             recorded_state: task.state,
             task,
             events,
@@ -863,6 +869,14 @@ impl Entry {
 impl View {
     pub fn print(&self) {
         output::outln!("{} {}", self.task.id, state_text(self.task.state));
+        if let Some(budget) = &self.budget {
+            output::outln!(
+                "Fixes: {}/{} used; {} remaining",
+                self.task.advance.fixes_used,
+                budget.fix_budget,
+                budget.fixes_remaining
+            );
+        }
         output::outln!("Branch: {}", output::visible_text(&self.task.branch));
         output::outln!("Base: {}", output::visible_text(&self.task.base_ref));
         output::outln!("Intent: {}", output::visible_text(&self.task.intent));

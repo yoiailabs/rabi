@@ -905,7 +905,7 @@ fn task_store(args: &[String], command: &str) -> Result<i32> {
         return Ok(SUCCESS);
     }
     let argument = &parsed.positionals[0];
-    let view = match command {
+    let mut view = match command {
         "new" => {
             let intent = if argument == "-" {
                 use std::io::Read;
@@ -926,6 +926,12 @@ fn task_store(args: &[String], command: &str) -> Result<i32> {
         )?,
         _ => store.show(argument)?,
     };
+    if command == "show" {
+        view.budget = Some(crate::task::advance::Budget::new(
+            crate::task::advance::configuration(&root)?.fix_budget,
+            view.task.advance.fixes_used,
+        ));
+    }
     if crate::output::json() {
         emit_json(&view)
     } else {
@@ -1035,6 +1041,12 @@ fn task_advance(args: &[String]) -> Result<i32> {
             report.task_id,
             report.state.name(),
             report.reason
+        );
+        outln!(
+            "Fixes: {}/{} used; {} remaining",
+            report.fixes_used,
+            report.budget.fix_budget,
+            report.budget.fixes_remaining
         );
     }
     if report.exit_code != 0 {

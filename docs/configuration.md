@@ -80,7 +80,7 @@ fix-budget = 3
 ci-timeout = "60m"
 ```
 
-`task advance` reads these settings on each invocation. `fix-budget` is a nonnegative integer counting implementer relaunches caused by precheck failures, CI failures, or future review revisions. Zero disables automatic fixes; the initial implementation and conflict recovery do not count. Usage is persisted per task and is not reset by a new invocation. `ci-timeout` accepts a positive integer followed by `s`, `m` or `h`; `--ci-timeout` overrides it. Defaults are 3 fixes and 60 minutes. Unknown factory fields, wrong types and invalid durations fail validation. These are repository settings, not `rabi config` user keys. Required CI names and issuer apps remain in the base-commit risk policy below.
+`task advance` reads these settings on each invocation. `fix-budget` is a nonnegative integer counting all failure-driven implementer relaunches, including precheck failures, CI failures and conflict recovery. Zero disables automatic fixes; the initial implementation does not count. Usage is persisted per task and is not reset by a new invocation. The effective budget and remaining attempts appear in `task show` and advance output. An identical failure fingerprint on consecutive fix attempts can stop recovery earlier as `repeated_failure`; see [advance](commands.md#task-advance). `ci-timeout` accepts a positive integer followed by `s`, `m` or `h`; `--ci-timeout` overrides it. Defaults are 3 fixes and 60 minutes. Unknown factory fields, wrong types and invalid durations fail validation. These are repository settings, not `rabi config` user keys. Required CI names and issuer apps remain in the base-commit risk policy below.
 
 ## Cloning repositories
 

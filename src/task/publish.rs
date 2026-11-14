@@ -927,7 +927,7 @@ fn execute_inner(root: &Path, selector: Option<&str>, locked: bool) -> Result<Re
             current_state,
             "precheck",
             Some(
-                json!({"head": head, "passed": passed, "failingCommand": if passed { None } else { Some(sanitized(script.as_bytes(), &workspace)) }, "outputTail": sanitized(&result.tail, &workspace), "reason": reason}),
+                json!({"head": head, "passed": passed, "failingCommand": if passed { None } else { Some(sanitized(script.as_bytes(), &workspace)) }, "failingCommandHash": if passed { None } else { Some(crate::hash::sha256_hex(script.as_bytes())) }, "outputTail": sanitized(&result.tail, &workspace), "reason": reason}),
             ),
             None,
         )?;

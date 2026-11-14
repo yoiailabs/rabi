@@ -31,7 +31,11 @@ case "$1 $2" in
       signal=$(cat "$RABI_ADVANCE_FIXTURE/interrupt-log")
       kill "-$signal" "$PPID"
     fi
-    cat "$RABI_ADVANCE_FIXTURE/failed-log" ;;
+    if [ -f "$RABI_ADVANCE_FIXTURE/failed-log.${5:-}" ]; then
+      cat "$RABI_ADVANCE_FIXTURE/failed-log.$5"
+    else
+      cat "$RABI_ADVANCE_FIXTURE/failed-log"
+    fi ;;
   *)
     [ "$1" = api ] || exit 91
     case "$2" in
@@ -49,7 +53,7 @@ case "$1 $2" in
         next=$((index+1))
         if [ -f "$RABI_ADVANCE_FIXTURE/checks.$next.json" ]; then printf '%s\n' "$next" > "$RABI_ADVANCE_FIXTURE/check-index"; fi
         ;;
-      repos/fixture/project/check-runs/*) printf '{"id":%s,"head_sha":"%s","details_url":"https://github.com/fixture/project/actions/runs/100/job/200"}\n' "${2##*/}" "$head" ;;
+      repos/fixture/project/check-runs/*) printf '{"id":%s,"head_sha":"%s","details_url":"https://github.com/fixture/project/actions/runs/100/job/%s"}\n' "${2##*/}" "$head" "${2##*/}" ;;
       repos/fixture/project/git/trees/*)
         if [ "$2" = "repos/fixture/project/git/trees/$base" ]; then
           tree=$(git -C "$RABI_ADVANCE_FIXTURE/repo" rev-parse main:.rabi)
@@ -74,7 +78,16 @@ printf '%s\n' "$index" > "$RABI_ADVANCE_FIXTURE/provider-count"
 printf '%s\n' "${0##*/}" > "$RABI_ADVANCE_FIXTURE/provider.$index"
 cat > "$RABI_ADVANCE_FIXTURE/prompt.$index"
 case "$(cat "$RABI_ADVANCE_FIXTURE/provider-mode")" in
-  commit) git commit --allow-empty -m "feat: fixture attempt $index" ;;
+  commit)
+    git commit --allow-empty -m "feat: fixture attempt $index"
+    if [ -f "$RABI_ADVANCE_FIXTURE/fix-first-precheck" ] && [ "$index" -gt 1 ]; then
+      touch "$RABI_ADVANCE_FIXTURE/first-precheck"
+    fi
+    ;;
+  moving-base)
+    git commit --allow-empty -m "feat: fixture attempt $index"
+    git -C "$RABI_ADVANCE_FIXTURE/repo" commit --allow-empty -m "feat: fixture base $index"
+    ;;
   noop) exit 0 ;;
   fail) exit 7 ;;
 esac
@@ -90,6 +103,15 @@ struct Repo {
 
 impl Repo {
     fn new(required: &[&str], factory: &str, precheck: Option<&str>) -> Self {
+        Self::with_prechecks(required, factory, |_| {
+            precheck.into_iter().map(str::to_owned).collect()
+        })
+    }
+    fn with_prechecks(
+        required: &[&str],
+        factory: &str,
+        commands: impl FnOnce(&std::path::Path) -> Vec<String>,
+    ) -> Self {
         let root = std::env::temp_dir().join(format!("rabi-advance-test-{}", uuid::Uuid::new_v4()));
         let mut fixture = Self {
             repo: root.join("repo"),
@@ -115,10 +137,11 @@ impl Repo {
         )
         .unwrap();
         let mut config = factory.to_owned();
-        if let Some(script) = precheck {
+        let commands = commands(&fixture.root);
+        if !commands.is_empty() {
             config.push_str(&format!(
-                "\n[precheck]\ncommands=[{}]\n",
-                serde_json::to_string(script).unwrap()
+                "\n[precheck]\ncommands={}\n",
+                serde_json::to_string(&commands).unwrap()
             ));
         }
         fs::write(fixture.repo.join(".rabi.toml"), config).unwrap();
@@ -954,4 +977,305 @@ fn incomplete_failed_check_snapshot_waits_for_complete_latest_success() {
     let reviewed = decode(repo.advance().output().unwrap(), 0);
     assert_eq!(reviewed["data"]["state"]["name"], "reviewing");
     assert_eq!(repo.launches(), 0);
+}
+
+#[test]
+fn changing_conflicts_exhaust_exact_persistent_fix_budget_in_wait_loop() {
+    for (factory, budget) in [
+        ("", 3),
+        ("[factory]\nfix-budget=2\n", 2),
+        ("[factory]\nfix-budget=0\n", 0),
+    ] {
+        let repo = Repo::new(&["test"], factory, None);
+        repo.ci();
+        fs::write(repo.root.join("conflict"), "conflicting").unwrap();
+        fs::write(repo.root.join("provider-mode"), "moving-base").unwrap();
+        let report = decode(repo.advance().arg("--wait").output().unwrap(), 4);
+        assert_eq!(
+            report["data"]["state"],
+            json!({"name":"blocked","reason":"budget"})
+        );
+        assert_eq!(report["data"]["fixesUsed"], budget);
+        assert_eq!(report["data"]["fixBudget"], budget);
+        assert_eq!(report["data"]["fixesRemaining"], 0);
+        assert_eq!(repo.launches(), budget as usize);
+        let view = repo.view();
+        assert_eq!(view["fixBudget"], budget);
+        assert_eq!(view["fixesRemaining"], 0);
+        assert_eq!(view["task"]["advance"]["fixesUsed"], budget);
+        assert_eq!(
+            view["events"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|event| event["reason"] == "fix_reserved")
+                .count(),
+            budget as usize
+        );
+        let pushes = fs::read_to_string(repo.root.join("gh-trace")).unwrap();
+        assert!(!pushes.contains("pr merge"));
+        decode(repo.advance().arg("--wait").output().unwrap(), 4);
+        assert_eq!(repo.launches(), budget as usize);
+    }
+}
+
+#[test]
+fn repeated_head_independent_failures_block_before_a_second_fix() {
+    for kind in ["conflict", "precheck", "ci"] {
+        let repo = Repo::new(
+            &["test"],
+            "",
+            (kind == "precheck").then_some("printf diagnostic; exit 1"),
+        );
+        if kind != "precheck" {
+            repo.ci();
+        }
+        if kind == "conflict" {
+            fs::write(repo.root.join("conflict"), "conflicting").unwrap();
+        }
+        if kind == "ci" {
+            repo.checks(&[vec![check(
+                42,
+                "test",
+                "completed",
+                Some("failure"),
+                "github-actions",
+            )]]);
+        }
+        let report = decode(repo.advance().arg("--wait").output().unwrap(), 4);
+        assert_eq!(
+            report["data"]["state"],
+            json!({"name":"blocked","reason":"repeated_failure"}),
+            "{kind}"
+        );
+        assert_eq!(report["data"]["reason"], "repeated_failure");
+        assert_eq!(report["data"]["fixesUsed"], 1);
+        assert_eq!(report["data"]["fixBudget"], 3);
+        assert_eq!(report["data"]["fixesRemaining"], 2);
+        assert_eq!(
+            repo.launches(),
+            if kind == "precheck" { 2 } else { 1 },
+            "{kind}"
+        );
+        let view = repo.view();
+        assert_eq!(
+            view["events"].as_array().unwrap().last().unwrap()["reason"],
+            "repeated_failure"
+        );
+        assert_eq!(
+            view["task"]["advance"]["signatures"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+}
+
+#[test]
+fn ci_fingerprint_uses_sanitized_tail_and_allows_changed_diagnostics() {
+    let repo = Repo::new(&["test"], "", None);
+    repo.ci();
+    repo.checks(&[vec![check(
+        42,
+        "test",
+        "completed",
+        Some("failure"),
+        "github-actions",
+    )]]);
+    fs::write(repo.root.join("failed-log"), "first diagnostic\n").unwrap();
+    decode(repo.advance().output().unwrap(), 0);
+    decode(repo.advance().output().unwrap(), 0);
+    let first = repo.view()["task"]["advance"]["lastFixFingerprint"].clone();
+    decode(repo.advance().output().unwrap(), 0);
+    fs::write(repo.root.join("failed-log"), "second diagnostic\n").unwrap();
+    decode(repo.advance().output().unwrap(), 0);
+    decode(repo.advance().output().unwrap(), 0);
+    let second = repo.view()["task"]["advance"]["lastFixFingerprint"].clone();
+    assert_ne!(first, second);
+    assert_eq!(repo.launches(), 2);
+    decode(repo.advance().output().unwrap(), 0);
+    fs::write(
+        repo.root.join("failed-log"),
+        "\u{1b}[31msecond diagnostic\u{1b}[0m\u{7}\n",
+    )
+    .unwrap();
+    let blocked = decode(repo.advance().arg("--wait").output().unwrap(), 4);
+    assert_eq!(blocked["data"]["state"]["reason"], "repeated_failure");
+    assert_eq!(repo.launches(), 2);
+}
+
+#[test]
+fn show_displays_current_budget_and_remaining_without_rewriting_task() {
+    let repo = Repo::new(&["test"], "", None);
+    repo.edit(|task| {
+        task["advance"] = json!({"fixesUsed":2});
+    });
+    let before = fs::read(&repo.record).unwrap();
+    let view = repo.view();
+    assert_eq!(view["fixBudget"], 3);
+    assert_eq!(view["fixesRemaining"], 1);
+    fs::write(repo.repo.join(".rabi.toml"), "[factory]\nfix-budget=1\n").unwrap();
+    let view = repo.view();
+    assert_eq!(view["fixBudget"], 1);
+    assert_eq!(view["fixesRemaining"], 0);
+    let output = repo
+        .command(&["task", "show", &repo.task])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    assert!(String::from_utf8(output.stdout)
+        .unwrap()
+        .contains("Fixes: 2/1 used; 0 remaining"));
+    assert_eq!(fs::read(&repo.record).unwrap(), before);
+}
+
+#[test]
+fn only_the_immediately_previous_ci_fix_is_compared_for_repetition() {
+    let repo = Repo::new(&["test"], "", None);
+    repo.ci();
+    repo.checks(&[vec![check(
+        42,
+        "test",
+        "completed",
+        Some("failure"),
+        "github-actions",
+    )]]);
+    let mut fingerprints = Vec::new();
+    for diagnostic in ["first", "second", "first"] {
+        fs::write(repo.root.join("failed-log"), diagnostic).unwrap();
+        decode(repo.advance().output().unwrap(), 0);
+        decode(repo.advance().output().unwrap(), 0);
+        fingerprints.push(repo.view()["task"]["advance"]["lastFixFingerprint"].clone());
+        decode(repo.advance().output().unwrap(), 0);
+    }
+    assert_eq!(repo.launches(), 3);
+    assert_eq!(fingerprints[0], fingerprints[2]);
+    assert_ne!(fingerprints[0], fingerprints[1]);
+    assert_eq!(repo.view()["task"]["advance"]["fixesUsed"], 3);
+}
+
+#[test]
+fn repeated_ci_failure_survives_reordered_required_check_names() {
+    let repo = Repo::new(&["test", "lint"], "", None);
+    repo.ci();
+    repo.checks(&[vec![
+        check(42, "test", "completed", Some("failure"), "github-actions"),
+        check(43, "lint", "completed", Some("failure"), "github-actions"),
+    ]]);
+    decode(repo.advance().output().unwrap(), 0);
+    decode(repo.advance().output().unwrap(), 0);
+    decode(repo.advance().output().unwrap(), 0);
+    fs::write(
+        repo.repo.join(".rabi/policy.toml"),
+        "schema=1\n[ci]\nrequired=['lint','test']\n",
+    )
+    .unwrap();
+    repo.git(&["add", ".rabi/policy.toml"]);
+    repo.git(&["commit", "-m", "chore: reorder fixture checks"]);
+    let blocked = decode(repo.advance().arg("--wait").output().unwrap(), 4);
+    assert_eq!(blocked["data"]["state"]["reason"], "repeated_failure");
+    assert_eq!(repo.launches(), 1);
+}
+
+#[test]
+fn distinct_prechecks_with_identical_sanitized_commands_are_not_repeated_failure() {
+    let repo = Repo::with_prechecks(&["test"], "", |root| {
+        ["first-precheck", "second-precheck"]
+            .into_iter()
+            .map(|name| format!("test -f {}", root.join(name).display()))
+            .collect()
+    });
+    fs::write(repo.root.join("fix-first-precheck"), "").unwrap();
+    let blocked = decode(repo.advance().arg("--wait").output().unwrap(), 4);
+    assert_eq!(blocked["data"]["state"]["reason"], "repeated_failure");
+    assert_eq!(
+        blocked["data"]["fixesUsed"], 2,
+        "different failing commands need distinct fix attempts"
+    );
+    assert_eq!(repo.launches(), 3);
+    let view = repo.view();
+    let failures: Vec<_> = view["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|event| event.get("precheck"))
+        .filter(|check| check["passed"] == false)
+        .collect();
+    assert_eq!(failures.len(), 3);
+    assert_eq!(failures[0]["failingCommand"], failures[1]["failingCommand"]);
+    assert_ne!(
+        failures[0]["failingCommandHash"],
+        failures[1]["failingCommandHash"]
+    );
+    assert_eq!(
+        failures[1]["failingCommandHash"],
+        failures[2]["failingCommandHash"]
+    );
+    assert!(!serde_json::to_string(&failures)
+        .unwrap()
+        .contains(repo.root.to_str().unwrap()));
+}
+
+#[test]
+fn repeated_ci_failure_survives_reordered_apps_and_duplicate_declarations() {
+    for duplicate in [false, true] {
+        let repo = Repo::new(&["test"], "", None);
+        let policy = |reverse: bool| {
+            let mut required = vec![
+                json!({"name":"test", "app":"first-app"}),
+                json!({"name":"test", "app":"second-app"}),
+            ];
+            if reverse {
+                required.reverse();
+                if duplicate {
+                    required.push(required[0].clone());
+                }
+            }
+            format!(
+                "schema=1\n[ci]\nrequired=[{}]\n",
+                required
+                    .into_iter()
+                    .map(|entry| format!(
+                        "{{name='test', app='{}'}}",
+                        entry["app"].as_str().unwrap()
+                    ))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        };
+        fs::write(repo.repo.join(".rabi/policy.toml"), policy(false)).unwrap();
+        repo.git(&["add", ".rabi/policy.toml"]);
+        repo.git(&["commit", "-m", "chore: declare fixture issuer apps"]);
+        repo.ci();
+        repo.checks(&[vec![
+            check(42, "test", "completed", Some("failure"), "first-app"),
+            check(43, "test", "completed", Some("timed_out"), "second-app"),
+        ]]);
+        fs::write(
+            repo.root.join("failed-log.42"),
+            "first issuer failure diagnostic",
+        )
+        .unwrap();
+        fs::write(
+            repo.root.join("failed-log.43"),
+            "second issuer timeout diagnostic",
+        )
+        .unwrap();
+        decode(repo.advance().output().unwrap(), 0);
+        decode(repo.advance().output().unwrap(), 0);
+        let prompt = fs::read_to_string(repo.root.join("prompt.1")).unwrap();
+        assert!(
+            prompt.contains("first issuer failure diagnostic")
+                && prompt.contains("second issuer timeout diagnostic")
+        );
+        decode(repo.advance().output().unwrap(), 0);
+        fs::write(repo.repo.join(".rabi/policy.toml"), policy(true)).unwrap();
+        repo.git(&["add", ".rabi/policy.toml"]);
+        repo.git(&["commit", "-m", "chore: reorder fixture issuer apps"]);
+        let blocked = decode(repo.advance().arg("--wait").output().unwrap(), 4);
+        assert_eq!(blocked["data"]["state"]["reason"], "repeated_failure");
+        assert_eq!(blocked["data"]["fixesUsed"], 1);
+        assert_eq!(repo.launches(), 1);
+    }
 }
