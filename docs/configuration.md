@@ -245,3 +245,7 @@ approvers = ["maintainer-login"]
 Outside an auto tier, merge requires the latest `rabi/approval` commit status for the exact current head SHA to be `success`, with its creator login in `approval.approvers` (case-insensitive login comparison). An empty approvers list fails clearly; a newer failure, pending status, or unlisted creator supersedes an older success. Approval on an earlier head never counts. Both merge modes retain this configuration from the PR base SHA, independently of `--base`, and fail approval unless the current base-branch tip has identical policy content. The marker and token limitations are described in [safety](safety.md#task-approval-and-merge).
 
 Every provider launched by `rabi run` receives `RABI_AGENT=1` unconditionally, including fresh sessions, resume, and `--no-handoff`. Repository `[env]` cannot override or remove it because all `RABI*` keys are reserved.
+
+## External intake
+
+External intake has no repository or user configuration keys. Select the exact label and examination limit with `task intake --label L --limit N` (default 30, range 1..1000), and preview with `--dry-run`. Authentication comes from the invoking operator's `gh` configuration. Both issue authors and the latest label actor require current write/maintain/admin permission; no label grants permission by itself. Intake creates records only. The existing trusted checkout and task lifecycle setup is still required before launching agents. See [external intake](commands.md#external-issue-intake).

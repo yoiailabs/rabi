@@ -65,16 +65,17 @@ Inspect `data` even when `ok:false`; waiting, blocked and partial results retain
 
 ## Local task store
 
-The four store commands below manage local bookkeeping only. They do not launch agents, create branches or workspaces, push, or call GitHub. Saved task state is not GitHub evidence: `task status` collects fresh facts, while merge preflight can use the earned review pass bound to a task's `review_passed` event and record digest. Neither a stored state nor a bare pass record authorizes merge.
+The store commands below manage local bookkeeping. They do not launch agents, create branches or workspaces, or push. Local text creation, list, show and abandon do not call GitHub; `new --issue` and `intake` perform the read-only checks described below. Saved task state is not GitHub evidence: `task status` collects fresh facts, while merge preflight can use the earned review pass bound to a task's `review_passed` event and record digest. Neither a stored state nor a bare pass record authorizes merge.
 
 | Command | Behavior |
 |---|---|
-| `rabi task new TEXT\|- [--branch NAME] [--base REF] [-R REPO] [--json]` | Record nonempty intent from one quoted argument or stdin (`-`) in state `new` |
+| `rabi task new (TEXT\|- \| --issue N) [--branch NAME] [--base REF] [-R REPO] [--json]` | Record local intent or a permitted issue in state `new` |
+| `rabi task intake --label L [--limit N] [--dry-run] [-R REPO] [--json]` | Import permitted open labeled issues without launching agents |
 | `rabi task list [-R REPO] [--all] [--json]` | List non-terminal tasks; `--all` also includes `merged` and `abandoned` |
 | `rabi task show ID [-R REPO] [--json]` | Show the record and events |
 | `rabi task abandon ID [--reason TEXT] [-R REPO] [--json]` | Transition to `abandoned`; reason defaults to `abandoned` |
 
-ID accepts the full `task_<uuid>` ID or a unique prefix of at least six characters, including the `task_` prefix. Ambiguous or short prefixes exit 2; missing IDs exit 3. Global `-R/--repo` uses ordinary repository selection. All four commands support `--output text|json` and the schema 2 JSON envelope.
+ID accepts the full `task_<uuid>` ID or a unique prefix of at least six characters, including the `task_` prefix. Ambiguous or short prefixes exit 2; missing IDs exit 3. Global `-R/--repo` uses ordinary repository selection. All store commands support `--output text|json` and the schema 2 JSON envelope.
 
 A new task's branch defaults to an ASCII slug of its intent with an eight-character UUID suffix. Explicit names must be valid branch names. Creation refuses a local branch, a branch used by any worktree (including an unborn branch), or a branch reserved by another non-terminal task, with exit 2 and no task written. The default base is `origin/<default branch>` and must resolve locally; `--base` can select another local commit-ish. The push remote URL is captured once using `branch.<name>.pushRemote`, `remote.pushDefault`, `branch.<name>.remote`, then `origin`, with Git's push URL rewrites applied. A missing push URL fails creation. URL userinfo and URL query/fragment data are stripped before storage; command errors never include the remote URL.
 
@@ -100,6 +101,22 @@ Allowed transitions are defined in one data table in the implementation:
 | `merged`, `abandoned` | None (terminal) |
 
 Creation and abandonment mutate the store directly. `task implement` records launches and advances `new` to `implementing`. `task publish` executes prechecks and publication through `ci`. `task advance` drives implementation, publication, CI, review, classification, approval waiting, merge and safe workspace cleanup. Each merge still requires fresh remote evidence and the full merge preflight.
+
+## External issue intake
+
+`rabi task new --issue N [--branch NAME] [--base REF] [--json]` imports a positive issue number from the current or `-R`-selected repository. It conflicts with positional intent and stdin. Rabi resolves the repository with `gh repo view`, then uses explicit GET requests for the issue and its author's collaborator permission. Only `write`, `maintain` or `admin` permits creation; other permissions refuse with exit 4 (`intake_not_permitted`) before creating state. API/authentication failures fail closed with exit 1. Pull requests are refused. The task stores the issue number, author login and canonical issue URL; intent includes the sanitized title, body and URL. Already-linked issues refuse with exit 4 (`exists`), including links on terminal tasks.
+
+`rabi task intake --label L [--limit N] [--dry-run] [--json]` lists open issues with the exact label, excluding PRs, and paginates their issue events. The actor who most recently added that label must currently have `write`, `maintain` or `admin` permission. A later removal or missing actor invalidates older additions. The author must also pass the same permission check as `new --issue`. Unauthorized issues are skipped, even when their author has write permission. Issues already linked to any task, including merged or abandoned tasks, are skipped before event queries. The creation lock also prevents concurrent imports from duplicating issue links.
+
+`--limit` defaults to 30, accepts 1..1000 and counts issues examined, including skips. Labels must be nonblank, at most 256 bytes and contain no control characters. Issue/event requests use pages of 100, with a safety limit of 100 pages per enumeration. PR-only issue-list pages do not consume the issue limit. Events must be completely enumerated; exceeding either safety limit fails before creating tasks. All remote evidence is read before local creation. `--dry-run` reports `would_create` items and creates no state, branches, workspaces or agents. Rabi never comments on, labels or closes issues.
+
+Issue titles and bodies remain untrusted data despite permission checks. Terminal/control sequences and recognizable secrets/local paths are sanitized; each field is capped at 4096 UTF-8 bytes with an explicit truncation marker. Every later implementer prompt encloses the resulting intent in a fresh, collision-checked nonce frame and forbids issue text from overriding role restrictions. Intake itself never launches implementation. Create the reserved branch's linked checkout, start `task implement`, then explicitly run `task advance` as in the lifecycle above. Permission checks precede accepting external text for later agent launches; framing is a prompt safeguard, not operating-system isolation.
+
+```sh
+rabi task new --issue 42 --json
+rabi task intake --label ready --limit 20 --dry-run --json
+rabi task intake --label ready --limit 20 --json
+```
 
 ## Task implement
 

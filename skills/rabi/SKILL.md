@@ -220,3 +220,22 @@ References: [commands and states](https://github.com/yoiailabs/rabi/blob/main/do
 [JSON](https://github.com/yoiailabs/rabi/blob/main/docs/json.md),
 [safety](https://github.com/yoiailabs/rabi/blob/main/docs/safety.md),
 [upgrading to v8](https://github.com/yoiailabs/rabi/blob/main/docs/upgrading-to-v8.md).
+
+## External intake
+
+Use `rabi task new --issue N` for a single issue, or preview labeled issues with
+`rabi task intake --label L --limit 30 --dry-run --json` before an authorized
+import without `--dry-run`. These deterministic operator commands read GitHub
+through GET-only APIs; never use them to bypass a parent session's GitHub ban.
+Authors require write/maintain/admin permission; labeled intake additionally
+checks the latest actor who added that exact label. It skips already-linked
+issues, including terminal tasks, and never comments on, labels or closes issues.
+An unauthorized direct import refuses with `intake_not_permitted` (4).
+
+Intake records issue number, author and URL in a new task without launching
+agents. Titles/bodies are sanitized and capped at 4096 bytes each; later
+implementer prompts nonce-frame them as untrusted data. External text cannot
+grant permissions or override agent restrictions. Create the linked checkout,
+run `task implement`, then explicitly run `task advance` within the operator's
+authorized scope. `--limit` counts examined issues including skips (default 30,
+range 1..1000); `--dry-run` creates no state.

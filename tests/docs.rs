@@ -2,6 +2,48 @@ const README: &str = include_str!("../README.md");
 const README_JA: &str = include_str!("../README.ja.md");
 
 #[test]
+fn external_intake_guidance_matches_help_permissions_and_data_contract() {
+    let help: serde_json::Value = serde_json::from_str(include_str!("../help-data.json")).unwrap();
+    assert!(help["helps"]["task intake"].is_object());
+    assert_eq!(help["errorCodes"]["intake_not_permitted"], 4);
+    for (command, flags) in [
+        ("task new", vec!["issue"]),
+        ("task intake", vec!["label", "limit", "dry-run"]),
+    ] {
+        let options = help["helps"][command]["options"].as_array().unwrap();
+        for flag in flags {
+            assert!(options.iter().any(|option| option["name"] == flag));
+        }
+    }
+    for (name, document) in [
+        ("commands", include_str!("../docs/commands.md")),
+        ("safety", include_str!("../docs/safety.md")),
+        ("exit codes", include_str!("../docs/exit-codes.md")),
+        ("json", include_str!("../docs/json.md")),
+        ("skill", include_str!("../skills/rabi/SKILL.md")),
+    ] {
+        for text in ["intake_not_permitted", "task intake", "task new --issue"] {
+            assert!(document.contains(text), "{name} lacks {text}");
+        }
+    }
+    for document in [
+        include_str!("../docs/safety.md"),
+        include_str!("../skills/rabi/SKILL.md"),
+    ] {
+        for text in ["nonce", "4096", "untrusted data", "task advance"] {
+            assert!(document.contains(text));
+        }
+    }
+    assert!(include_str!("../docs/json.md").contains("issueNumber, action, taskId, reason"));
+    assert!(include_str!("../docs/configuration.md").contains("## External intake"));
+    for document in [README, README_JA] {
+        assert!(document.contains("--dry-run"));
+        assert!(document.contains("rabi task new --issue N"));
+    }
+    assert!(include_str!("../CHANGELOG.md").contains("## Unreleased"));
+}
+
+#[test]
 fn user_skill_has_matching_name_frontmatter() {
     let skill = include_str!("../skills/rabi/SKILL.md");
     let mut lines = skill.lines();
@@ -351,7 +393,7 @@ fn repository_selection_guidance_has_no_registry_or_cross_repository_help() {
     assert!(!json.contains("`--all-repos` also adds `repos`"));
     let breaking = include_str!("../CHANGELOG.md")
         .split("\n## ")
-        .find(|section| section.starts_with("v8.0.0"))
+        .find(|section| section.starts_with("v8.0.0 ("))
         .unwrap();
     for removal in ["registry", "--all-repos", "discover-ghq", "-R"] {
         assert!(breaking.contains(removal), "{removal}");

@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- `rabi task new --issue N` and `rabi task intake --label L [--limit N] [--dry-run]` import GitHub issues with GET-only permission checks. Authors and the latest label actor require write/maintain/admin access; issue links prevent duplicate tasks. External title/body text is sanitized, bounded and nonce-framed in later agent prompts. Intake never launches agents or writes to issues.
+
 ### Fixed
 
 - Post-launch `task implement` Git inspections pin the Git directory and common directory validated before the agent ran. Redirected metadata stops with exit 4 (`refused`), `stopReason: "metadata_changed"` and null post-launch Git facts; command, exit-code and JSON references now document this outcome.

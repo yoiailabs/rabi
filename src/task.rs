@@ -7,6 +7,7 @@ mod classify;
 pub(crate) mod cleanup;
 mod diff;
 pub(crate) mod implement;
+pub(crate) mod intake;
 mod land;
 mod policy;
 mod preflight;

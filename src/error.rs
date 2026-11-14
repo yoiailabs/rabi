@@ -141,7 +141,8 @@ pub fn exit_for_code(code: &str) -> i32 {
         | "floor_changed"
         | "diverged"
         | "environment"
-        | "destination_not_github" => REFUSED,
+        | "destination_not_github"
+        | "intake_not_permitted" => REFUSED,
         "conflict" => CONFLICT,
         "partial" => PARTIAL,
         "waiting" => WAITING,
