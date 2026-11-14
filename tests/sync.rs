@@ -4,6 +4,8 @@ mod records;
 mod test_git;
 #[path = "common/scripts.rs"]
 mod test_support;
+#[path = "common/wait.rs"]
+mod test_wait;
 use serde_json::{json, Value};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -1729,15 +1731,16 @@ fn conflict_output_is_short_in_human_and_json_formats() {
     }
 }
 
-fn finish_child(mut child: std::process::Child) -> Output {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+fn finish_child(mut child: std::process::Child, mut capture: test_wait::OutputCapture) -> Output {
+    let deadline = test_wait::hang_guard();
     loop {
+        let expired = std::time::Instant::now() >= deadline;
         if child.try_wait().unwrap().is_some() {
-            return child.wait_with_output().unwrap();
+            return capture.output(child.wait().unwrap());
         }
-        if std::time::Instant::now() >= deadline {
+        if expired {
             child.kill().unwrap();
-            let out = child.wait_with_output().unwrap();
+            let out = capture.output(child.wait().unwrap());
             panic!(
                 "command did not finish: {} {}",
                 String::from_utf8_lossy(&out.stdout),
@@ -1764,7 +1767,7 @@ fn git_hooks_can_run_rabi() {
 # Bound the nested command so a regression cannot leave orphaned child processes.
 '{bin}' gc --json > '{output}' 2>&1 &
 nested=$!
-(sleep 3; kill "$nested" 2>/dev/null) >/dev/null 2>&1 &
+(sleep {guard_secs}; kill "$nested" 2>/dev/null) >/dev/null 2>&1 &
 watcher=$!
 wait "$nested"
 result=$?
@@ -1775,7 +1778,8 @@ exit "$result"
 "#,
                 bin = env!("CARGO_BIN_EXE_rabi"),
                 output = output.display(),
-                status = status.display()
+                status = status.display(),
+                guard_secs = test_wait::hang_guard_duration().as_secs()
             ),
         )
         .unwrap();
@@ -1845,14 +1849,15 @@ echo $? > '{status}'
         ),
     )
     .unwrap();
-    let child = r
-        .command(bin, &r.main, &["create", "outer", "--no-setup"])
-        .env("RABI_TRUST_ALL", "1")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+    let capture = test_wait::OutputCapture::new();
+    let child = capture
+        .apply(
+            r.command(bin, &r.main, &["create", "outer", "--no-setup"])
+                .env("RABI_TRUST_ALL", "1"),
+        )
         .spawn()
         .unwrap();
-    let out = finish_child(child);
+    let out = finish_child(child, capture);
     assert!(
         out.status.success(),
         "{}",
@@ -1880,14 +1885,15 @@ fn post_create_hook_can_list_and_create_and_pre_delete_hook_can_create() {
         ),
     )
     .unwrap();
-    let child = r
-        .command(bin, &r.main, &["create", "outer"])
-        .env("RABI_TRUST_ALL", "1")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+    let capture = test_wait::OutputCapture::new();
+    let child = capture
+        .apply(
+            r.command(bin, &r.main, &["create", "outer"])
+                .env("RABI_TRUST_ALL", "1"),
+        )
         .spawn()
         .unwrap();
-    let out = finish_child(child);
+    let out = finish_child(child, capture);
     assert!(
         out.status.success(),
         "{}",
@@ -1898,23 +1904,24 @@ fn post_create_hook_can_list_and_create_and_pre_delete_hook_can_create() {
         format!("[hooks]\npre-remove = [\"'{bin}' create from-delete --no-setup\"]\n"),
     )
     .unwrap();
-    let child = r
-        .command(
-            bin,
-            &r.main,
-            &[
-                "remove",
-                "outer",
-                "--discard-changes",
-                "--delete-unpreserved-branch",
-            ],
+    let capture = test_wait::OutputCapture::new();
+    let child = capture
+        .apply(
+            r.command(
+                bin,
+                &r.main,
+                &[
+                    "remove",
+                    "outer",
+                    "--discard-changes",
+                    "--delete-unpreserved-branch",
+                ],
+            )
+            .env("RABI_TRUST_ALL", "1"),
         )
-        .env("RABI_TRUST_ALL", "1")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    let out = finish_child(child);
+    let out = finish_child(child, capture);
     assert!(
         out.status.success(),
         "{}",
@@ -1940,17 +1947,16 @@ fn other_commands_can_run_while_standalone_exec_is_running() {
         gate.display()
     );
     r.create("agent");
-    let mut create = r
-        .command(
+    let capture = test_wait::OutputCapture::new();
+    let mut create = capture
+        .apply(&mut r.command(
             env!("CARGO_BIN_EXE_rabi"),
             &r.main,
             &["exec", "agent", "--", "sh", "-c", &command],
-        )
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        ))
         .spawn()
         .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = test_wait::hang_guard();
     while !marker.exists() {
         assert!(
             create.try_wait().unwrap().is_none(),
@@ -1959,8 +1965,9 @@ fn other_commands_can_run_while_standalone_exec_is_running() {
         assert!(std::time::Instant::now() < deadline, "exec did not start");
         std::thread::sleep(std::time::Duration::from_millis(5));
     }
-    let delete = r
-        .command(
+    let delete_capture = test_wait::OutputCapture::new();
+    let delete = delete_capture
+        .apply(&mut r.command(
             env!("CARGO_BIN_EXE_rabi"),
             &r.main,
             &[
@@ -1971,12 +1978,10 @@ fn other_commands_can_run_while_standalone_exec_is_running() {
                 "--no-hooks",
                 "--json",
             ],
-        )
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+        ))
         .spawn()
         .unwrap();
-    let deleted = finish_child(delete);
+    let deleted = finish_child(delete, delete_capture);
     assert!(
         deleted.status.success(),
         "{}",
@@ -1988,7 +1993,7 @@ fn other_commands_can_run_while_standalone_exec_is_running() {
         "exec must still be waiting at gate"
     );
     fs::write(gate, "release\n").unwrap();
-    assert!(finish_child(create).status.success());
+    assert!(finish_child(create, capture).status.success());
 }
 
 #[test]
@@ -2001,14 +2006,15 @@ fn create_branch_and_gc_hooks_can_run_rabi_and_delete_rechecks_after_hooks() {
         format!("[hooks]\nsetup = [\"'{bin}' create from-attach --no-setup\"]\n"),
     )
     .unwrap();
-    let child = r
-        .command(bin, &r.main, &["create", "--branch", "existing"])
-        .env("RABI_TRUST_ALL", "1")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+    let capture = test_wait::OutputCapture::new();
+    let child = capture
+        .apply(
+            r.command(bin, &r.main, &["create", "--branch", "existing"])
+                .env("RABI_TRUST_ALL", "1"),
+        )
         .spawn()
         .unwrap();
-    let out = finish_child(child);
+    let out = finish_child(child, capture);
     assert!(
         out.status.success(),
         "{}",
@@ -2024,14 +2030,15 @@ fn create_branch_and_gc_hooks_can_run_rabi_and_delete_rechecks_after_hooks() {
         format!("[hooks]\npre-remove = [\"'{bin}' create from-gc --no-setup\"]\n"),
     )
     .unwrap();
-    let child = r
-        .command(bin, &r.main, &["gc", "--merged", "--apply", "--json"])
-        .env("RABI_TRUST_ALL", "1")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+    let capture = test_wait::OutputCapture::new();
+    let child = capture
+        .apply(
+            r.command(bin, &r.main, &["gc", "--merged", "--apply", "--json"])
+                .env("RABI_TRUST_ALL", "1"),
+        )
         .spawn()
         .unwrap();
-    let out = finish_child(child);
+    let out = finish_child(child, capture);
     assert!(
         out.status.success(),
         "{} {}",
@@ -2046,23 +2053,24 @@ fn create_branch_and_gc_hooks_can_run_rabi_and_delete_rechecks_after_hooks() {
         "[hooks]\npre-remove = [\"git commit --allow-empty -m changed-by-hook\"]\n",
     )
     .unwrap();
-    let child = r
-        .command(
-            bin,
-            &r.main,
-            &[
-                "remove",
-                "from-attach",
-                "--discard-changes",
-                "--delete-unpreserved-branch",
-            ],
+    let capture = test_wait::OutputCapture::new();
+    let child = capture
+        .apply(
+            r.command(
+                bin,
+                &r.main,
+                &[
+                    "remove",
+                    "from-attach",
+                    "--discard-changes",
+                    "--delete-unpreserved-branch",
+                ],
+            )
+            .env("RABI_TRUST_ALL", "1"),
         )
-        .env("RABI_TRUST_ALL", "1")
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
         .spawn()
         .unwrap();
-    let out = finish_child(child);
+    let out = finish_child(child, capture);
     assert!(!out.status.success());
     assert!(String::from_utf8_lossy(&out.stderr).contains("Workspace changed"));
     assert!(r.rabi(&r.main, &["path", "from-attach"]).status.success());
@@ -3071,19 +3079,21 @@ printf 'token\000/\000'
         ),
     )
     .unwrap();
-    let mut child = r
-        .command(bin, &r.main, &["create", "outer", "--no-setup"])
-        .process_group(0)
-        .stdout(std::process::Stdio::piped())
-        .stderr(std::process::Stdio::piped())
+    let mut capture = test_wait::OutputCapture::new();
+    let mut child = capture
+        .apply(
+            r.command(bin, &r.main, &["create", "outer", "--no-setup"])
+                .process_group(0),
+        )
         .spawn()
         .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = test_wait::hang_guard();
     let timed_out = loop {
+        let expired = std::time::Instant::now() >= deadline;
         if child.try_wait().unwrap().is_some() {
             break false;
         }
-        if std::time::Instant::now() >= deadline {
+        if expired {
             Command::new("kill")
                 .args(["-KILL", "--", &format!("-{}", child.id())])
                 .status()
@@ -3092,7 +3102,7 @@ printf 'token\000/\000'
         }
         std::thread::sleep(std::time::Duration::from_millis(5));
     };
-    let out = child.wait_with_output().unwrap();
+    let out = capture.output(child.wait().unwrap());
     assert!(
         !timed_out,
         "read-only Git intermediary deadlocked: {}",

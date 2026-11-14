@@ -4,6 +4,8 @@ mod records;
 mod test_git;
 #[path = "common/scripts.rs"]
 mod test_support;
+#[path = "common/wait.rs"]
+mod test_wait;
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -19819,8 +19821,10 @@ case "$1 $2" in
     case "$GH_PR_FAILURE" in
       exit) exit 1 ;;
       json) printf 'invalid json'; exit 0 ;;
-      timeout) exec sleep 5 ;;
-      descendant) sleep 5 & exit 0 ;;
+      # Gates cannot finish naturally before the result; removing the
+      # fixture root also releases children after a failed test.
+      timeout) while [ -d "${GH_RELEASE%/*}" ] && [ ! -e "$GH_RELEASE" ]; do sleep 0.01; done ;;
+      descendant) (while [ -d "${GH_RELEASE%/*}" ] && [ ! -e "$GH_RELEASE" ]; do sleep 0.01; done) & exit 0 ;;
     esac
     printf '%s\n' "$GH_RESPONSE" ;;
 
@@ -19832,6 +19836,7 @@ esac
     command
         .env("PATH", path)
         .env("GH_CALLS", repo.root.join("gh-calls"))
+        .env("GH_RELEASE", repo.root.join("gh-release"))
         .env("GH_RESPONSE", response.to_string())
         .env(
             "GH_REPO",
@@ -19991,22 +19996,28 @@ fn merged_pr_partial_clone_requires_exact_head_without_object_probes() {
                     };
                     let trace = repo.root.join("git-trace.json");
                     fs::write(&trace, "").unwrap();
-                    let mut child = merged_pr_command(&repo, &args, &response)
-                        .env("GIT_TRACE2_EVENT", &trace)
-                        .stdout(std::process::Stdio::piped())
-                        .stderr(std::process::Stdio::piped())
+                    let mut capture = test_wait::OutputCapture::new();
+                    let mut child = capture
+                        .apply(
+                            merged_pr_command(&repo, &args, &response)
+                                .env("GIT_TRACE2_EVENT", &trace),
+                        )
                         .spawn()
                         .unwrap();
-                    let started = std::time::Instant::now();
-                    while child.try_wait().unwrap().is_none() {
-                        if started.elapsed() > std::time::Duration::from_secs(10) {
+                    let deadline = test_wait::hang_guard();
+                    loop {
+                        let expired = std::time::Instant::now() >= deadline;
+                        if child.try_wait().unwrap().is_some() {
+                            break;
+                        }
+                        if expired {
                             child.kill().unwrap();
                             child.wait().unwrap();
                             panic!("PR preservation hung: {config} {relation} {args:?}");
                         }
                         std::thread::sleep(std::time::Duration::from_millis(10));
                     }
-                    let out = child.wait_with_output().unwrap();
+                    let out = capture.output(child.wait().unwrap());
                     assert!(out.status.success(), "{}", text(&out.stderr));
                     let doc = json_value(&out);
                     let items = doc["data"]["items"].as_array().unwrap();
@@ -20153,24 +20164,26 @@ fn merged_pr_remove_gh_failures_keep_branch() {
     for body in [
         "exit 1",
         "printf 'invalid json'",
-        "exec sleep 5",
+        "while [ -d \"${GH_RELEASE%/*}\" ] && [ ! -e \"$GH_RELEASE\" ]; do sleep 0.01; done",
         "exit 127",
         "printf '{}'",
         "printf '{\"state\":\"MERGED\"}'",
     ] {
         let repo = merged_pr_fixture(Some("7"));
         let path = gh_path(&repo, &format!("#!/bin/sh\n{body}\n"));
-        let started = std::time::Instant::now();
-        let out = repo
-            .command(env!("CARGO_BIN_EXE_rabi"), &["remove", "topic", "--json"])
-            .env("PATH", path)
-            .env("RABI_GH_TIMEOUT_MS", "50")
-            .output()
+        let mut capture = test_wait::OutputCapture::new();
+        let mut child = capture
+            .apply(
+                repo.command(env!("CARGO_BIN_EXE_rabi"), &["remove", "topic", "--json"])
+                    .env("PATH", path)
+                    .env("GH_RELEASE", repo.root.join("gh-release"))
+                    .env("RABI_GH_TIMEOUT_MS", "50"),
+            )
+            .spawn()
             .unwrap();
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(3),
-            "{body}"
-        );
+        let out = capture.finish(&mut child);
+        // The blocking gh fixture cannot exit naturally until after rabi returns.
+        fs::write(repo.root.join("gh-release"), "release").unwrap();
         assert!(out.status.success(), "{}", text(&out.stderr));
         assert_eq!(
             json_value(&out)["data"]["items"][0]["branchKeptReason"],
@@ -20354,16 +20367,19 @@ fn merged_pr_query_failures_are_cached_and_gc_reports_unavailable() {
             &retirement_head_at(&repo, &managed(&repo, "topic")),
             "MERGED",
         );
-        let started = std::time::Instant::now();
-        let out = merged_pr_command(&repo, &["gc", "--merged", "--apply", "--json"], &response)
-            .env("GH_PR_FAILURE", failure)
-            .env("RABI_GH_TIMEOUT_MS", "200")
-            .output()
+        let mut capture = test_wait::OutputCapture::new();
+        let mut child = capture
+            .apply(
+                merged_pr_command(&repo, &["gc", "--merged", "--apply", "--json"], &response)
+                    .env("GH_PR_FAILURE", failure)
+                    .env("RABI_GH_TIMEOUT_MS", "200"),
+            )
+            .spawn()
             .unwrap();
-        assert!(
-            started.elapsed() < std::time::Duration::from_secs(3),
-            "{failure}"
-        );
+        let out = capture.finish(&mut child);
+        // In the descendant case, inherited pipes remain held until killed or
+        // released here. Completion before release proves capture is bounded.
+        fs::write(repo.root.join("gh-release"), "release").unwrap();
         assert!(out.status.success(), "{}", text(&out.stderr));
         let doc = json_value(&out);
         assert_eq!(

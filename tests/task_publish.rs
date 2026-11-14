@@ -3,6 +3,8 @@
 mod test_git;
 #[path = "common/scripts.rs"]
 mod test_support;
+#[path = "common/wait.rs"]
+mod test_wait;
 
 use serde_json::{json, Value};
 use std::fs;
@@ -600,10 +602,12 @@ fn escaped_child_holding_precheck_pipes_does_not_delay_tail_capture() {
         }
     }
     let repo = Repo::new(Some(&[
-        "setsid sh -c 'echo $$ > \"$RABI_PUBLISH_FIXTURE/escaped-pid\"; exec sleep 60' & while [ ! -f \"$RABI_PUBLISH_FIXTURE/escaped-pid\" ]; do sleep 0.01; done; printf 'held-pipe-tail\\n' >&2; exit 7"
+        "setsid sh -c 'echo $$ > \"$RABI_PUBLISH_FIXTURE/escaped-pid\"; while [ -d \"$RABI_PUBLISH_FIXTURE\" ] && [ ! -f \"$RABI_PUBLISH_FIXTURE/release-escaped\" ]; do sleep 0.01; done' & while [ ! -f \"$RABI_PUBLISH_FIXTURE/escaped-pid\" ]; do sleep 0.01; done; printf 'held-pipe-tail\\n' >&2; exit 7"
     ]), None);
     let _escaped = EscapedChild(repo.root.join("escaped-pid"));
-    decode(repo.publish().output().unwrap(), 1);
+    let mut capture = test_wait::OutputCapture::new();
+    let mut publisher = capture.apply(&mut repo.publish()).spawn().unwrap();
+    decode(capture.finish(&mut publisher), 1);
     let view = repo.view();
     assert_eq!(precheck(&view)["reason"], "command_failed");
     assert!(precheck(&view)["outputTail"]
@@ -617,6 +621,8 @@ fn escaped_child_holding_precheck_pipes_does_not_delay_tail_capture() {
         Some("Z"),
         "publication waited for the escaped child's pipe to close"
     );
+    // Release only after the result and live pipe holder have been observed.
+    fs::write(repo.root.join("release-escaped"), "release").unwrap();
     assert!(repo.pushes().is_empty());
 }
 
@@ -1040,17 +1046,13 @@ fn final_record_failure_reports_partial_and_retry_reconciles() {
 fn active_publication_refuses_concurrent_abandonment() {
     let repo = Repo::new(None, None);
     fs::write(repo.root.join("pause-publication"), "armed").unwrap();
-    let mut publisher = repo
-        .publish()
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let mut capture = test_wait::OutputCapture::new();
+    let mut publisher = capture.apply(&mut repo.publish()).spawn().unwrap();
+    let deadline = test_wait::hang_guard();
     while !repo.root.join("publication-paused").exists() {
         if std::time::Instant::now() > deadline {
             let _ = publisher.kill();
-            let output = publisher.wait_with_output().unwrap();
+            let output = capture.output(publisher.wait().unwrap());
             panic!(
                 "Publication did not reach network pause: {} {}",
                 String::from_utf8_lossy(&output.stdout),
@@ -1064,7 +1066,7 @@ fn active_publication_refuses_concurrent_abandonment() {
         .output()
         .unwrap();
     fs::remove_file(repo.root.join("pause-publication")).unwrap();
-    decode(publisher.wait_with_output().unwrap(), 0);
+    decode(capture.finish(&mut publisher), 0);
     decode(rejected, 4);
     assert_eq!(repo.view()["task"]["state"]["name"], "ci");
 }

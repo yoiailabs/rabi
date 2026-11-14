@@ -3,6 +3,8 @@
 mod test_git;
 #[path = "common/scripts.rs"]
 mod test_support;
+#[path = "common/wait.rs"]
+mod test_wait;
 
 use serde_json::Value;
 use std::fs;
@@ -805,7 +807,7 @@ fn running(pid: i32) -> bool {
     })
 }
 fn wait_for(path: &Path) {
-    let deadline = Instant::now() + Duration::from_secs(10);
+    let deadline = test_wait::hang_guard();
     while !fs::metadata(path).is_ok_and(|metadata| metadata.len() > 0) {
         assert!(
             Instant::now() < deadline,
@@ -822,14 +824,13 @@ fn timeout_and_interrupt_kill_groups_and_record_outcomes() {
     for signal in [None, Some(libc::SIGINT), Some(libc::SIGTERM)] {
         let repo = Repo::new();
         let mut command = repo.implement("codex");
-        command
-            .env("RABI_IMPLEMENT_MODE", "wait")
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped());
+        command.env("RABI_IMPLEMENT_MODE", "wait");
+        let mut capture = test_wait::OutputCapture::new();
+        capture.apply(&mut command);
         if signal.is_none() {
             command.args(["--timeout", "3s"]);
         }
-        let child = command.spawn().unwrap();
+        let mut child = command.spawn().unwrap();
         wait_for(&repo.root.join("leader"));
         let leader: i32 = repo.file("leader").trim().parse().unwrap();
         let descendant: i32 = repo.file("descendant").trim().parse().unwrap();
@@ -840,7 +841,7 @@ fn timeout_and_interrupt_kill_groups_and_record_outcomes() {
             }
         }
         let exit = if signal.is_some() { 130 } else { 124 };
-        let output = decode(child.wait_with_output().unwrap(), exit);
+        let output = decode(capture.finish(&mut child), exit);
         assert_eq!(
             output["data"]["stopReason"],
             if signal.is_some() {
@@ -849,7 +850,7 @@ fn timeout_and_interrupt_kill_groups_and_record_outcomes() {
                 "timed_out"
             }
         );
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = test_wait::hang_guard();
         while running(leader) || running(descendant) {
             assert!(Instant::now() < deadline, "process group survived");
             std::thread::sleep(Duration::from_millis(10));
@@ -970,11 +971,9 @@ fn absent_workspace_bad_history_and_spawn_failure_are_explicit() {
 #[test]
 fn concurrent_attempt_is_refused_and_lock_releases_after_interrupt() {
     let repo = Repo::new();
-    let child = repo
-        .implement("codex")
-        .env("RABI_IMPLEMENT_MODE", "wait")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+    let mut capture = test_wait::OutputCapture::new();
+    let mut child = capture
+        .apply(repo.implement("codex").env("RABI_IMPLEMENT_MODE", "wait"))
         .spawn()
         .unwrap();
     wait_for(&repo.root.join("leader"));
@@ -987,7 +986,7 @@ fn concurrent_attempt_is_refused_and_lock_releases_after_interrupt() {
     unsafe {
         libc::kill(child.id() as i32, libc::SIGTERM);
     }
-    decode(child.wait_with_output().unwrap(), 130);
+    decode(capture.finish(&mut child), 130);
     decode(repo.implement("claude").output().unwrap(), 0);
     assert_eq!(repo.view()["events"].as_array().unwrap().len(), 5);
 }
