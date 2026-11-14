@@ -142,7 +142,7 @@ pub(crate) fn canonical_remote_name(url: &str) -> Option<String> {
 }
 
 /// Select a checkout by filesystem path or its exact clone-layout location.
-/// Existing relative paths take precedence; `./` forces filesystem lookup.
+/// Only explicit path prefixes select filesystem lookup.
 pub fn resolve_repository_ref(reference: &str) -> Result<PathBuf> {
     let reference = reference.trim();
     if reference.is_empty() {
@@ -164,7 +164,12 @@ pub fn resolve_repository_ref(reference: &str) -> Result<PathBuf> {
     } else {
         PathBuf::from(reference)
     };
-    if path.is_absolute() || reference.starts_with('.') || destination_exists(&path)? {
+    if reference.starts_with('/')
+        || reference.starts_with('~')
+        || reference.starts_with("./")
+        || reference.starts_with("../")
+        || matches!(reference, "." | "..")
+    {
         return resolve_directory_reference(&path, reference);
     }
     let Some(segments) = path_segments(reference) else {
@@ -215,15 +220,11 @@ fn resolve_directory_reference(path: &Path, reference: &str) -> Result<PathBuf> 
         Err(error) => return Err(Error::msg(error.to_string())),
     };
     if !metadata.is_dir() {
-        if metadata.is_file()
-            && path.file_name().is_some_and(|name| name == ".git")
-            && fs::read_to_string(path).is_ok_and(|contents| contents.starts_with("gitdir:"))
-        {
-            if let Some(checkout) = path
-                .parent()
-                .filter(|parent| !parent.as_os_str().is_empty())
-            {
-                return resolve_checkout_path(checkout, reference);
+        if path.file_name().is_some_and(|name| name == ".git") {
+            if let Some(checkout) = path.parent() {
+                if let Ok(root) = filesystem_checkout_root(checkout) {
+                    return Err(not_checkout_root(reference, &root));
+                }
             }
         }
         return Err(Error::validation(format!(
@@ -234,25 +235,50 @@ fn resolve_directory_reference(path: &Path, reference: &str) -> Result<PathBuf> 
 }
 
 fn resolve_checkout_path(path: &Path, reference: &str) -> Result<PathBuf> {
-    match crate::git::git_root(path) {
-        Ok(root) => Ok(fs::canonicalize(&root).unwrap_or(root)),
+    let checkout = match filesystem_checkout_root(path) {
+        Ok(checkout) => checkout,
         Err(error) => {
-            // A checkout's .git directory (or one of its children) is still a
-            // filesystem reference to that checkout, including linked worktrees.
+            // Git's admin directory is outside the work tree. Still give a
+            // checkout-root hint without accepting that directory.
             for ancestor in path.ancestors() {
-                if ancestor.file_name().is_some_and(|name| name == ".git") && ancestor.is_dir() {
+                if ancestor.file_name().is_some_and(|name| name == ".git") {
                     if let Some(checkout) = ancestor.parent() {
-                        return crate::git::git_root(checkout)
-                            .map(|root| fs::canonicalize(&root).unwrap_or(root))
-                            .map_err(|_| Error::validation(format!(
-                                "Repository path '{reference}' is inside a Git directory, not a checkout"
-                            )));
+                        if let Ok(root) = filesystem_checkout_root(checkout) {
+                            return Err(not_checkout_root(reference, &root));
+                        }
                     }
                 }
             }
-            Err(error)
+            return Err(error);
         }
+    };
+    let canonical = fs::canonicalize(path).map_err(|error| Error::msg(error.to_string()))?;
+    let checkout = fs::canonicalize(checkout).map_err(|error| Error::msg(error.to_string()))?;
+    if canonical != checkout {
+        return Err(not_checkout_root(reference, &checkout));
     }
+    let root = crate::git::git_root(path)?;
+    fs::canonicalize(root).map_err(|error| Error::msg(error.to_string()))
+}
+
+fn filesystem_checkout_root(path: &Path) -> Result<PathBuf> {
+    let inside = crate::git::output(&["rev-parse", "--is-inside-work-tree"], Some(path), true)?;
+    if inside != "true" {
+        return Err(Error::validation(
+            "Repository path is not inside a checkout",
+        ));
+    }
+    // Git returns only ../ components here. Keep the filesystem path itself out
+    // of text output so trailing whitespace and non-UTF-8 bytes survive.
+    let relative = crate::git::output(&["rev-parse", "--show-cdup"], Some(path), true)?;
+    fs::canonicalize(path.join(relative)).map_err(|error| Error::msg(error.to_string()))
+}
+
+fn not_checkout_root(reference: &str, checkout: &Path) -> Error {
+    Error::validation(format!(
+        "Repository path '{reference}' is not a repository root. Use the checkout root {} instead.",
+        checkout.display()
+    ))
 }
 
 /// Display identity for the selected repository, independent of registrations.
@@ -1619,16 +1645,14 @@ mod tests {
         let nested = linked.join("nested");
         fs::create_dir(&nested).expect("nested");
         let primary = fs::canonicalize(&checkout).expect("primary");
-        for path in [
-            checkout.clone(),
-            checkout.join(".git/objects"),
-            linked.join(".git"),
-            nested,
-        ] {
+        for path in [checkout.clone(), linked.clone()] {
             assert_eq!(
                 resolve_directory_reference(&path, "checkout").expect("filesystem path"),
                 primary
             );
+        }
+        for path in [checkout.join(".git/objects"), linked.join(".git"), nested] {
+            assert!(resolve_directory_reference(&path, "checkout").is_err());
         }
         let file = linked.join("file");
         fs::write(&file, "content").expect("file");

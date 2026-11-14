@@ -99,7 +99,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo github.com/owner/repo"
         },
         {
@@ -250,7 +250,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo ~/src/repo"
         },
         {
@@ -324,7 +324,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -426,7 +426,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
         },
         {
           "name": "json",
@@ -463,7 +463,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
         },
         {
           "name": "json",
@@ -500,7 +500,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -552,7 +552,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
         },
         {
           "name": "json",
@@ -591,7 +591,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
         },
         {
           "name": "sources",
@@ -635,7 +635,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
         },
         {
           "name": "json",
@@ -674,7 +674,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
         },
         {
           "name": "json",
@@ -713,7 +713,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
         },
         {
           "name": "branch",
@@ -794,7 +794,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
         },
         {
           "name": "json",
@@ -831,7 +831,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
         },
         {
           "name": "all",
@@ -938,7 +938,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
         },
         {
           "name": "sources",
@@ -982,7 +982,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
         },
         {
           "name": "json",
@@ -1020,7 +1020,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
         },
         {
           "name": "json",
@@ -1055,7 +1055,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
         },
         {
           "name": "json",
@@ -1092,7 +1092,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -1144,7 +1144,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -1195,7 +1195,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -1278,7 +1278,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo github.com/owner/repo"
         },
         {
@@ -1345,7 +1345,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo github.com/owner/repo"
         },
         {
@@ -1383,7 +1383,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo github.com/owner/repo"
         },
         {
@@ -1454,7 +1454,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -1556,7 +1556,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
         },
         {
           "name": "no-input",
@@ -1595,7 +1595,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
         },
         {
           "name": "no-input",
@@ -1644,7 +1644,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -1735,7 +1735,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -1773,7 +1773,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -1811,7 +1811,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -1849,7 +1849,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -1892,7 +1892,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -1935,7 +1935,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -1992,7 +1992,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -2041,7 +2041,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -2090,7 +2090,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -2145,7 +2145,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -2188,7 +2188,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -2244,7 +2244,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -2289,7 +2289,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -2328,7 +2328,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -2373,7 +2373,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -2423,7 +2423,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -2473,7 +2473,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -2523,7 +2523,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -2584,7 +2584,7 @@
           "name": "repo",
           "short": "R",
           "type": "string",
-          "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
+          "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector).",
           "example": "--repo owner/repo"
         },
         {
@@ -2634,7 +2634,7 @@
       "name": "repo",
       "short": "R",
       "type": "string",
-      "description": "Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
+      "description": "Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector)."
     },
     {
       "name": "output",

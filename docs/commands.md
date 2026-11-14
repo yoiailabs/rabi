@@ -343,7 +343,7 @@ After integration, remove deletes a branch only with preservation evidence; othe
 
 | Option | Meaning |
 |---|---|
-| `-R, --repo <value>` | Select a repository by filesystem path, or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector). |
+| `-R, --repo <value>` | Select a repository by checkout root path starting with /, ./, ../, or ~ (also . and ..), or host/owner/repo (owner/repo uses the default host) at the clone-root location used by clone. Prefix relative paths with ./; subdirectories and .git paths are rejected. The directory must exist and match that repository. It may appear with the other options or precede the command. For exec, put this before SEL (the workspace selector). |
 | `--output <value>` | Select text or json on JSON-capable commands; overrides RABI_OUTPUT |
 | `--json` | Alias for --output json on JSON-capable commands |
 | `--no-input` | Never prompt; also enabled by CI, JSON, RABI_NO_INPUT, or no stdin/stderr TTY |

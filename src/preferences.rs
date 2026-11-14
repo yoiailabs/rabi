@@ -120,7 +120,7 @@ pub fn set_preference(key: &str, value: &str) -> Result<PathBuf> {
 }
 
 pub fn remove_preference(key: &str) -> Result<PathBuf> {
-    require_key(key)?;
+    require_removable_key(key)?;
     let path = crate::paths::config_dir()?.join("config.toml");
     remove_preference_at(&path, key)?;
     Ok(path)
@@ -152,11 +152,13 @@ fn set_preference_at(path: &Path, key: &str, value: &str) -> Result<()> {
 }
 
 fn remove_preference_at(path: &Path, key: &str) -> Result<()> {
-    require_key(key)?;
+    require_removable_key(key)?;
     let Some(mut document) = read_document(path)? else {
         return Err(not_set(path, key));
     };
-    preferences_from(&document, path)?;
+    if key != "discover-ghq" {
+        preferences_from(&document, path)?;
+    }
     let removed = if let Some((table, field)) = key.split_once('.') {
         document
             .get_mut(table)
@@ -168,6 +170,7 @@ fn remove_preference_at(path: &Path, key: &str) -> Result<()> {
     if removed.is_none() {
         return Err(not_set(path, key));
     }
+    preferences_from(&document, path)?;
     write_document(path, &document, false)
 }
 
@@ -291,6 +294,12 @@ fn is_bool_key(key: &str) -> bool {
 }
 
 fn unknown_file_key(path: &Path, key: &str) -> Error {
+    if key == "discover-ghq" {
+        return Error::msg(format!(
+            "Config key '{key}' in {} was removed in v8. Delete it with `rabi config unset {key}`.",
+            path.display()
+        ));
+    }
     Error::msg(format!(
         "Unknown key '{key}' in {}. Supported keys: {}",
         path.display(),
@@ -313,10 +322,23 @@ fn not_set(path: &Path, key: &str) -> Error {
 }
 
 pub fn unknown_key_message(key: &str) -> String {
+    if key == "discover-ghq" {
+        return format!(
+            "Config key '{key}' was removed in v8. Delete it with `rabi config unset {key}`."
+        );
+    }
     format!(
         "Unknown config key '{key}'. Supported keys: {}",
         SUPPORTED_KEYS.join(", ")
     )
+}
+
+fn require_removable_key(key: &str) -> Result<()> {
+    if key == "discover-ghq" {
+        Ok(())
+    } else {
+        require_key(key)
+    }
 }
 
 pub fn require_key(key: &str) -> Result<()> {

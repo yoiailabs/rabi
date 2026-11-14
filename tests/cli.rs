@@ -533,17 +533,15 @@ fn linked_worktree_git_file_and_insteadof_canonical_name() {
         )
         .output()
         .expect("list git file");
-    assert!(
-        from_gitfile.status.success(),
-        "stderr: {}",
-        text(&from_gitfile.stderr)
-    );
-    assert_eq!(
-        default_worktree_path(&json_value(&from_gitfile)),
-        default_worktree_path(&json_value(&from_worktree))
-    );
+    assert_eq!(from_gitfile.status.code(), Some(2), "{from_gitfile:?}");
+    let rejected = json_value(&from_gitfile);
+    assert_eq!(rejected["error"]["code"], "usage");
+    let message = rejected["error"]["message"].as_str().unwrap();
+    assert!(message.contains("not a repository root"), "{message}");
+    assert!(message.contains("Use the checkout root"), "{message}");
+    assert!(message.contains(worktree.to_str().unwrap()), "{message}");
     assert!(same_dir(
-        &default_worktree_path(&json_value(&from_gitfile)),
+        &default_worktree_path(&json_value(&from_worktree)),
         &repo.repo
     ));
 
@@ -3333,7 +3331,6 @@ fn repository_registration_and_cross_repository_flags_are_usage_errors() {
         vec!["gc", "--all-repos"],
         vec!["config", "get", "discover-ghq"],
         vec!["config", "set", "discover-ghq", "false"],
-        vec!["config", "unset", "discover-ghq"],
     ] {
         for json in [false, true] {
             let mut argv = args.clone();
@@ -3558,6 +3555,119 @@ fn list_show_and_gc_stay_within_the_current_or_selected_repository() {
 }
 
 #[test]
+fn canonical_repository_names_ignore_existing_relative_directories() {
+    let repo = Repo::new();
+    let checkout = init_named_repo(
+        &repo,
+        "github.com/acme/widget",
+        "https://github.com/acme/widget.git",
+    );
+    assert!(repo
+        .rabi(&[
+            "config",
+            "set",
+            "clone-root",
+            repo.root.join("clones").to_str().unwrap(),
+        ])
+        .status
+        .success());
+    for reference in ["acme/widget", "github.com/acme/widget"] {
+        fs::create_dir_all(repo.repo.join(reference)).unwrap();
+        let output = repo.rabi(&["-R", reference, "list", "--json"]);
+        assert!(output.status.success(), "{output:?}");
+        let value = json_value(&output);
+        assert_eq!(
+            value["data"]["workspaces"][0]["path"],
+            canonical(&checkout).to_str().unwrap()
+        );
+    }
+    fs::create_dir_all(repo.repo.join("acme/missing")).unwrap();
+    let missing = repo.rabi(&["-R", "acme/missing", "list", "--json"]);
+    assert_eq!(missing.status.code(), Some(3), "{missing:?}");
+    assert_eq!(json_value(&missing)["error"]["code"], "not_found");
+    // An explicit relative path is checked as a checkout root instead.
+    let explicit = repo.rabi(&["-R", "./acme/widget", "list", "--json"]);
+    assert_eq!(explicit.status.code(), Some(2), "{explicit:?}");
+    assert!(json_value(&explicit)["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("not a repository root"));
+}
+
+#[test]
+fn explicit_repository_roots_preserve_trailing_whitespace() {
+    for suffix in [" ", "\n", " \n"] {
+        let mut repo = Repo::new();
+        let renamed = repo.root.join(format!("repo{suffix}"));
+        fs::rename(&repo.repo, &renamed).unwrap();
+        repo.repo = renamed;
+        fs::create_dir(repo.repo.join("sub")).unwrap();
+
+        let selected = repo.rabi(&["-R", ".", "list", "--json"]);
+        assert!(selected.status.success(), "{selected:?}");
+        let expected = canonical(&repo.repo);
+        assert_eq!(
+            json_value(&selected)["data"]["workspaces"][0]["path"],
+            expected.to_str().unwrap()
+        );
+
+        for reference in ["./sub", "./.git", "./.git/objects"] {
+            let rejected = repo.rabi(&["-R", reference, "list", "--json"]);
+            assert_eq!(rejected.status.code(), Some(2), "{reference}: {rejected:?}");
+            let value = json_value(&rejected);
+            assert_eq!(value["error"]["code"], "usage");
+            let message = value["error"]["message"].as_str().unwrap();
+            assert!(message.contains("not a repository root"), "{message}");
+            assert!(
+                message.contains(&format!(
+                    "Use the checkout root {} instead.",
+                    expected.display()
+                )),
+                "{message}"
+            );
+        }
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn explicit_repository_roots_preserve_non_utf8_paths() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let mut repo = Repo::new();
+    let renamed = repo.root.join(OsString::from_vec(b"repo\xff".to_vec()));
+    fs::rename(&repo.repo, &renamed).unwrap();
+    repo.repo = renamed;
+    fs::create_dir(repo.repo.join("sub")).unwrap();
+
+    let current = repo.rabi(&["list", "--json"]);
+    assert!(current.status.success(), "{current:?}");
+    let selected = repo.rabi(&["-R", ".", "list", "--json"]);
+    assert!(selected.status.success(), "{selected:?}");
+    assert_eq!(
+        json_value(&selected)["data"]["workspaces"][0]["path"],
+        json_value(&current)["data"]["workspaces"][0]["path"]
+    );
+
+    for reference in ["./sub", "./.git", "./.git/objects"] {
+        let rejected = repo.rabi(&["-R", reference, "list", "--json"]);
+        assert_eq!(rejected.status.code(), Some(2), "{reference}: {rejected:?}");
+        let value = json_value(&rejected);
+        assert_eq!(value["error"]["code"], "usage");
+        let message = value["error"]["message"].as_str().unwrap();
+        assert!(message.contains("not a repository root"), "{message}");
+        assert!(
+            message.contains(&format!(
+                "Use the checkout root {} instead.",
+                repo.repo.display()
+            )),
+            "{message}"
+        );
+    }
+}
+
+#[test]
 fn repository_option_resolves_paths_and_exact_clone_locations() {
     let repo = Repo::new();
     let path_env = fixture_bin_path(&repo);
@@ -3657,13 +3767,8 @@ fn repository_option_resolves_paths_and_exact_clone_locations() {
     assert!(relative.status.success(), "{}", text(&relative.stderr));
     assert!(same_dir(&text(&relative.stdout), &repo.repo));
     let plain_relative = run(&["path", "--repo", "repo", "main"], &repo.root);
-    assert!(
-        plain_relative.status.success(),
-        "{}",
-        text(&plain_relative.stderr)
-    );
-    assert!(same_dir(&text(&plain_relative.stdout), &repo.repo));
-    let dotted = run(&["path", "--repo", ".", "main"], &sub);
+    assert_eq!(plain_relative.status.code(), Some(3));
+    let dotted = run(&["path", "--repo", ".", "main"], &repo.repo);
     assert!(dotted.status.success(), "{}", text(&dotted.stderr));
     assert!(same_dir(&text(&dotted.stdout), &repo.repo));
     let tilde = repo
@@ -3679,33 +3784,26 @@ fn repository_option_resolves_paths_and_exact_clone_locations() {
     assert!(tilde.status.success(), "{}", text(&tilde.stderr));
     assert!(same_dir(&text(&tilde.stdout), &repo.repo));
 
-    let inside = run(
-        &["list", "--json", "--repo", nested.to_str().expect("nested")],
-        &repo.home,
-    );
-    assert!(
-        inside.status.success(),
-        "{}\n{}",
-        text(&inside.stdout),
-        text(&inside.stderr)
-    );
-    let inside_json = json_value(&inside);
-    let worktrees = inside_json["data"]["workspaces"]
-        .as_array()
-        .expect("worktrees");
-    let default_tree = worktrees
-        .iter()
-        .find(|worktree| worktree["kind"].as_str() == Some("primary"))
-        .expect("primary checkout");
-    assert!(same_dir(
-        default_tree["path"].as_str().unwrap_or(""),
-        &repo.repo
-    ));
-    let feature_tree = worktrees
-        .iter()
-        .find(|worktree| worktree["name"] == "feature")
-        .expect("feature");
-    assert_eq!(feature_tree["kind"], "workspace");
+    for (reference, cwd, expected_root) in [
+        (nested.to_str().unwrap(), &repo.home, &worktree),
+        (sub.to_str().unwrap(), &repo.home, &repo.repo),
+        ("./sub", &repo.repo, &repo.repo),
+        (".", &sub, &repo.repo),
+        ("..", &nested.join("child"), &worktree),
+    ] {
+        fs::create_dir_all(cwd).unwrap();
+        let inside = run(&["list", "--json", "--repo", reference], cwd);
+        assert_eq!(inside.status.code(), Some(2), "{reference}: {inside:?}");
+        let value = json_value(&inside);
+        assert_eq!(value["error"]["code"], "usage");
+        let message = value["error"]["message"].as_str().unwrap();
+        assert!(message.contains("not a repository root"), "{message}");
+        assert!(message.contains("Use the checkout root"), "{message}");
+        assert!(
+            message.contains(expected_root.to_str().unwrap()),
+            "{message}"
+        );
+    }
     let from_link = run(&["path", "--repo", ".", "main"], &worktree);
     assert!(from_link.status.success(), "{}", text(&from_link.stderr));
     assert!(same_dir(&text(&from_link.stdout), &repo.repo));
@@ -3713,7 +3811,7 @@ fn repository_option_resolves_paths_and_exact_clone_locations() {
         &[
             "create",
             "--repo",
-            nested.to_str().expect("nested"),
+            worktree.to_str().expect("worktree"),
             "from-link",
         ],
         &repo.home,
@@ -4261,28 +4359,10 @@ fn relative_origin_is_not_a_github_project_name() {
     assert!(by_name.status.success(), "{}", text(&by_name.stderr));
     assert!(same_dir(&text(&by_name.stdout), &project));
 
-    let git_dir = repo.rabi(&[
-        "path",
-        "-R",
-        repo.repo.join(".git").to_str().expect("git"),
-        "main",
-    ]);
-    assert!(
-        git_dir.status.success(),
-        "{}\n{}",
-        text(&git_dir.stdout),
-        text(&git_dir.stderr)
-    );
-    assert!(same_dir(&text(&git_dir.stdout), &repo.repo));
-    let objects = repo.rabi(&[
-        "path",
-        "-R",
-        repo.repo.join(".git/objects").to_str().expect("objects"),
-        "main",
-    ]);
-    assert!(objects.status.success(), "{}", text(&objects.stderr));
-    assert!(same_dir(&text(&objects.stdout), &repo.repo));
-    assert!(!text(&objects.stderr).contains("must be run in a work tree"));
+    for path in [repo.repo.join(".git"), repo.repo.join(".git/objects")] {
+        let output = repo.rabi(&["path", "-R", path.to_str().unwrap(), "main"]);
+        assert!(!output.status.success(), "{output:?}");
+    }
 }
 
 #[test]
@@ -10745,6 +10825,66 @@ fn unknown_commands_and_options_are_usage_errors() {
 }
 
 #[test]
+fn removed_discover_ghq_config_has_a_migration_error_and_can_be_unset() {
+    for json in [false, true] {
+        let repo = Repo::new();
+        let path = repo.home.join(".config/rabi/config.toml");
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let contents = "discover-ghq = false\n# retain this comment\nworkspace-root = \"workspaces\"\n[sync]\nstrategy = \"merge\"\n";
+        fs::write(&path, contents).unwrap();
+        for args in [vec!["list"], vec!["config", "list"]] {
+            let mut args = args;
+            if json {
+                args.push("--json");
+            }
+            let output = repo.rabi(&args);
+            assert_eq!(output.status.code(), Some(1), "{args:?}: {output:?}");
+            let message = if json {
+                assert!(output.stderr.is_empty());
+                json_value(&output)["error"]["message"]
+                    .as_str()
+                    .unwrap()
+                    .to_owned()
+            } else {
+                assert!(output.stdout.is_empty());
+                text(&output.stderr)
+            };
+            assert!(message.contains("removed in v8"), "{message}");
+            assert!(message.contains("Delete it"), "{message}");
+            assert!(
+                message.contains("rabi config unset discover-ghq"),
+                "{message}"
+            );
+            assert_eq!(fs::read_to_string(&path).unwrap(), contents);
+        }
+        let mut args = vec!["config", "unset", "discover-ghq"];
+        if json {
+            args.push("--json");
+        }
+        let unset = repo.rabi(&args);
+        assert!(unset.status.success(), "{unset:?}");
+        if json {
+            assert_eq!(json_value(&unset)["data"]["unset"], true);
+        }
+        let remaining = fs::read_to_string(&path).unwrap();
+        assert!(!remaining.contains("discover-ghq"));
+        assert!(remaining.contains("# retain this comment"));
+        assert!(remaining.contains("workspace-root = \"workspaces\""));
+        assert!(remaining.contains("strategy = \"merge\""));
+        assert!(repo.rabi(&["list"]).status.success());
+        let missing = repo.rabi(&args);
+        assert_eq!(missing.status.code(), Some(3), "{missing:?}");
+
+        // Removing the retired key cannot bypass validation of other keys.
+        let invalid = "discover-ghq = true\nbogus = true\n";
+        fs::write(&path, invalid).unwrap();
+        let refused = repo.rabi(&args);
+        assert_eq!(refused.status.code(), Some(1), "{refused:?}");
+        assert_eq!(fs::read_to_string(&path).unwrap(), invalid);
+    }
+}
+
+#[test]
 fn unknown_config_keys_are_rejected_without_rewriting() {
     let repo = Repo::new();
     let path = repo.home.join(".config/rabi/config.toml");
@@ -10754,7 +10894,6 @@ fn unknown_config_keys_are_rejected_without_rewriting() {
         "worktrees-directory",
         "root",
         "ghq-discovery",
-        "discover-ghq",
         "keep-branch",
         "directory-name-separator",
     ] {

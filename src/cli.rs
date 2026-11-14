@@ -1782,7 +1782,6 @@ fn config_unset(args: &[String]) -> Result<i32> {
         return Err(Error::validation("Usage: rabi config unset KEY"));
     }
     let key = &parsed.positionals[0];
-    preferences::require_key(key)?;
     let path = preferences::remove_preference(key)?;
     if crate::output::json() {
         emit_json(&serde_json::json!({"key": key, "unset": true}))

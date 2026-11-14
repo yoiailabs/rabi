@@ -47,11 +47,14 @@ rabi clone owner/repo
 ```
 
 `rabi clone` accepts a URL, `host/owner/repo`, or `owner/repo` and writes no
-registration. REF accepts a filesystem path, or a canonical `host/owner/repo`
+registration. REF accepts a checkout root path starting with `/`, `./`, `../`,
+or `~` (also `.` and `..`), or a canonical `host/owner/repo`
 (`owner/repo` uses the default host) mapped directly to the same clone-root
 location. That directory must exist and its origin must identify the repository.
 Names, IDs, and suffixes do not trigger registry lookup or discovery. Use an
-explicit relative path to select an existing checkout elsewhere:
+explicit relative path to select an existing checkout elsewhere: prefix relative
+paths with `./`. Subdirectories and `.git` paths are rejected; linked worktree
+roots are accepted and resolve to primary:
 
 ```sh
 rabi -R ./your-repo list

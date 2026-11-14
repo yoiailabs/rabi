@@ -161,7 +161,7 @@ rabi run --fresh --provider claude "Fix issue #123"
 
 ## Configuration
 
-`rabi config` manages `workspace-root`, `clone-root`, `sync.strategy`, and `sync.rewrite-published`. Commands use the current or `-R/--repo REF`-selected repository. REF accepts a filesystem path or a canonical `host/owner/repo` (`owner/repo` uses the default host) at the matching existing clone location. See [configuration and repository targeting](docs/configuration.md).
+`rabi config` manages `workspace-root`, `clone-root`, `sync.strategy`, and `sync.rewrite-published`. Commands use the current or `-R/--repo REF`-selected repository. REF accepts a checkout root path starting with `/`, `./`, `../`, or `~` (also `.` and `..`), or a canonical `host/owner/repo` (`owner/repo` uses the default host) at the matching existing clone location. Prefix relative paths with `./`; subdirectory paths are rejected. See [configuration and repository targeting](docs/configuration.md).
 
 Declare `[env]` once in the primary checkout's `.rabi.toml` to prepend PATH entries and set variables for trusted `rabi run` and `rabi exec`. Run skips workspace PATH entries and values referencing `${RABI_WORKSPACE_PATH}` with a warning; declare only directories agents cannot write, since PATH also selects provider interpreters. Both accept `--no-env`; hooks keep their existing environment. See [execution environment](docs/configuration.md#repository-execution-environment) for expansion and security rules.
 
