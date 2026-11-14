@@ -1169,6 +1169,38 @@ mod tests {
             });
         }
         assert!(matches!(checks(&facts, &policy), Checks::Success));
+        facts.statuses.clear();
+        for (id, state, creator) in [
+            (10, "success", Some("maintainer-login")),
+            (30, "failure", Some("maintainer-login")),
+            (50, "failure", Some("other-login")),
+            (60, "failure", None),
+        ] {
+            facts.statuses.push(crate::github::facts::CommitStatus {
+                id,
+                context: "signoff".into(),
+                sha: facts.pr.head_sha.clone(),
+                state: state.into(),
+                creator: creator.map(str::to_owned),
+            });
+        }
+        assert!(matches!(checks(&facts, &policy), Checks::Failed(_)));
+        facts.statuses.clear();
+        for (id, state, creator) in [
+            (30, "success", Some("maintainer-login")),
+            (10, "failure", Some("maintainer-login")),
+            (50, "failure", Some("other-login")),
+            (60, "failure", None),
+        ] {
+            facts.statuses.push(crate::github::facts::CommitStatus {
+                id,
+                context: "signoff".into(),
+                sha: facts.pr.head_sha.clone(),
+                state: state.into(),
+                creator: creator.map(str::to_owned),
+            });
+        }
+        assert!(matches!(checks(&facts, &policy), Checks::Success));
         facts.statuses[0].state = "pending".into();
         assert!(matches!(checks(&facts, &policy), Checks::Waiting));
         facts.statuses[0].state = "failure".into();

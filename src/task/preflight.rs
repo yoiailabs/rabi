@@ -653,6 +653,44 @@ mod tests {
         }
         let report = evaluate(&facts, &policy, &local, None);
         assert_eq!(report.items[2].detail["checks"][0]["pass"], true);
+        facts.statuses.clear();
+        for (id, state, creator) in [
+            (10, "success", Some("maintainer-login")),
+            (30, "failure", Some("maintainer-login")),
+            (50, "failure", Some("other-login")),
+            (60, "failure", None),
+        ] {
+            facts.statuses.push(crate::github::facts::CommitStatus {
+                id,
+                context: "signoff".into(),
+                sha: facts.pr.head_sha.clone(),
+                state: state.into(),
+                creator: creator.map(str::to_owned),
+            });
+        }
+        assert_eq!(
+            evaluate(&facts, &policy, &local, None).items[2].detail["checks"][0]["pass"],
+            false
+        );
+        facts.statuses.clear();
+        for (id, state, creator) in [
+            (30, "success", Some("maintainer-login")),
+            (10, "failure", Some("maintainer-login")),
+            (50, "failure", Some("other-login")),
+            (60, "failure", None),
+        ] {
+            facts.statuses.push(crate::github::facts::CommitStatus {
+                id,
+                context: "signoff".into(),
+                sha: facts.pr.head_sha.clone(),
+                state: state.into(),
+                creator: creator.map(str::to_owned),
+            });
+        }
+        assert_eq!(
+            evaluate(&facts, &policy, &local, None).items[2].detail["checks"][0]["pass"],
+            true
+        );
         facts.statuses[0].state = "pending".into();
         assert_eq!(
             evaluate(&facts, &policy, &local, None).items[2].detail["checks"][0]["pass"],
