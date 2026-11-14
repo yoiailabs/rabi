@@ -16,6 +16,7 @@ pub(crate) enum BlockReason {
     CiTimeout,
     Conflict,
     Diverged,
+    DestinationNotGithub,
     PolicyInvalid,
     ProviderFailed,
     EvidenceMissing,

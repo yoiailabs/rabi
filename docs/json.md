@@ -315,7 +315,7 @@ Task file schema 1 and command data both use camelCase field names:
 | `workspacePath` | Null until `task implement` binds an existing linked checkout |
 | `prNumber` | PR number recorded by `task publish`, otherwise null |
 
-States are `new`, `implementing`, `prechecking`, `publishing`, `ci`, `reviewing`, `ready`, `classifying`, `awaiting_approval`, `merging`, `merged`, `blocked`, and `abandoned`. Blocked reason codes are `no_progress`, `no_ci`, `ci_timeout`, `conflict`, `diverged`, `policy_invalid`, `provider_failed`, `evidence_missing`, `floor_changed`, `precheck_changed`, `environment`, `review_invalid`, `budget`, `internal`, and `record_mismatch`.
+States are `new`, `implementing`, `prechecking`, `publishing`, `ci`, `reviewing`, `ready`, `classifying`, `awaiting_approval`, `merging`, `merged`, `blocked`, and `abandoned`. Blocked reason codes are `no_progress`, `no_ci`, `ci_timeout`, `conflict`, `diverged`, `destination_not_github`, `policy_invalid`, `provider_failed`, `evidence_missing`, `floor_changed`, `precheck_changed`, `environment`, `review_invalid`, `budget`, `internal`, and `record_mismatch`.
 
 Each event is one JSON object and newline: `{at, from, to, reason}` with optional string `detail` and optional objects `agent` and `precheck`. `at` is a UTC RFC3339 timestamp, `from`/`to` are state objects, and `reason` is text. Creation appends `{from: null, to: {name: "new"}, reason: "created"}`. Abandon appends the previous saved state and `{name: "abandoned"}`, using the supplied reason or `abandoned`. Previous lines remain unchanged.
 

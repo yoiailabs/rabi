@@ -9,10 +9,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
 
+const PUSH_URL: &str = "https://github.com/fixture/project.git";
+
 const GH: &str = r#"#!/bin/sh
 set -eu
 printf '%s\000' "$@" > "$RABI_PUBLISH_FIXTURE/gh-calls/args.$$"
 case "$1 $2" in
+  'repo view')
+    [ ! -f "$RABI_PUBLISH_FIXTURE/fail-repository" ] || exit 1
+    cat "$RABI_PUBLISH_FIXTURE/repository.json"
+    ;;
   'pr list')
     if [ -f "$RABI_PUBLISH_FIXTURE/pause-publication" ]; then
       touch "$RABI_PUBLISH_FIXTURE/publication-paused"
@@ -69,6 +75,9 @@ struct Repo {
 
 impl Repo {
     fn new(commands: Option<&[&str]>, policy: Option<&str>) -> Self {
+        Self::with_url(commands, policy, PUSH_URL)
+    }
+    fn with_url(commands: Option<&[&str]>, policy: Option<&str>, url: &str) -> Self {
         let root = std::env::temp_dir().join(format!("rabi-publish-test-{}", uuid::Uuid::new_v4()));
         let mut fixture = Self {
             repo: root.join("repo"),
@@ -109,7 +118,12 @@ impl Repo {
         }
         fixture.git(&["add", "."]);
         fixture.git(&["commit", "-m", "fixture base"]);
-        fixture.git(&["remote", "add", "origin", fixture.remote.to_str().unwrap()]);
+        fixture.git(&["remote", "add", "origin", url]);
+        fs::write(
+            fixture.root.join("repository.json"),
+            serde_json::to_vec(&json!({"url": "https://github.com/fixture/project"})).unwrap(),
+        )
+        .unwrap();
         let created = decode(
             fixture
                 .command(&[
@@ -149,6 +163,8 @@ impl Repo {
         fs::write(fixture.workspace.join("tracked"), "implemented\n").unwrap();
         fixture.commit("feat: implement fixture");
         test_support::write_executable(fixture.root.join("bin/gh"), GH).unwrap();
+        let recorded: Value = serde_json::from_slice(&fs::read(&fixture.record).unwrap()).unwrap();
+        fixture.rewrite(recorded["pushRemoteUrl"].as_str().unwrap());
         fixture.install_git_wrapper();
         fixture
     }
@@ -254,6 +270,19 @@ impl Repo {
             .lines()
             .count()
     }
+    fn rewrite(&self, url: &str) {
+        // Only the wrapper's Git transport process reads this config. Task
+        // creation must record the validated GitHub URL, not its local rewrite.
+        fs::write(
+            self.root.join("push.gitconfig"),
+            format!(
+                "[url \"{}\"]\n\tinsteadOf = {}\n",
+                self.remote.display(),
+                url
+            ),
+        )
+        .unwrap();
+    }
     fn install_git_wrapper(&self) {
         let real = Command::new("sh")
             .args(["-c", "command -v git"])
@@ -264,6 +293,11 @@ impl Repo {
             r#"#!/bin/sh
 set -eu
 printf '%s\000' "$@" > "$RABI_PUBLISH_FIXTURE/git-calls/args.$$"
+for arg in "$@"; do
+  case "$arg" in
+    push|ls-remote) export GIT_CONFIG_GLOBAL="$RABI_PUBLISH_FIXTURE/push.gitconfig" ;;
+  esac
+done
 exec '{}' "$@"
 "#,
             String::from_utf8(real.stdout)
@@ -299,6 +333,116 @@ fn precheck(view: &Value) -> &Value {
         .rev()
         .find(|event| event.get("precheck").is_some())
         .expect("precheck event")["precheck"]
+}
+
+#[test]
+fn non_github_and_mismatched_destinations_block_before_any_push() {
+    for url in [
+        "/tmp/not-a-github-repository.git",
+        "file:///tmp/not-a-github-repository.git",
+        "https://gitlab.example/fixture/project.git",
+        "git@gitlab.example:fixture/project.git",
+        "https://github.com/another/project.git",
+        "https://github.com/fixture/another.git",
+        "http://github.com/fixture/project.git",
+        "git://github.com/fixture/project.git",
+        "https://github.com.evil.example/fixture/project.git",
+    ] {
+        let repo = Repo::with_url(None, None, url);
+        let output = decode(repo.publish().output().unwrap(), 4);
+        assert_eq!(output["error"]["code"], "destination_not_github", "{url}");
+        assert_eq!(
+            repo.view()["task"]["state"]["reason"],
+            "destination_not_github"
+        );
+        assert!(repo.pushes().is_empty(), "{url}: destination was pushed");
+        assert!(repo
+            .git(&["--git-dir", repo.remote.to_str().unwrap(), "for-each-ref"])
+            .is_empty());
+        assert_eq!(repo.creates(), 0);
+    }
+}
+
+#[test]
+fn github_https_and_ssh_destinations_match_the_resolved_repository() {
+    for url in [
+        "https://github.com/fixture/project.git",
+        "https://GitHub.com/Fixture/Project",
+        "git@github.com:fixture/project.git",
+        "ssh://git@github.com/fixture/project.git",
+        "ssh://git@github.com:22/fixture/project.git",
+    ] {
+        let repo = Repo::with_url(None, None, url);
+        decode(repo.publish().output().unwrap(), 0);
+        assert_eq!(repo.pushes().len(), 1, "{url}");
+        assert!(repo.pushes()[0]
+            .iter()
+            .any(|arg| arg.contains("github.com") || arg.contains("GitHub.com")));
+    }
+}
+
+#[test]
+fn unresolved_github_identity_blocks_before_any_push() {
+    for response in [
+        "not JSON",
+        "{}",
+        "{\"url\":\"file:///tmp/repository\"}",
+        "fail",
+    ] {
+        let repo = Repo::new(None, None);
+        if response == "fail" {
+            fs::write(repo.root.join("fail-repository"), "armed").unwrap();
+        } else {
+            fs::write(repo.root.join("repository.json"), response).unwrap();
+        }
+        let output = decode(repo.publish().output().unwrap(), 4);
+        assert_eq!(output["error"]["code"], "destination_not_github");
+        assert!(repo.pushes().is_empty());
+        assert_eq!(repo.creates(), 0);
+    }
+}
+
+#[test]
+fn configured_host_does_not_authorize_a_different_push_host() {
+    let repo = Repo::new(None, None);
+    fs::write(
+        repo.root.join("repository.json"),
+        serde_json::to_vec(&json!({
+            "url": "https://github.example/fixture/project"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let output = decode(
+        repo.publish()
+            .env("GH_HOST", "github.example")
+            .output()
+            .unwrap(),
+        4,
+    );
+    assert_eq!(output["error"]["code"], "destination_not_github");
+    assert!(repo.pushes().is_empty());
+}
+
+#[test]
+fn configured_github_enterprise_host_must_match_checkout_resolution() {
+    let repo = Repo::with_url(None, None, "git@github.example:fixture/project.git");
+    fs::write(
+        repo.root.join("repository.json"),
+        serde_json::to_vec(&json!({
+            "url": "https://github.example/fixture/project"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    decode(
+        repo.publish()
+            .env("GH_HOST", "github.example")
+            .output()
+            .unwrap(),
+        0,
+    );
+    assert_eq!(repo.pushes().len(), 1);
 }
 
 #[test]
@@ -383,7 +527,7 @@ fn failing_precheck_returns_to_implementing_and_retains_bounded_visible_tail() {
     // Keep ordered tail assertions on one pipe; separate stdout/stderr readers
     // cannot establish an ordering between bytes from different descriptors.
     let failure =
-        "head -c 20000 /dev/zero | tr '\\000' x >&2; printf '\\033[31mfailed-tail\\007\\n' >&2; exit 7";
+        "head -c 262144 /dev/zero | tr '\\000' x >&2; printf '\\033[31mfailed-tail\\007\\n' >&2; exit 7";
     let repo = Repo::new(
         Some(&[failure, "touch \"$RABI_PUBLISH_FIXTURE/later-command-ran\""]),
         None,
@@ -395,7 +539,7 @@ fn failing_precheck_returns_to_implementing_and_retains_bounded_visible_tail() {
     assert_eq!(event["head"], repo.head);
     assert_eq!(event["passed"], false);
     let failing_command = event["failingCommand"].as_str().unwrap();
-    assert!(failing_command.starts_with("head -c 20000"));
+    assert!(failing_command.starts_with("head -c 262144"));
     assert!(failing_command.ends_with("exit 7"));
     let tail = event["outputTail"].as_str().unwrap();
     assert!(tail.len() <= 16384, "tail length {}", tail.len());
@@ -404,6 +548,51 @@ fn failing_precheck_returns_to_implementing_and_retains_bounded_visible_tail() {
         .chars()
         .any(|c| c.is_control() && c != '\n' && c != '\t'));
     assert!(!repo.root.join("later-command-ran").exists());
+    assert!(repo.pushes().is_empty());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn escaped_child_holding_precheck_pipes_does_not_delay_tail_capture() {
+    if Command::new("setsid").arg("--version").output().is_err() {
+        rabi::output::stderr(format_args!(
+            "SKIP escaped precheck pipe test: setsid unavailable\n"
+        ));
+        return;
+    }
+    struct EscapedChild(PathBuf);
+    impl Drop for EscapedChild {
+        fn drop(&mut self) {
+            if let Some(pid) = fs::read_to_string(&self.0)
+                .ok()
+                .and_then(|value| value.trim().parse::<i32>().ok())
+                .filter(|pid| *pid > 0)
+            {
+                // SAFETY: this fixture's setsid child owns its process group.
+                unsafe {
+                    libc::kill(-pid, libc::SIGKILL);
+                }
+            }
+        }
+    }
+    let repo = Repo::new(Some(&[
+        "setsid sh -c 'echo $$ > \"$RABI_PUBLISH_FIXTURE/escaped-pid\"; exec sleep 60' & while [ ! -f \"$RABI_PUBLISH_FIXTURE/escaped-pid\" ]; do sleep 0.01; done; printf 'held-pipe-tail\\n' >&2; exit 7"
+    ]), None);
+    let _escaped = EscapedChild(repo.root.join("escaped-pid"));
+    decode(repo.publish().output().unwrap(), 1);
+    let view = repo.view();
+    assert_eq!(precheck(&view)["reason"], "command_failed");
+    assert!(precheck(&view)["outputTail"]
+        .as_str()
+        .unwrap()
+        .contains("held-pipe-tail"));
+    let pid = fs::read_to_string(repo.root.join("escaped-pid")).unwrap();
+    let stat = fs::read_to_string(format!("/proc/{}/stat", pid.trim())).unwrap();
+    assert_ne!(
+        stat.rsplit_once(") ").unwrap().1.split_whitespace().next(),
+        Some("Z"),
+        "publication waited for the escaped child's pipe to close"
+    );
     assert!(repo.pushes().is_empty());
 }
 
@@ -632,7 +821,7 @@ fn agent_written_git_config_cannot_redirect_publication() {
     repo.git(&[
         "config",
         &format!("url.{}.pushInsteadOf", decoy.display()),
-        repo.remote.to_str().unwrap(),
+        PUSH_URL,
     ]);
     repo.git(&["config", "remote.origin.pushurl", decoy.to_str().unwrap()]);
     repo.git(&[

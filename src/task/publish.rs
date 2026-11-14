@@ -1,11 +1,11 @@
 //! Deterministic committed checks and publication; agents never supply commands to GitHub.
 use std::collections::VecDeque;
 use std::fs;
-use std::io::Read;
+use std::io::{self, Read};
+use std::os::fd::AsRawFd;
 use std::os::unix::{ffi::OsStrExt, fs::symlink, process::CommandExt};
 use std::path::Path;
 use std::process::{Command, Stdio};
-use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
@@ -166,6 +166,48 @@ struct Check {
     tail: Vec<u8>,
     reason: &'static str,
 }
+fn nonblocking(pipe: &impl AsRawFd) -> Result<()> {
+    // SAFETY: the pipe owns a live descriptor; fcntl only changes its status flags.
+    let flags = unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_GETFL) };
+    if flags < 0
+        || unsafe { libc::fcntl(pipe.as_raw_fd(), libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0
+    {
+        return Err(Error::msg("Cannot configure precheck output pipe"));
+    }
+    Ok(())
+}
+
+fn drain(pipe: &mut impl Read, tail: &mut VecDeque<u8>, mut budget: usize) -> Result<()> {
+    let mut buffer = [0; 4096];
+    while budget > 0 {
+        let limit = budget.min(buffer.len());
+        match pipe.read(&mut buffer[..limit]) {
+            Ok(0) => break,
+            Ok(count) => {
+                budget -= count;
+                tail.extend(&buffer[..count]);
+                let excess = tail.len().saturating_sub(TAIL);
+                tail.drain(..excess);
+            }
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
+            Err(_) => return Err(Error::msg("Cannot read precheck output")),
+        }
+    }
+    Ok(())
+}
+
+fn drain_pending(pipe: &mut (impl Read + AsRawFd), tail: &mut VecDeque<u8>) -> Result<()> {
+    let mut pending: libc::c_int = 0;
+    // SAFETY: FIONREAD writes one int through the valid pointer for this live pipe.
+    if unsafe { libc::ioctl(pipe.as_raw_fd(), libc::FIONREAD, &mut pending) } < 0 {
+        return Err(Error::msg("Cannot inspect pending precheck output"));
+    }
+    // Snapshot a finite byte count. An escaped child may retain the descriptor
+    // or keep writing; neither may hold publication open indefinitely.
+    drain(pipe, tail, pending.max(0) as usize)
+}
+
 fn check(workspace: &Path, script: &str, timeout: Duration) -> Result<Check> {
     let boundary = Boundary::new()?;
     let signals = Signals::install()?;
@@ -185,35 +227,19 @@ fn check(workspace: &Path, script: &str, timeout: Duration) -> Result<Check> {
         message: "Cannot start precheck shell".into(),
     })?;
     let mut process = Process(child);
-    let tail = Arc::new(Mutex::new(VecDeque::with_capacity(TAIL)));
-    let (sender, receiver) = std::sync::mpsc::channel();
-    fn drain(
-        pipe: impl Read + Send + 'static,
-        tail: Arc<Mutex<VecDeque<u8>>>,
-        sender: std::sync::mpsc::Sender<()>,
-    ) {
-        std::thread::spawn(move || {
-            let mut pipe = pipe;
-            let mut buffer = [0; 1024];
-            while let Ok(count) = pipe.read(&mut buffer) {
-                if count == 0 {
-                    break;
-                }
-                if let Ok(mut tail) = tail.lock() {
-                    tail.extend(&buffer[..count]);
-                    let excess = tail.len().saturating_sub(TAIL);
-                    tail.drain(..excess);
-                }
-            }
-            let _ = sender.send(());
-        });
-    }
-    if let Some(pipe) = process.0.stdout.take() {
-        drain(pipe, tail.clone(), sender.clone());
-    }
-    if let Some(pipe) = process.0.stderr.take() {
-        drain(pipe, tail.clone(), sender);
-    }
+    let mut stdout = process
+        .0
+        .stdout
+        .take()
+        .ok_or_else(|| Error::msg("Missing precheck stdout pipe"))?;
+    let mut stderr = process
+        .0
+        .stderr
+        .take()
+        .ok_or_else(|| Error::msg("Missing precheck stderr pipe"))?;
+    nonblocking(&stdout)?;
+    nonblocking(&stderr)?;
+    let mut tail = VecDeque::with_capacity(TAIL);
     let started = Instant::now();
     let (code, reason) = loop {
         if signals.interrupted() {
@@ -222,6 +248,10 @@ fn check(workspace: &Path, script: &str, timeout: Duration) -> Result<Check> {
         if started.elapsed() >= timeout {
             break (124, "timeout");
         }
+        // Bound each poll so even a continuously noisy child cannot delay
+        // signal and timeout checks or starve the other pipe.
+        drain(&mut stdout, &mut tail, 64 * 1024)?;
+        drain(&mut stderr, &mut tail, 64 * 1024)?;
         if let Some(code) = process.exit_code()? {
             break (
                 code,
@@ -235,16 +265,11 @@ fn check(workspace: &Path, script: &str, timeout: Duration) -> Result<Check> {
         std::thread::sleep(Duration::from_millis(10));
     };
     drop(process);
-    // Cleanup closes ordinary descendant pipes. Never wait indefinitely for an escaped child.
-    for _ in 0..2 {
-        let _ = receiver.recv_timeout(Duration::from_millis(100));
-    }
-    let tail = tail
-        .lock()
-        .map_err(|_| Error::msg("Cannot read precheck output"))?
-        .iter()
-        .copied()
-        .collect();
+    // Reap and clean the group first, then consume the bytes already buffered.
+    // No reader-thread scheduling deadline can discard the completed command's tail.
+    drain_pending(&mut stdout, &mut tail)?;
+    drain_pending(&mut stderr, &mut tail)?;
+    let tail = tail.into_iter().collect();
     Ok(Check { code, tail, reason })
 }
 
@@ -417,45 +442,105 @@ struct Pull {
     #[serde(default)]
     state: Option<String>,
 }
-fn github_repository(url: &str) -> Result<String> {
-    let repository = if let Some((scheme, rest)) = url.split_once("://") {
-        if scheme == "file" {
-            return Ok(url.into());
+/// Only unambiguous HTTPS and Git SSH repository addresses are eligible.
+/// The host is authorized separately by gh's independent checkout resolution.
+#[derive(Debug, PartialEq, Eq)]
+struct Repository {
+    host: String,
+    owner: String,
+    name: String,
+}
+impl Repository {
+    fn parse(url: &str) -> Option<Self> {
+        let (authority, path, ssh) = if let Some(rest) = url.strip_prefix("https://") {
+            let (authority, path) = rest.split_once('/')?;
+            (authority, path, false)
+        } else if let Some(rest) = url.strip_prefix("ssh://") {
+            let (authority, path) = rest.split_once('/')?;
+            (authority, path, true)
+        } else {
+            let (authority, path) = url.split_once(':')?;
+            if authority.contains('/') {
+                return None;
+            }
+            (authority, path, true)
+        };
+        let authority = if ssh {
+            authority.strip_prefix("git@").unwrap_or(authority)
+        } else {
+            authority
+        };
+        let host = if let Some((host, port)) = authority.split_once(':') {
+            if !ssh || port.is_empty() || !port.bytes().all(|byte| byte.is_ascii_digit()) {
+                return None;
+            }
+            host
+        } else {
+            authority
+        };
+        if host.is_empty()
+            || !host
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-'))
+        {
+            return None;
         }
-        if !matches!(scheme, "https" | "http" | "ssh" | "git") {
-            return Err(Error::msg("Unsupported task publication URL"));
+        let path = path.strip_suffix('/').unwrap_or(path);
+        let path = path.strip_suffix(".git").unwrap_or(path);
+        let (owner, name) = path.split_once('/')?;
+        if [owner, name].iter().any(|component| {
+            component.is_empty()
+                || matches!(*component, "." | "..")
+                || !component
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'-' | b'_'))
+        }) {
+            return None;
         }
-        let (host, path) = rest
-            .split_once('/')
-            .ok_or_else(|| Error::msg("Push URL has no GitHub repository"))?;
-        // gh repository selectors accept a host and owner/name, never SSH ports.
-        let host = host.split(':').next().unwrap_or(host);
-        format!("{host}/{}", path.trim_start_matches('/'))
-    } else if let Some((host, path)) = url.split_once(':').filter(|(host, _)| !host.contains('/')) {
-        format!("{host}/{}", path.trim_start_matches('/'))
-    } else if Path::new(url).is_absolute() {
-        // Local destinations are useful for offline clients and integration tests;
-        // the real gh CLI rejects them without resolving checkout remotes.
-        return Ok(url.into());
-    } else {
-        return Err(Error::msg(
-            "Ambiguous relative task publication URL; recreate the task",
-        ));
-    };
-    let repository = repository.strip_suffix(".git").unwrap_or(&repository);
-    if repository.split('/').count() != 3 || repository.split('/').any(str::is_empty) {
-        return Err(Error::msg("Push URL must identify one GitHub repository"));
+        Some(Self {
+            host: host.to_ascii_lowercase(),
+            owner: owner.to_ascii_lowercase(),
+            name: name.to_ascii_lowercase(),
+        })
     }
-    Ok(repository.into())
+    fn selector(&self) -> String {
+        format!("{}/{}/{}", self.host, self.owner, self.name)
+    }
+}
+
+fn destination(workspace: &Path, url: &str) -> Result<String> {
+    let recorded = Repository::parse(url).ok_or_else(|| {
+        Error::msg("Push destination must be an HTTPS or SSH GitHub repository URL")
+    })?;
+    // Do not pass the recorded host as --repo: an arbitrary host must not be
+    // allowed to authorize itself. gh resolves GitHub (including configured
+    // Enterprise hosts) independently using the task checkout's context.
+    let output = gh_command(workspace, &["repo", "view", "--json", "url"])?;
+    let value: serde_json::Value = serde_json::from_str(&output)
+        .map_err(|_| Error::msg("Cannot resolve task GitHub repository"))?;
+    let resolved = value
+        .get("url")
+        .and_then(serde_json::Value::as_str)
+        .filter(|url| url.starts_with("https://"))
+        .and_then(Repository::parse)
+        .ok_or_else(|| Error::msg("Cannot resolve task GitHub repository"))?;
+    if recorded != resolved {
+        return Err(Error::msg(
+            "Recorded push destination does not match the task's GitHub repository",
+        ));
+    }
+    Ok(resolved.selector())
 }
 
 fn gh(workspace: &Path, repo: &str, args: &[&str]) -> Result<String> {
     let mut options = args.to_vec();
-    let repository = github_repository(repo)?;
-    options.extend(["--repo", &repository]);
+    options.extend(["--repo", repo]);
+    gh_command(workspace, &options)
+}
+fn gh_command(workspace: &Path, options: &[&str]) -> Result<String> {
     let mut command = Command::new("gh");
     command
-        .args(&options)
+        .args(options)
         .current_dir(workspace)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -478,10 +563,10 @@ fn gh(workspace: &Path, repo: &str, args: &[&str]) -> Result<String> {
     }
     Ok(response.stdout)
 }
-fn pull_list(workspace: &Path, task: &Task) -> Result<Option<Pull>> {
+fn pull_list(workspace: &Path, task: &Task, repository: &str) -> Result<Option<Pull>> {
     let output = gh(
         workspace,
-        &task.push_remote_url,
+        repository,
         &[
             "pr",
             "list",
@@ -521,7 +606,6 @@ pub(crate) fn execute(root: &Path, selector: Option<&str>) -> Result<Report> {
     let mut task = store.implementation_task(selector)?;
     let _operation = store.implementation_lock(&task)?;
     let _publication = store.publication_lock(&task)?;
-    github_repository(&task.push_remote_url)?;
     if !matches!(
         task.state,
         TaskState::Implementing | TaskState::Prechecking | TaskState::Publishing
@@ -726,6 +810,15 @@ pub(crate) fn execute(root: &Path, selector: Option<&str>) -> Result<Report> {
             "Task tree or HEAD changed before publication",
         ));
     }
+    let repository = destination(&workspace, &task.push_remote_url).map_err(|_| {
+        block(
+            &store,
+            &mut task,
+            BlockReason::DestinationNotGithub,
+            "destination_not_github",
+            "Recorded push URL must match the GitHub repository resolved by gh for this task; no push performed",
+        )
+    })?;
     if task.state == TaskState::Prechecking {
         event(
             &store,
@@ -774,7 +867,7 @@ pub(crate) fn execute(root: &Path, selector: Option<&str>) -> Result<Report> {
     }
     let published = (|| -> Result<u64> {
         let gh_cwd = publisher.temporary.path();
-        let number = if let Some(pull) = pull_list(gh_cwd, &task)? {
+        let number = if let Some(pull) = pull_list(gh_cwd, &task, &repository)? {
             pull.number
         } else {
             let commits = super::text(
@@ -796,7 +889,7 @@ pub(crate) fn execute(root: &Path, selector: Option<&str>) -> Result<Report> {
             let title = pr_title(&task.intent, &workspace);
             gh(
                 gh_cwd,
-                &task.push_remote_url,
+                &repository,
                 &[
                     "pr",
                     "create",
@@ -811,7 +904,7 @@ pub(crate) fn execute(root: &Path, selector: Option<&str>) -> Result<Report> {
                     body_path,
                 ],
             )?;
-            pull_list(gh_cwd, &task)?
+            pull_list(gh_cwd, &task, &repository)?
                 .ok_or_else(|| {
                     Error::msg("Created PR not visible; rerun task publish to reconcile")
                 })?
@@ -819,7 +912,7 @@ pub(crate) fn execute(root: &Path, selector: Option<&str>) -> Result<Report> {
         };
         let output = gh(
             gh_cwd,
-            &task.push_remote_url,
+            &repository,
             &[
                 "pr",
                 "view",
@@ -868,4 +961,30 @@ pub(crate) fn execute(root: &Path, selector: Option<&str>) -> Result<Report> {
         pr_number: number,
         state: task.state,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Repository;
+
+    #[test]
+    fn repository_addresses_reject_ambiguous_transports_and_authorities() {
+        for url in [
+            "/tmp/project.git",
+            "file:///tmp/project.git",
+            "http://github.com/owner/repo",
+            "git://github.com/owner/repo",
+            "https://github.com@elsewhere/owner/repo",
+            "ssh://git@github.com@elsewhere/owner/repo",
+            "ssh://other@github.com/owner/repo",
+            "https://github.com:443/owner/repo",
+            "ssh://git@github.com:not-a-port/owner/repo",
+            "https://github.com/owner/repo?redirect=elsewhere",
+            "https://github.com/owner/../repo",
+            "https://github.com//repo",
+            "git@github.com:/owner/repo",
+        ] {
+            assert!(Repository::parse(url).is_none(), "{url}");
+        }
+    }
 }

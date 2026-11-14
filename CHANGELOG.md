@@ -24,6 +24,7 @@
 
 ### Changed (Breaking)
 
+- `task publish` requires an HTTPS or SSH push URL matching the GitHub repository independently resolved by `gh` for the task checkout. Local paths, other transports, non-GitHub destinations and repository mismatches block as `destination_not_github` before pushing.
 - Older rabi binaries reject `.rabi.toml` containing `[precheck]` as an unknown key. Upgrade before adding task prechecks.
 - Classifier providers must support tool-less invocation. Codex classifier support is removed because its CLI cannot currently guarantee this without an injected model catalog; rabi supplies none. Unsupported `task classify --provider` values exit 2, and unsupported `[classifier] provider` values fail policy parsing.
 - `task merge` now attempts a guarded merge unless `--dry-run` is supplied. Approval is evaluated instead of remaining N/A; real merge preflight refusals exit 4.
