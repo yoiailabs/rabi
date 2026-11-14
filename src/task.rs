@@ -4,8 +4,10 @@ pub(crate) mod assessment;
 pub(crate) mod boundary;
 mod classifier_provider;
 mod classify;
+pub(crate) mod cleanup;
 mod diff;
 pub(crate) mod implement;
+mod land;
 mod policy;
 mod preflight;
 pub(crate) mod publish;
@@ -499,28 +501,7 @@ pub(crate) fn github_report(
         )?,
         None => Policy::default(),
     };
-    let merge_base = if base_local && resolves_commit(root, &facts.pr.head_sha)? {
-        text(
-            root,
-            &["merge-base", &facts.pr.base_sha, &facts.pr.head_sha],
-        )
-        .ok()
-    } else {
-        None
-    };
-    let kinds = if let Some(merge_base) = &merge_base {
-        let attributes = format!("--attr-source={}", facts.pr.base_sha);
-        let mut raw_args = vec![attributes.as_str()];
-        raw_args.extend(diff_args("--raw", merge_base, &facts.pr.head_sha));
-        let mut numstat_args = vec![attributes.as_str()];
-        numstat_args.extend(diff_args("--numstat", merge_base, &facts.pr.head_sha));
-        Some(diff::parse(
-            &read(root, &raw_args)?,
-            &read(root, &numstat_args)?,
-        ))
-    } else {
-        None
-    };
+    let (merge_base, kinds) = pr_kinds(root, &facts)?;
     if let GithubAction::Approve { sha, note } = action {
         let risk =
             preflight::classify_files(&facts, &policy, kinds.as_deref()).map_err(Error::msg)?;
@@ -548,43 +529,24 @@ pub(crate) fn github_report(
         }
         return Ok(());
     }
-    let policy_matches_base_tip = facts.base_tip_sha.as_deref().and_then(|tip| {
-        if tip == facts.pr.base_sha {
-            return Some(true);
-        }
-        let tip_blob = resolves_commit(root, tip).and_then(|local| {
-            if local {
-                policy_blob(root, tip)
-            } else {
-                client.policy(tip)
-            }
-        });
-        tip_blob.ok().map(|tip_blob| tip_blob == blob)
-    });
     let head = workspace
         .as_ref()
         .map(|tree| commit(Path::new(&tree.path), "HEAD"))
         .transpose()?;
-    let classification_record = merge_base.as_deref().and_then(|merge_base| {
-        assessment::matching(
-            root,
-            &facts.pr.head_sha,
-            &facts.pr.base_sha,
-            merge_base,
-            &policy,
-        )
-    });
-    let report = preflight::evaluate(
+    let review_root = workspace
+        .as_ref()
+        .map_or(root.as_path(), |tree| Path::new(&tree.path));
+    let report = merge_evaluation(
+        review_root,
+        &client,
         &facts,
         &policy,
-        &preflight::Local {
-            head,
-            kinds,
-            policy_matches_base_tip,
-            classification_record,
-        },
+        blob.as_deref(),
+        head,
+        kinds,
+        merge_base.as_deref(),
         base,
-    );
+    )?;
     if crate::output::json() {
         crate::output::data(&report)?;
     } else {
@@ -635,4 +597,86 @@ pub(crate) fn github_report(
         }
     }
     Ok(())
+}
+
+/// Shared complete slice-2 preflight, including current-base policy freshness.
+#[allow(clippy::too_many_arguments)]
+fn merge_evaluation(
+    root: &Path,
+    client: &crate::github::facts::Client<'_>,
+    facts: &crate::github::facts::Snapshot,
+    policy: &Policy,
+    blob: Option<&[u8]>,
+    head: Option<String>,
+    kinds: Option<Vec<classify::ChangedEntry>>,
+    merge_base: Option<&str>,
+    base: Option<&str>,
+) -> Result<preflight::Evaluation> {
+    let policy_matches_base_tip = facts.base_tip_sha.as_deref().and_then(|tip| {
+        if tip == facts.pr.base_sha {
+            return Some(true);
+        }
+        let tip_blob = resolves_commit(root, tip).and_then(|local| {
+            if local {
+                policy_blob(root, tip)
+            } else {
+                client.policy(tip)
+            }
+        });
+        tip_blob.ok().map(|tip_blob| tip_blob.as_deref() == blob)
+    });
+    let classification_record = merge_base.and_then(|merge_base| {
+        assessment::matching(
+            root,
+            &facts.pr.head_sha,
+            &facts.pr.base_sha,
+            merge_base,
+            policy,
+        )
+    });
+    let mut report = preflight::evaluate(
+        facts,
+        policy,
+        &preflight::Local {
+            head,
+            kinds,
+            policy_matches_base_tip,
+            classification_record,
+        },
+        base,
+    );
+    if let Some(record) = merge_base.and_then(|merge_base| {
+        let store = store::Store::locate(root).ok()?;
+        let task = store.implementation_task(None).ok()?;
+        if task.pr_number != Some(facts.pr.number) || task.branch != facts.pr.head_ref {
+            return None;
+        }
+        review::earned_pass(root, &store, &task, &facts.pr.head_sha)
+            .filter(|record| record.merge_base_sha == merge_base)
+    }) {
+        report.review_pass(&record);
+    }
+    Ok(report)
+}
+
+fn pr_kinds(
+    root: &Path,
+    facts: &crate::github::facts::Snapshot,
+) -> Result<(Option<String>, Option<Vec<classify::ChangedEntry>>)> {
+    if !resolves_commit(root, &facts.pr.base_sha)? || !resolves_commit(root, &facts.pr.head_sha)? {
+        return Ok((None, None));
+    }
+    let Ok(merge_base) = text(
+        root,
+        &["merge-base", &facts.pr.base_sha, &facts.pr.head_sha],
+    ) else {
+        return Ok((None, None));
+    };
+    let attributes = format!("--attr-source={}", facts.pr.base_sha);
+    let mut raw_args = vec![attributes.as_str()];
+    raw_args.extend(diff_args("--raw", &merge_base, &facts.pr.head_sha));
+    let mut numstat_args = vec![attributes.as_str()];
+    numstat_args.extend(diff_args("--numstat", &merge_base, &facts.pr.head_sha));
+    let kinds = diff::parse(&read(root, &raw_args)?, &read(root, &numstat_args)?);
+    Ok((Some(merge_base), Some(kinds)))
 }

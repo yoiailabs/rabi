@@ -168,11 +168,42 @@ fn task_review_guidance_covers_boundary_and_deterministic_outcomes() {
     assert!(include_str!("../docs/configuration.md").contains("[review]"));
     assert!(include_str!("../docs/json.md").contains("rabi/reviews/"));
     for document in [README, README_JA] {
-        assert!(document.contains("stop at classifying"));
+        assert!(document.contains("approval, merge and safe cleanup"));
     }
     let advance = help["helps"]["task advance"]["notes"].as_array().unwrap();
     assert!(advance.iter().any(|note| {
         let note = note.as_str().unwrap();
-        note.contains("--wait") && note.contains("until classifying")
+        note.contains("--wait") && note.contains("approval-timeout")
     }));
+}
+
+#[test]
+fn task_landing_guidance_covers_approval_merge_and_cleanup() {
+    let help: serde_json::Value = serde_json::from_str(include_str!("../help-data.json")).unwrap();
+    let notes = help["helps"]["task advance"]["notes"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|note| note.as_str().unwrap())
+        .collect::<Vec<_>>()
+        .join("\n");
+    for (name, document) in [
+        ("help", notes.as_str()),
+        ("commands", include_str!("../docs/commands.md")),
+        ("safety", include_str!("../docs/safety.md")),
+    ] {
+        for requirement in [
+            "approval-timeout",
+            "delete-branch",
+            "--match-head-commit",
+            "stashed",
+            "auto",
+            "floor",
+        ] {
+            assert!(document.contains(requirement), "{name}: {requirement}");
+        }
+    }
+    assert!(include_str!("../docs/exit-codes.md").contains("maintainer approval"));
+    assert!(include_str!("../docs/configuration.md").contains("approval-timeout = \"24h\""));
+    assert!(include_str!("../docs/json.md").contains("mergeCommitSha"));
 }

@@ -160,6 +160,10 @@ fn redact_secret_patterns(text: &str) -> String {
     let mut output = String::with_capacity(text.len());
     let mut offset = 0;
     while let Some(tail) = text.get(offset..).filter(|tail| !tail.is_empty()) {
+        let boundary = text[..offset]
+            .chars()
+            .next_back()
+            .is_none_or(|character| !character.is_ascii_alphanumeric());
         let github = ["ghp_", "gho_", "ghs_", "ghu_", "ghr_", "github_pat_"]
             .iter()
             .any(|prefix| tail.starts_with(prefix));
@@ -172,7 +176,7 @@ fn redact_secret_patterns(text: &str) -> String {
                 key.bytes()
                     .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
             });
-        if github || aws {
+        if boundary && (github || aws) {
             let end = tail
                 .bytes()
                 .take_while(|c| c.is_ascii_alphanumeric() || *c == b'_')
@@ -181,7 +185,7 @@ fn redact_secret_patterns(text: &str) -> String {
             offset += end;
             continue;
         }
-        if let Some((start, end)) = secret_assignment(tail) {
+        if let Some((start, end)) = boundary.then(|| secret_assignment(tail)).flatten() {
             output.push_str(&tail[..start]);
             output.push_str("[redacted]");
             offset += end;
@@ -246,7 +250,7 @@ fn secret_value_length(value: &str) -> usize {
     value.len()
 }
 
-pub(super) fn sanitized(bytes: &[u8], workspace: &Path) -> String {
+fn sanitized_text(bytes: &[u8], workspace: &Path) -> String {
     let stripped = strip_ansi(&String::from_utf8_lossy(bytes));
     let text: String = stripped
         .chars()
@@ -283,11 +287,30 @@ pub(super) fn sanitized(bytes: &[u8], workspace: &Path) -> String {
             }
         })
         .collect();
-    let start = text.len().saturating_sub(TAIL);
+    text
+}
+
+fn tail(text: &str, limit: usize) -> &str {
+    let start = text.len().saturating_sub(limit);
     let start = (start..=text.len())
         .find(|i| text.is_char_boundary(*i))
         .unwrap_or(text.len());
-    text[start..].to_owned()
+    &text[start..]
+}
+
+pub(super) fn sanitized(bytes: &[u8], workspace: &Path) -> String {
+    tail(&sanitized_text(bytes, workspace), TAIL).to_owned()
+}
+
+/// Redaction may expand an otherwise valid body. Mark any resulting cut so
+/// review evidence is never shortened silently.
+pub(super) fn sanitized_with_marker(bytes: &[u8], workspace: &Path) -> String {
+    let text = sanitized_text(bytes, workspace);
+    if text.len() <= TAIL {
+        return text;
+    }
+    const MARKER: &str = "[truncated]\n";
+    format!("{MARKER}{}", tail(&text, TAIL - MARKER.len()))
 }
 
 fn pr_title(intent: &str, workspace: &Path) -> String {
@@ -576,16 +599,7 @@ impl Publisher {
             .to_str()
             .ok_or_else(|| Error::msg("Review checkout path is not UTF-8"))?;
         let result = self.git_inner(
-            &[
-                "-c",
-                "core.hooksPath=/dev/null",
-                "worktree",
-                "add",
-                "--detach",
-                "--",
-                path,
-                &self.head,
-            ],
+            &["worktree", "add", "--detach", "--", path, &self.head],
             true,
         )?;
         if result.code != 0 {
@@ -619,6 +633,8 @@ impl Publisher {
             "--no-lazy-fetch",
             "--git-dir",
             git_dir,
+            "-c",
+            "core.hooksPath=/dev/null",
             "-c",
             "core.commitGraph=false",
             "-c",
@@ -1340,6 +1356,16 @@ mod tests {
                 "aUtHoRiZaTiOn : [redacted]",
             ),
             ("token=x", "token=[redacted]"),
+            ("NPM_TOKEN=fixture-secret", "NPM_TOKEN=[redacted]"),
+            ("access_token=fixture-secret", "access_token=[redacted]"),
+            (
+                "AWS_SESSION_TOKEN=fixture-secret",
+                "AWS_SESSION_TOKEN=[redacted]",
+            ),
+            (
+                "MY_AWS_SECRET_ACCESS_KEY=fixture-secret",
+                "MY_AWS_SECRET_ACCESS_KEY=[redacted]",
+            ),
             (
                 "?token=fixture-secret&keep=yes",
                 "?token=[redacted]&keep=yes",
@@ -1375,6 +1401,60 @@ mod tests {
                 "redaction must be idempotent"
             );
         }
+        for separator in ["_", "-", ".", "?", "&", "=", ":", "é"] {
+            for secret in [
+                "ghp_fixtureSecret123",
+                "github_pat_fixtureSecret123",
+                "AKIAIOSFODNN7EXAMPLE",
+                "ASIAIOSFODNN7EXAMPLE",
+                "token=fixture-secret",
+            ] {
+                let input = format!("prefix{separator}{secret}");
+                let replacement = if secret.starts_with("token=") {
+                    "token=[redacted]"
+                } else {
+                    "[redacted]"
+                };
+                assert_eq!(
+                    super::sanitized(input.as_bytes(), std::path::Path::new("workspace")),
+                    format!("prefix{separator}{replacement}"),
+                    "{input}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn secret_patterns_require_non_alphanumeric_boundaries_and_preserve_failure_fingerprints() {
+        let workspace = std::path::Path::new("workspace");
+        for text in [
+            "lengthp_failure",
+            "lengtho_failure",
+            "mytoken=first",
+            "mytoken=second",
+            "reauthorization: first",
+            "reauthorization: second",
+            "xAKIAIOSFODNN7EXAMPLE",
+            "myaws_secret_access_key=first",
+        ] {
+            assert_eq!(super::sanitized(text.as_bytes(), workspace), text);
+        }
+        for (first, second) in [
+            ("lengthp_failure", "lengtho_failure"),
+            ("mytoken=first", "mytoken=second"),
+            ("reauthorization: first", "reauthorization: second"),
+        ] {
+            let first = super::sanitized(first.as_bytes(), workspace);
+            let second = super::sanitized(second.as_bytes(), workspace);
+            assert_ne!(
+                crate::task::advance::output_hash(&first),
+                crate::task::advance::output_hash(&second)
+            );
+        }
+        assert_eq!(
+            super::sanitized(b"(ghp_fixture) token=secret", workspace),
+            "([redacted]) token=[redacted]"
+        );
     }
 
     #[test]

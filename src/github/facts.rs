@@ -84,6 +84,8 @@ pub(crate) struct CommitStatus {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub(crate) struct Review {
     pub reviewer: String,
+    #[serde(default)]
+    pub body: Option<String>,
     pub state: String,
     pub id: u64,
 }
@@ -192,6 +194,10 @@ impl<'a> Client<'a> {
 
     pub fn approve(&self, sha: &str, description: &str) -> Result<()> {
         super::post_approval(self.root, &self.repo, sha, description)
+    }
+
+    pub fn request_approval(&self, sha: &str, description: &str) -> Result<()> {
+        super::request_approval(self.root, &self.repo, sha, description)
     }
 
     pub fn merge(&self, number: u64, method: &str, sha: &str) -> Result<()> {
@@ -444,6 +450,8 @@ impl<'a> Client<'a> {
             #[derive(Deserialize)]
             struct RawReview {
                 id: u64,
+                #[serde(default)]
+                body: Option<String>,
                 state: String,
                 user: User,
             }
@@ -457,12 +465,14 @@ impl<'a> Client<'a> {
             let key = review.user.login.to_ascii_lowercase();
             let entry = latest.entry(key).or_insert_with(|| Review {
                 reviewer: review.user.login.clone(),
+                body: review.body.clone(),
                 state: review.state.clone(),
                 id: review.id,
             });
             if review.id > entry.id {
                 *entry = Review {
                     reviewer: review.user.login,
+                    body: review.body,
                     state: review.state,
                     id: review.id,
                 };

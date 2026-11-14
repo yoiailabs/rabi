@@ -72,15 +72,16 @@ The workspace must start clean at a committed HEAD and remain unchanged after ch
 
 ## Task advance settings
 
-Declare retry and CI limits in the primary checkout's `.rabi.toml`:
+Declare retry, CI and approval limits in the primary checkout's `.rabi.toml`:
 
 ```toml
 [factory]
 fix-budget = 3
 ci-timeout = "60m"
+approval-timeout = "24h"
 ```
 
-`task advance` reads these settings on each invocation. `fix-budget` is a nonnegative integer counting all failure-driven implementer relaunches, including precheck failures, CI failures, conflict recovery and review revisions. Zero disables automatic fixes; the initial implementation does not count. Usage is persisted per task and is not reset by a new invocation. The effective budget and remaining attempts appear in `task show` and advance output. An identical failure fingerprint on consecutive fix attempts can stop recovery earlier as `repeated_failure`; see [advance](commands.md#task-advance). `ci-timeout` accepts a positive integer followed by `s`, `m` or `h`; `--ci-timeout` overrides it. Defaults are 3 fixes and 60 minutes. Unknown factory fields, wrong types and invalid durations fail validation. These are repository settings, not `rabi config` user keys. Required CI names and issuer apps remain in the base-commit risk policy below.
+`task advance` reads these settings on each invocation. `fix-budget` is a nonnegative integer counting all failure-driven implementer relaunches, including precheck failures, CI failures, conflict recovery and review revisions. Zero disables automatic fixes; the initial implementation does not count. Usage is persisted per task and is not reset by a new invocation. The effective budget and remaining attempts appear in `task show` and advance output. An identical failure fingerprint on consecutive fix attempts can stop recovery earlier as `repeated_failure`; see [advance](commands.md#task-advance). `ci-timeout` accepts a positive integer followed by `s`, `m` or `h`; `--ci-timeout` overrides it. `approval-timeout` accepts the same duration syntax and bounds approval polling with `--wait`; expiry returns waiting (exit 10), preserving `awaiting_approval`. Its head-bound deadline persists across invocations. Defaults are 3 fixes, 60 minutes for CI and 24 hours for approval. Unknown factory fields, wrong types and invalid durations fail validation. These are repository settings, not `rabi config` user keys. Required CI names and issuer apps remain in the base-commit risk policy below.
 
 ## Task review settings
 
@@ -237,12 +238,13 @@ The optional merge and approval sections also live in this base-commit policy:
 [merge]
 auto = ["low", "medium"]
 method = "squash"
+delete-branch = false
 
 [approval]
 approvers = ["maintainer-login"]
 ```
 
-`merge.auto` defaults to an empty array: every tier requires an explicit approval. It accepts only a subset of `low` and `medium`; `high` is rejected. A floor always requires explicit approval. `merge.method` accepts `squash` (default), `merge`, or `rebase`. `approval.approvers` defaults to an empty array of logins; empty or whitespace-only entries are invalid. Unknown keys, invalid tiers/methods and wrong types fail policy parsing with exit 1. These sections are accepted by `task risk` without changing classification.
+`merge.auto` defaults to an empty array: every tier requires an explicit approval. It accepts only a subset of `low` and `medium`; `high` is rejected. A floor always requires explicit approval. `merge.method` accepts `squash` (default), `merge`, or `rebase`. `merge.delete-branch` is a boolean, default false; only true permits remote branch deletion after merge by `task advance`. Deletion uses an exact-tip lease and retains newer remote work. Standalone `task merge` retains branches. Safe workspace cleanup retains local branches independently. `approval.approvers` defaults to an empty array of logins; empty or whitespace-only entries are invalid. Unknown keys, invalid tiers/methods and wrong types fail policy parsing with exit 1. These sections are accepted by `task risk` without changing classification.
 
 Outside an auto tier, merge requires the latest `rabi/approval` commit status for the exact current head SHA to be `success`, with its creator login in `approval.approvers` (case-insensitive login comparison). An empty approvers list fails clearly; a newer failure, pending status, or unlisted creator supersedes an older success. Approval on an earlier head never counts. Both merge modes retain this configuration from the PR base SHA, independently of `--base`, and fail approval unless the current base-branch tip has identical policy content. The marker and token limitations are described in [safety](safety.md#task-approval-and-merge).
 

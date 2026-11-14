@@ -20361,6 +20361,62 @@ esac
 }
 
 #[test]
+fn keep_branch_retains_preservation_reason_in_remove_json() {
+    for local in [false, true] {
+        let repo = merged_pr_fixture(Some("7"));
+        let head = retirement_head_at(&repo, &managed(&repo, "topic"));
+        if local {
+            repo.git(&["merge", "--ff-only", "topic"]);
+        }
+        let response = merged_pr_response(&head, "MERGED");
+        for dry_run in [true, false] {
+            let mut args = vec!["remove", "topic", "--keep-branch", "--json"];
+            if dry_run {
+                args.push("--dry-run");
+            }
+            let output = merged_pr_command(&repo, &args, &response).output().unwrap();
+            assert!(output.status.success(), "{}", text(&output.stderr));
+            let document = json_value(&output);
+            let item = &document["data"]["items"][0];
+            assert_eq!(
+                item["preservationReason"],
+                if local { "local" } else { "merged_pr" }
+            );
+            assert_eq!(item["branchKeptReason"], "keep-branch");
+            assert_eq!(
+                item[if dry_run {
+                    "wouldDeleteBranch"
+                } else {
+                    "branchDeleted"
+                }],
+                false
+            );
+            assert!(branch_listed(&repo, "topic"));
+        }
+        assert_eq!(repo.root.join("gh-calls").exists(), !local);
+    }
+}
+
+#[test]
+fn keep_branch_retains_merged_pr_detail_in_gc_text() {
+    for apply in [false, true] {
+        let repo = merged_pr_fixture(Some("7"));
+        let head = retirement_head_at(&repo, &managed(&repo, "topic"));
+        let response = merged_pr_response(&head, "MERGED");
+        let mut args = vec!["gc", "--merged", "--keep-branch", "--output", "text"];
+        if apply {
+            args.push("--apply");
+        }
+        let output = merged_pr_command(&repo, &args, &response).output().unwrap();
+        assert!(output.status.success(), "{}", text(&output.stderr));
+        let stdout = text(&output.stdout);
+        assert!(stdout.contains("preserved by merged PR"), "{stdout}");
+        assert!(branch_listed(&repo, "topic"));
+        assert_eq!(managed(&repo, "topic").is_dir(), !apply);
+    }
+}
+
+#[test]
 fn merged_pr_remove_linked_exact_and_ancestor() {
     for ancestor in [false, true] {
         for link in ["7", "https://github.com/acme/demo/pull/7"] {

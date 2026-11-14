@@ -6,7 +6,7 @@
 
 - `rabi task review [SEL]` reviews the exact verified PR head in a fresh detached checkout with a restricted Codex or Claude reviewer. Primary-checkout `[review]` preferences select provider/model; the default provider is the opposite of the implementer. Strict nonce-framed answers bind atomic records to head/base/merge-base. Passing reviews mark the PR ready and upsert one sanitized findings comment before `classifying`; revisions share the fix budget, signature deduplication and repeated-failure stop. Review output never approves or merges.
 
-- `rabi task advance [SEL] [--wait] [--ci-timeout DUR]` drives implementation, prechecks and publication through required CI and review, stopping at `classifying`. Fresh head-bound checks, conflict recovery, sanitized nonce-framed CI feedback, durable failure deduplication, `[factory]` fix budgets and CI deadlines bound retries. Pending CI returns exit 10.
+- `rabi task advance [SEL] [--wait] [--ci-timeout DUR]` drives implementation through classification, approval waiting, full merge preflight, merge with `--match-head-commit`, and safe cleanup. Auto-merge requires a policy auto tier and no floor; missing or failed classification requires maintainer approval. Advance posts pending approval once per head and never success. `[factory] approval-timeout` defaults to 24h and returns waiting (exit 10) on expiry. `[merge] delete-branch` defaults to false. Cleanup retains dirty, stashed or unpushed workspaces and local branches.
 
 - `rabi task publish [SEL]` runs trusted committed `[precheck]` commands with stripped credentials, blocks changed checks and base-policy floor paths, then pushes to the recorded URL and creates or reuses a draft PR. Publication disables repository hooks/configuration, never forces, reconciles interrupted pushes/PR creation, and advances to `ci` only for the verified HEAD.
 
@@ -23,6 +23,12 @@
 - Repository `.rabi.toml` supports trusted `[env]` declarations for `run` and `exec`: ordered `path-prepend`, validated `set` variables, and limited HOME/workspace/repository expansion. Declarations always come from the primary checkout, including resume. Loading validates syntax; expansion happens only during application, with clear errors for referenced non-UTF-8 paths. `--no-env` bypasses environment-value validation while retaining TOML/schema parsing; untrusted exec warns and continues without env. Run resolves provider binaries before applying PATH, skips workspace PATH entries and workspace-token set values with `env_workspace_path_skipped`, and reports only retained entries. Exec retains workspace declarations. Reserved variables protect rabi state/configuration and Git repository selection. `trust add` shows escaped `KEY=value` assignments and PATH entries for review; never commit secrets in `[env]`. Hooks keep their existing environment. (#930)
 
 ### Fixed
+
+- Landing blocks remote-only PR head movement, non-descendant local heads and dirty re-derivation before an implementer can launch. Standalone `task merge` requires the same event-bound earned review pass as advance unless `--external-review` is supplied.
+
+- Secret redaction recognizes assignment suffixes and credential prefixes after underscores and punctuation while preserving non-secret diagnostic words and failure fingerprints. Publication and remote branch deletion explicitly disable Git hooks. `remove --keep-branch` retains preservation evidence in JSON and gc text.
+
+- Review finding bodies are limited to 4096 bytes; redaction expansion that requires a cut has an explicit truncation marker. Secret-pattern redaction requires a non-ASCII-alphanumeric boundary, preserving non-secret diagnostic words and their failure fingerprints.
 
 - Failure-output normalization preserves plain decimal numbers and hex-letter words; unprefixed hex identifiers require both digits and letters.
 

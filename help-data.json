@@ -2806,7 +2806,7 @@
     },
     "task advance": {
       "name": "task advance",
-      "description": "Advance a task through implementation, CI and review",
+      "description": "Advance a task through classification, approval, merge and cleanup",
       "usage": "rabi task advance [SEL] [--wait] [--ci-timeout DUR] [options]",
       "options": [
         {
@@ -2819,7 +2819,7 @@
         {
           "name": "wait",
           "type": "boolean",
-          "description": "Repeat steps and poll CI through review until classifying or a terminal result"
+          "description": "Repeat steps and poll CI or approval through merge and safe cleanup"
         },
         {
           "name": "ci-timeout",
@@ -2855,13 +2855,13 @@
         "Failed prechecks, CI and review return implementing with bounded untrusted feedback, framed with a random nonce in the implementer prompt. Durable head-bound signatures prevent repeating the same repair; identical consecutive failure fingerprints block repeated_failure even across heads.",
         "Primary-checkout [factory] fix-budget defaults to 3 relaunches, including review revisions; ci-timeout defaults to 60m. Exhausted budget, empty required checks and elapsed pending CI block budget, no_ci and ci_timeout. --ci-timeout overrides the timeout.",
         "Reviewing runs task review in a fresh detached exact-head checkout. Passing findings mark the verified PR ready and upsert one sanitized findings comment before classifying. Review output is advisory input to deterministic gates, never an approval.",
-        "--wait polls pending checks every 30 seconds and continues through reviewing until classifying, blocked, merged, abandoned or an error. It does not launch classification, approve or merge.",
-        "Exit 0 means progress, classifying or recorded merged; 10 means waiting; blocked/abandoned use 4. Implementer failures block provider_failed with 4; timeout uses 124. Invalid reviewer output gets one retry then review_invalid with 4. SIGINT/SIGTERM stops with 130. Other errors retain their existing codes."
+        "--wait polls pending checks or approval every 30 seconds until merged, blocked, abandoned, a waiting deadline or an error. Approval timeout defaults to 24h through [factory] approval-timeout and returns waiting, never blocked.",
+        "Classification reuses valid head-bound records or launches the classifier. Missing, failed, invalid or uncertain classification is high. Only [merge] auto tiers without built-in or policy floor hits may auto-merge; the default auto set is empty. Otherwise awaiting_approval posts pending rabi/approval once per head, never success. Exact-head success from [approval] approvers is required; head movement voids approval and changes requested return implementing within the fix budget. Merge reruns the full preflight using a valid pass review, uses --match-head-commit and records the merge commit; preflight failure blocks with its reason, without retry. Cleanup uses remove safety checks and keeps dirty, stashed or unpushed workspaces and local branches. Remote branch deletion requires [merge] delete-branch=true (default false). Exit 0 means progress or merged; 10 means CI or approval waiting, including approval timeout; blocked/abandoned use 4. Implementer failures block provider_failed with 4; timeout uses 124. Invalid reviewer output gets one retry then review_invalid with 4. SIGINT/SIGTERM stops with 130. Other errors retain their existing codes."
       ],
       "examples": [
         {
           "command": "rabi task advance --wait --json",
-          "description": "Drive the current task through CI and review; stop at classifying"
+          "description": "Drive the current task through classification, approval, merge and safe cleanup"
         }
       ]
     },
@@ -2964,7 +2964,7 @@
     "6": "Partial completion",
     "124": "Run launch timed out",
     "130": "Run interrupted by SIGINT or SIGTERM",
-    "10": "Task CI waiting"
+    "10": "Task CI or approval waiting"
   },
   "errorCodes": {
     "failed": 1,

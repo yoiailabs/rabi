@@ -1,4 +1,4 @@
-//! Deterministic orchestration through review. Remote text is evidence, never authority.
+//! Deterministic orchestration through exact-head merge and safe cleanup. Remote text is evidence, never authority.
 use std::{path::Path, time::Duration};
 
 use chrono::{DateTime, Utc};
@@ -22,6 +22,13 @@ pub(crate) struct Progress {
     pub evaluated_head: Option<String>,
     pub ci_head: Option<String>,
     pub ci_started_at: Option<String>,
+    pub approval_head: Option<String>,
+    pub approval_started_at: Option<String>,
+    pub approval_pending_head: Option<String>,
+    pub merged_head_sha: Option<String>,
+    pub merge_commit_sha: Option<String>,
+    pub remote_branch_deleted: Option<bool>,
+    pub cleanup: Option<super::cleanup::CleanupReport>,
     pub fixes_used: u32,
     pub signatures: Vec<String>,
     pub last_fix_fingerprint: Option<String>,
@@ -45,6 +52,12 @@ pub(crate) struct Report {
     pub reason: String,
     pub head: Option<String>,
     pub fixes_used: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub merge_commit_sha: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_branch_deleted: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cleanup: Option<super::cleanup::CleanupReport>,
     #[serde(flatten)]
     pub budget: Budget,
     #[serde(skip)]
@@ -82,6 +95,9 @@ pub(super) fn report(task: &Task, reason: &str, head: Option<String>, exit_code:
         reason: reason.into(),
         head,
         fixes_used: task.advance.fixes_used,
+        merge_commit_sha: task.advance.merge_commit_sha.clone(),
+        remote_branch_deleted: task.advance.remote_branch_deleted,
+        cleanup: task.advance.cleanup.clone(),
         budget: Budget::default(),
         exit_code,
     }
@@ -96,7 +112,7 @@ pub(super) fn block(
     store.advance_event(task, TaskState::Blocked(reason), message)?;
     Ok(report(task, message, head, REFUSED))
 }
-fn descendant(workspace: &Path, before: &str, after: &str) -> Result<bool> {
+pub(super) fn descendant(workspace: &Path, before: &str, after: &str) -> Result<bool> {
     if before == after {
         return Ok(false);
     }
@@ -547,7 +563,7 @@ pub(super) fn normalized_output(tail: &str) -> String {
     }
     lines.join("\n").trim().to_owned()
 }
-fn output_hash(tail: &str) -> String {
+pub(super) fn output_hash(tail: &str) -> String {
     crate::hash::sha256_hex(normalized_output(tail).as_bytes())
 }
 
@@ -752,6 +768,12 @@ pub(crate) fn execute(
     let id = task.id;
     let config = configuration(root)?;
     let timeout = timeout.unwrap_or(crate::run::timeout(&config.ci_timeout)?);
+    let approval_timeout = std::env::var("RABI_TEST_TASK_APPROVAL_TIMEOUT_MS")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .filter(|value| *value > 0)
+        .map(Duration::from_millis)
+        .unwrap_or(crate::run::timeout(&config.approval_timeout)?);
     let poll = std::env::var("RABI_TEST_TASK_POLL_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
@@ -775,15 +797,23 @@ pub(crate) fn execute(
                 TaskState::Ci => ci(root, &store, &mut task, timeout),
                 TaskState::Blocked(_) => Ok(report(&task, "blocked", None, REFUSED)),
                 TaskState::Abandoned => Ok(report(&task, "abandoned", None, REFUSED)),
-                TaskState::Merged => Ok(report(&task, "merged", None, 0)),
+                TaskState::Merged => super::land::cleanup(root, &store, &mut task),
                 TaskState::Reviewing | TaskState::Ready => {
                     super::review::execute_locked(root, Some(&id))
                 }
-                TaskState::Classifying => Ok(report(&task, "classifying", None, 0)),
+                TaskState::Classifying => super::land::classify(root, &store, &mut task),
+                TaskState::AwaitingApproval => super::land::awaiting(
+                    root,
+                    &store,
+                    &mut task,
+                    approval_timeout,
+                    config.fix_budget,
+                ),
+                TaskState::Merging => super::land::merging(root, &store, &mut task),
                 _ => {
                     return Err(Error::status(
                         REFUSED,
-                        "Task advance handles implementing through review only",
+                        "Task advance requires an implementing or later task",
                     ))
                 }
             }
@@ -807,8 +837,11 @@ pub(crate) fn execute(
                     | TaskState::Ci
                     | TaskState::Reviewing
                     | TaskState::Ready
+                    | TaskState::Classifying
+                    | TaskState::AwaitingApproval
+                    | TaskState::Merging
             )
-            || result.reason == "merged"
+            || matches!(result.reason.as_str(), "merged" | "approval_timeout")
         {
             return Ok(result);
         }
