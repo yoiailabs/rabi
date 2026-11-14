@@ -250,13 +250,13 @@ fn secret_value_length(value: &str) -> usize {
     value.len()
 }
 
-fn sanitized_text(bytes: &[u8], workspace: &Path) -> String {
+pub(super) fn sanitized_text(bytes: &[u8], workspace: &Path) -> String {
     let stripped = strip_ansi(&String::from_utf8_lossy(bytes));
     let text: String = stripped
         .chars()
         .filter(|c| !c.is_control() || matches!(c, '\n' | '\t'))
         .collect();
-    // Redact before bounding the tail so truncation cannot expose a partial secret.
+    // Redact before bounding text so truncation cannot expose a partial secret.
     let mut text = redact_private_keys(&text);
     for (key, value) in std::env::vars_os() {
         let key = key.to_string_lossy();

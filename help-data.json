@@ -2275,10 +2275,10 @@
         }
       ],
       "notes": [
-        "Local intent must be nonempty; - reads stdin. --issue N instead reads issue title/body with GET-only gh APIs after checking author permission; otherwise exit 4 intake_not_permitted without creating state.",
+        "Local intent must be nonempty; - reads stdin. --issue N instead reads issue title/body with GET-only gh APIs after checking author permission; otherwise exit 4 intake_not_permitted without creating state. Collaborator-permission HTTP 404 counts as no permission; other API failures use exit 1.",
         "Existing local branches, branches checked out in any checkout, and branches reserved by non-terminal tasks are rejected. The push remote URL is captured once, with credentials removed.",
         "New records are published from .staging-<uuid> only after both files are complete. Unreadable task reservations fail closed with exit 1 and the task ID.",
-        "Issue tasks store issue number, author login and canonical URL. Title/body are sanitized, redacted and capped at 4096 UTF-8 bytes each with a truncation marker; later implementer prompts nonce-frame them as untrusted data. Already-linked issues refuse with exists (4), including terminal tasks.",
+        "Issue tasks store issue number, author login and canonical URL. Title/body are sanitized and redacted before truncation; each keeps its beginning within 4096 UTF-8 bytes, including a trailing [truncated] marker when cut at a character boundary. Later implementer prompts nonce-frame them as untrusted data. Already-linked issues refuse with exists (4), including terminal tasks.",
         "Creation never launches an agent or creates a branch/workspace. Create the linked checkout and start task implement before explicitly running task advance. External text may reach agents only after intake permission checks; framing cannot override agent restrictions."
       ]
     },
@@ -2644,7 +2644,7 @@
         {
           "name": "label",
           "type": "string",
-          "description": "Required exact issue label (nonblank, at most 256 bytes, no controls)"
+          "description": "Required issue label, matched case-insensitively (nonblank, at most 256 bytes, no controls)"
         },
         {
           "name": "limit",
@@ -2686,8 +2686,8 @@
         }
       ],
       "notes": [
-        "List open issues and paginate issue events with GET-only gh APIs. The actor who most recently added the exact label must have write, maintain or admin repository permission. A later removal or missing actor cannot reuse an older authorized addition.",
-        "Accepted issues use the same path as task new --issue, including the author permission check, sanitized size-capped text and issue link. Skip unauthorized issues and issues already linked to any task, including terminal tasks. Permission/API failures never authorize intake.",
+        "List open issues and paginate issue events with GET-only gh APIs. Label names match case-insensitively. The actor who most recently added that label must have write, maintain or admin repository permission. A later removal or missing actor cannot reuse an older authorized addition; no matching label event or actor skips with label_actor_unknown.",
+        "Accepted issues use the same path as task new --issue, including the author permission check, sanitized size-capped text and issue link. Skip unauthorized issues with intake_not_permitted, including collaborator-permission HTTP 404, and continue with other issues. Skip issues already linked to any task, including terminal tasks. Other unavailable API evidence fails closed with exit 1.",
         "The limit counts examined issues, including skips. Issue and event enumerations use up to 100 pages of 100; PR-only pages do not consume the issue limit. Exceeding a pagination safety limit fails before creation. No issue comments, labels or state are written. Dry runs report a plan only.",
         "Intake does not launch implementation. Create the linked checkout, run task implement, then explicitly run task advance. Later prompts frame issue text with a fresh nonce as untrusted data; permission checks do not make external text trusted."
       ]

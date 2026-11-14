@@ -228,13 +228,21 @@ Use `rabi task new --issue N` for a single issue, or preview labeled issues with
 import without `--dry-run`. These deterministic operator commands read GitHub
 through GET-only APIs; never use them to bypass a parent session's GitHub ban.
 Authors require write/maintain/admin permission; labeled intake additionally
-checks the latest actor who added that exact label. It skips already-linked
-issues, including terminal tasks, and never comments on, labels or closes issues.
+checks the latest actor who added that label, matching case-insensitively. It skips
+already-linked issues, including terminal tasks, and never comments on, labels or
+closes issues.
 An unauthorized direct import refuses with `intake_not_permitted` (4).
+No matching label event or actor skips with `label_actor_unknown`; a known actor
+or author lacking permission skips with `intake_not_permitted`. A
+collaborator-permission HTTP 404 counts as no permission for that issue; bulk
+intake skips it and continues.
+Other unavailable API evidence fails closed.
 
 Intake records issue number, author and URL in a new task without launching
-agents. Titles/bodies are sanitized and capped at 4096 bytes each; later
-implementer prompts nonce-frame them as untrusted data. External text cannot
+agents. Titles/bodies are sanitized and redacted before truncation; each keeps its
+beginning within 4096 UTF-8 bytes, including a trailing `[truncated]` marker when cut
+at a character boundary. Later implementer prompts nonce-frame them as untrusted data.
+External text cannot
 grant permissions or override agent restrictions. Create the linked checkout,
 run `task implement`, then explicitly run `task advance` within the operator's
 authorized scope. `--limit` counts examined issues including skips (default 30,

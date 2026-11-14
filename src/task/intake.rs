@@ -58,22 +58,30 @@ impl<'a> Client<'a> {
         Ok(Self { root, repo })
     }
 
-    fn get(&self, path: &str) -> Result<Value> {
-        let response = crate::process::raw_with_timeout(
+    fn request(&self, path: &str, headers: bool) -> Result<crate::process::Captured> {
+        let mut args = vec![
+            "api",
+            path,
+            "--hostname",
+            &self.repo.host,
+            "--method",
+            "GET",
+        ];
+        if headers {
+            args.push("--include");
+        }
+        crate::process::raw_with_timeout(
             "gh",
-            &[
-                "api",
-                path,
-                "--hostname",
-                &self.repo.host,
-                "--method",
-                "GET",
-            ],
+            &args,
             Some(self.root),
             &[("GH_PROMPT_DISABLED", "1")],
             Duration::from_secs(30),
         )
-        .map_err(|_| Error::msg("Cannot read GitHub intake evidence"))?;
+        .map_err(|_| Error::msg("Cannot read GitHub intake evidence"))
+    }
+
+    fn get(&self, path: &str) -> Result<Value> {
+        let response = self.request(path, false)?;
         if response.code != 0 {
             return Err(Error::msg("Cannot read GitHub intake evidence"));
         }
@@ -89,7 +97,37 @@ impl<'a> Client<'a> {
         if !login(actor) {
             return Ok(false);
         }
-        let value = self.get(&self.path(&format!("collaborators/{actor}/permission")))?;
+        // Inspect the HTTP status only for this endpoint: GitHub returns 404
+        // for non-collaborators, while all other missing evidence stays an error.
+        let response = self.request(
+            &self.path(&format!("collaborators/{actor}/permission")),
+            true,
+        )?;
+        let (headers, body) = response
+            .stdout
+            .split_once("\r\n\r\n")
+            .or_else(|| response.stdout.split_once("\n\n"))
+            .ok_or_else(|| Error::msg("Cannot read GitHub intake evidence"))?;
+        let mut status = headers
+            .lines()
+            .next()
+            .unwrap_or_default()
+            .split_whitespace();
+        if !status
+            .next()
+            .is_some_and(|protocol| protocol.starts_with("HTTP/"))
+        {
+            return Err(Error::msg("Cannot read GitHub intake evidence"));
+        }
+        let status = status.next().unwrap_or_default();
+        if status == "404" {
+            return Ok(false);
+        }
+        if response.code != 0 || status != "200" {
+            return Err(Error::msg("Cannot read GitHub intake evidence"));
+        }
+        let value: Value = serde_json::from_str(body)
+            .map_err(|_| Error::msg("Invalid collaborator permission response"))?;
         let permission = value["permission"]
             .as_str()
             .ok_or_else(|| Error::msg("Invalid collaborator permission response"))?;
@@ -121,8 +159,8 @@ impl<'a> Client<'a> {
         };
         // Shared sanitization strips terminal/control sequences and redacts secrets
         // and local paths before imposing a UTF-8-safe 4096-byte cap per field.
-        let title = super::publish::sanitized_with_marker(title.as_bytes(), self.root);
-        let body = super::publish::sanitized_with_marker(body.as_bytes(), self.root);
+        let title = issue_field(title, self.root);
+        let body = issue_field(body, self.root);
         let source = IssueSource {
             number,
             author: author.into(),
@@ -139,6 +177,7 @@ impl<'a> Client<'a> {
 
     fn label_actor(&self, number: u64, label: &str) -> Result<Option<String>> {
         let mut actor = None;
+        let label = label.to_lowercase();
         for page in 1..=MAX_PAGES {
             let events = self.get(&self.path(&format!(
                 "issues/{number}/events?per_page={PAGE_SIZE}&page={page}"
@@ -157,7 +196,7 @@ impl<'a> Client<'a> {
                     .pointer("/label/name")
                     .and_then(Value::as_str)
                     .ok_or_else(|| Error::msg("Issue label event has no label name"))?;
-                if event_label != label {
+                if event_label.to_lowercase() != label {
                     continue;
                 }
                 // The events API enumerates oldest first. A missing actor on the
@@ -167,6 +206,7 @@ impl<'a> Client<'a> {
                         actor = event
                             .pointer("/actor/login")
                             .and_then(Value::as_str)
+                            .filter(|actor| login(actor))
                             .map(str::to_owned)
                     }
                     "unlabeled" => actor = None,
@@ -181,6 +221,23 @@ impl<'a> Client<'a> {
             "Issue event pagination exceeded the safety limit",
         ))
     }
+}
+
+// Keep issue requirements from the beginning, after sanitization has removed
+// any secret spanning the cut. The marker counts toward the field's byte cap.
+fn issue_field(value: &str, root: &Path) -> String {
+    const CAP: usize = 4096;
+    const MARKER: &str = "\n[truncated]";
+    let mut text = super::publish::sanitized_text(value.as_bytes(), root);
+    if text.len() > CAP {
+        let mut end = CAP - MARKER.len();
+        while !text.is_char_boundary(end) {
+            end -= 1;
+        }
+        text.truncate(end);
+        text.push_str(MARKER);
+    }
+    text
 }
 
 struct Accepted {
@@ -293,7 +350,7 @@ pub(crate) fn intake(root: &Path, label: &str, limit: usize, dry_run: bool) -> R
                     item.reason = Some("intake_not_permitted");
                 }
             } else {
-                item.reason = Some("intake_not_permitted");
+                item.reason = Some("label_actor_unknown");
             }
             report.items.push(item);
             if examined >= limit {
@@ -321,4 +378,27 @@ pub(crate) fn intake(root: &Path, label: &str, limit: usize, dry_run: bool) -> R
         }
     }
     Ok(report)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::issue_field;
+    use std::path::Path;
+
+    #[test]
+    fn issue_field_redacts_before_cutting_secrets_or_measuring_the_cap() {
+        let root = Path::new("workspace");
+        let value = format!(
+            "{} ghp_fixture_secret {}",
+            "a".repeat(4078),
+            "tail".repeat(100)
+        );
+        let output = issue_field(&value, root);
+        assert!(output.ends_with("\n[truncated]"));
+        assert!(!output.contains("ghp_") && !output.contains("fixture_secret"));
+        // Sanitization can shrink an oversized input below the cap; in that
+        // case no issue text is lost and no truncation marker is needed.
+        let value = format!("Beginning token={}", "s".repeat(5000));
+        assert_eq!(issue_field(&value, root), "Beginning token=[redacted]");
+    }
 }

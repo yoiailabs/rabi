@@ -22,9 +22,67 @@ fn external_intake_guidance_matches_help_permissions_and_data_contract() {
         ("json", include_str!("../docs/json.md")),
         ("skill", include_str!("../skills/rabi/SKILL.md")),
     ] {
-        for text in ["intake_not_permitted", "task intake", "task new --issue"] {
+        for text in [
+            "intake_not_permitted",
+            "label_actor_unknown",
+            "HTTP 404",
+            "task intake",
+            "task new --issue",
+        ] {
             assert!(document.contains(text), "{name} lacks {text}");
         }
+    }
+    for (name, document, section) in [
+        (
+            "commands",
+            include_str!("../docs/commands.md"),
+            "## External issue intake",
+        ),
+        ("json", include_str!("../docs/json.md"), "## Task intake"),
+        (
+            "safety",
+            include_str!("../docs/safety.md"),
+            "## External task intake",
+        ),
+        (
+            "skill",
+            include_str!("../skills/rabi/SKILL.md"),
+            "## External intake",
+        ),
+    ] {
+        let intake = document
+            .split_once(section)
+            .unwrap()
+            .1
+            .split("\n## ")
+            .next()
+            .unwrap();
+        for text in [
+            "beginning",
+            "trailing",
+            "[truncated]",
+            "character boundary",
+            "case-insensitively",
+        ] {
+            assert!(intake.contains(text), "{name} intake lacks {text}");
+        }
+    }
+    let new_notes = help["helps"]["task new"]["notes"].as_array().unwrap();
+    for text in ["beginning", "trailing [truncated]", "HTTP 404"] {
+        assert!(new_notes
+            .iter()
+            .any(|note| note.as_str().unwrap().contains(text)));
+    }
+    let intake_notes = help["helps"]["task intake"]["notes"].as_array().unwrap();
+    for text in [
+        "case-insensitively",
+        "label_actor_unknown",
+        "intake_not_permitted",
+        "HTTP 404",
+    ] {
+        assert!(intake_notes
+            .iter()
+            .any(|note| note.as_str().unwrap().contains(text)));
     }
     for document in [
         include_str!("../docs/safety.md"),
@@ -39,6 +97,9 @@ fn external_intake_guidance_matches_help_permissions_and_data_contract() {
     for document in [README, README_JA] {
         assert!(document.contains("--dry-run"));
         assert!(document.contains("rabi task new --issue N"));
+        for text in ["label_actor_unknown", "intake_not_permitted", "HTTP 404"] {
+            assert!(document.contains(text));
+        }
     }
     assert!(include_str!("../CHANGELOG.md").contains("## Unreleased"));
 }

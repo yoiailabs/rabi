@@ -21,12 +21,24 @@ with open(root + '/calls', 'a') as f:
     f.write(json.dumps(args) + '\n')
 if args == ['repo', 'view', '--json', 'url,owner,name']:
     print(json.dumps({'url':'https://example.invalid/project/repo','owner':{'login':'project'},'name':'repo'}))
-elif len(args) == 6 and args[0] == 'api' and args[2:] == ['--hostname','example.invalid','--method','GET']:
+elif len(args) >= 6 and args[0] == 'api' and args[2:6] == ['--hostname','example.invalid','--method','GET']:
+    permission = args[1].startswith('repos/project/repo/collaborators/') and args[1].endswith('/permission')
+    if args[6:] != (['--include'] if permission else []):
+        sys.exit(93)
     with open(root + '/responses.json') as f:
         data = json.load(f)
     if args[1] not in data:
         sys.exit(92)
-    print(json.dumps(data[args[1]]))
+    value = data[args[1]]
+    status = value.get('fixtureHttpStatus', 200) if isinstance(value, dict) else 200
+    if isinstance(value, dict) and 'fixtureHttpStatus' in value:
+        value = value['fixtureBody']
+    if permission:
+        print('HTTP/2.0 ' + str(status) + ' Fixture\r\nContent-Type: application/json\r\n\r\n', end='')
+    print(json.dumps(value))
+    if status >= 400:
+        print('gh: Fixture failure (HTTP ' + str(status) + ')', file=sys.stderr)
+        sys.exit(1)
 else:
     sys.exit(93)
 "#;
@@ -136,6 +148,12 @@ impl Repo {
             json!({"permission":permission}),
         );
     }
+    fn api_error(&mut self, suffix: &str, status: u16, message: &str) {
+        self.response(
+            suffix,
+            json!({"fixtureHttpStatus":status,"fixtureBody":{"message":message}}),
+        );
+    }
     fn issue(&mut self, number: u64, author: &str, body: &str) {
         self.response(&format!("issues/{number}"), json!({"number":number,"title":"Improve behavior", "body":body,"state":"open","user":{"login":author},"html_url":"untrusted url"}));
     }
@@ -210,6 +228,98 @@ fn non_write_and_missing_permission_refuse_before_creating_any_state() {
 }
 
 #[test]
+fn permission_not_found_refuses_direct_import_without_creating_state() {
+    let mut repo = Repo::new();
+    repo.issue(7, "reader", "body");
+    repo.api_error("collaborators/reader/permission", 404, "Not Found");
+    let result = repo.rabi(&["task", "new", "--issue", "7", "--json"], 4);
+    assert_eq!(result["error"]["code"], "intake_not_permitted");
+    assert!(!repo.root.join("state").exists());
+}
+
+#[test]
+fn permission_not_found_skips_actor_or_author_and_keeps_other_issues() {
+    for dry_run in [false, true] {
+        let mut repo = Repo::new();
+        repo.list(&[1, 2, 3]);
+        repo.permission("writer", "write");
+        repo.api_error("collaborators/reader/permission", 404, "Not Found");
+        repo.events(1, &["reader"]);
+        repo.issue(1, "writer", "body");
+        repo.events(2, &["writer"]);
+        repo.issue(2, "reader", "body");
+        repo.events(3, &["writer"]);
+        repo.issue(3, "writer", "body");
+        let mut args = vec!["task", "intake", "--label", "ready", "--json"];
+        if dry_run {
+            args.push("--dry-run");
+        }
+        let data = repo.rabi(&args, 0)["data"].clone();
+        for index in [0, 1] {
+            assert_eq!(data["items"][index]["action"], "skipped");
+            assert_eq!(data["items"][index]["reason"], "intake_not_permitted");
+            assert!(data["items"][index]["taskId"].is_null());
+        }
+        assert_eq!(
+            data["items"][2]["action"],
+            if dry_run { "would_create" } else { "created" }
+        );
+        assert!(!repo.calls().contains("issues/1\""));
+        if dry_run {
+            assert!(!repo.root.join("state").exists());
+        } else {
+            assert_eq!(repo.tasks().len(), 1);
+        }
+    }
+}
+
+#[test]
+fn other_permission_errors_and_non_permission_not_found_still_fail_closed() {
+    for (endpoint, status, message) in [
+        ("collaborators/reader/permission", 401, "Unauthorized"),
+        ("collaborators/reader/permission", 403, "Forbidden"),
+        (
+            "collaborators/reader/permission",
+            500,
+            "Failure mentioning 404",
+        ),
+        ("issues/7", 404, "Not Found"),
+    ] {
+        let mut repo = Repo::new();
+        repo.issue(7, "reader", "body");
+        repo.permission("reader", "write");
+        repo.api_error(endpoint, status, message);
+        assert_eq!(
+            repo.rabi(&["task", "new", "--issue", "7", "--json"], 1)["error"]["code"],
+            "failed"
+        );
+        assert!(!repo.root.join("state").exists());
+    }
+    for (endpoint, status) in [
+        ("collaborators/reader/permission", 403),
+        ("collaborators/reader/permission", 500),
+        ("issues/2/events?per_page=100&page=1", 404),
+        ("issues/2", 404),
+        ("issues?state=open&labels=ready&per_page=100&page=1", 404),
+    ] {
+        let mut repo = Repo::new();
+        repo.list(&[1, 2]);
+        repo.permission("writer", "write");
+        repo.permission("reader", "write");
+        repo.issue(1, "writer", "body");
+        repo.events(1, &["writer"]);
+        repo.issue(2, "reader", "body");
+        repo.events(2, &["writer"]);
+        repo.api_error(endpoint, status, "Failure mentioning 404");
+        assert_eq!(
+            repo.rabi(&["task", "intake", "--label", "ready", "--json"], 1)["error"]["code"],
+            "failed"
+        );
+        assert!(!repo.root.join("state").exists());
+    }
+}
+
+#[test]
 fn latest_label_actor_controls_acceptance_even_when_author_is_write() {
     let mut repo = Repo::new();
     repo.list(&[1, 2, 3, 4]);
@@ -232,10 +342,104 @@ fn latest_label_actor_controls_acceptance_even_when_author_is_write() {
     let data = repo.rabi(&["task", "intake", "--label", "ready", "--json"], 0)["data"].clone();
     assert_eq!(data["items"][0]["reason"], "intake_not_permitted");
     assert_eq!(data["items"][1]["action"], "created");
-    assert_eq!(data["items"][2]["reason"], "intake_not_permitted");
-    assert_eq!(data["items"][3]["reason"], "intake_not_permitted");
+    assert_eq!(data["items"][2]["reason"], "label_actor_unknown");
+    assert_eq!(data["items"][3]["reason"], "label_actor_unknown");
     assert_eq!(repo.tasks().len(), 1);
     assert!(!repo.calls().contains("issues/1\""));
+}
+
+#[test]
+fn mixed_case_label_events_use_latest_addition_and_distinguish_unknown_actors() {
+    let mut repo = Repo::new();
+    repo.list(&[1, 2, 3, 4, 5, 6, 7]);
+    repo.permission("writer", "write");
+    repo.permission("reader", "read");
+    for n in 1..=7 {
+        repo.issue(n, "writer", "body");
+    }
+    for (number, events) in [
+        (
+            1,
+            json!([{"event":"labeled","label":{"name":"Ready"},"actor":{"login":"writer"}}]),
+        ),
+        (
+            2,
+            json!([
+                {"event":"labeled","label":{"name":"Ready"},"actor":{"login":"writer"}},
+                {"event":"labeled","label":{"name":"READY"},"actor":{"login":"reader"}}
+            ]),
+        ),
+        (
+            3,
+            json!([
+                {"event":"labeled","label":{"name":"Ready"},"actor":{"login":"writer"}},
+                {"event":"unlabeled","label":{"name":"READY"}}
+            ]),
+        ),
+        (
+            4,
+            json!([
+                {"event":"labeled","label":{"name":"Ready"},"actor":{"login":"reader"}},
+                {"event":"unlabeled","label":{"name":"READY"}},
+                {"event":"labeled","label":{"name":"rEaDy"},"actor":{"login":"writer"}}
+            ]),
+        ),
+        (
+            5,
+            json!([{"event":"labeled","label":{"name":"other"},"actor":{"login":"writer"}}]),
+        ),
+        (
+            6,
+            json!([
+                {"event":"labeled","label":{"name":"Ready"},"actor":{"login":"writer"}},
+                {"event":"labeled","label":{"name":"READY"},"actor":null}
+            ]),
+        ),
+        (
+            7,
+            json!([
+                {"event":"labeled","label":{"name":"Ready"},"actor":{"login":"writer"}},
+                {"event":"labeled","label":{"name":"READY"},"actor":{"login":"invalid actor"}}
+            ]),
+        ),
+    ] {
+        repo.response(
+            &format!("issues/{number}/events?per_page=100&page=1"),
+            events,
+        );
+    }
+    let data = repo.rabi(&["task", "intake", "--label", "ready", "--json"], 0)["data"].clone();
+    for index in [0, 3] {
+        assert_eq!(data["items"][index]["action"], "created");
+    }
+    assert_eq!(data["items"][1]["reason"], "intake_not_permitted");
+    for index in [2, 4, 5, 6] {
+        assert_eq!(data["items"][index]["reason"], "label_actor_unknown");
+        assert_eq!(data["items"][index]["action"], "skipped");
+    }
+    assert_eq!(repo.tasks().len(), 2);
+    assert!(!repo.calls().contains("collaborators/invalid"));
+}
+
+#[test]
+fn unicode_label_case_matches_without_accepting_a_different_label() {
+    let mut repo = Repo::new();
+    repo.response(
+        "issues?state=open&labels=R%C3%89ADY&per_page=100&page=1",
+        json!([{"number":1},{"number":2}]),
+    );
+    repo.permission("writer", "write");
+    repo.issue(1, "writer", "body");
+    repo.issue(2, "writer", "body");
+    repo.response(
+        "issues/1/events?per_page=100&page=1",
+        json!([{"event":"labeled","label":{"name":"réady"},"actor":{"login":"writer"}}]),
+    );
+    repo.events(2, &["writer"]);
+    let data = repo.rabi(&["task", "intake", "--label", "RÉADY", "--json"], 0)["data"].clone();
+    assert_eq!(data["items"][0]["action"], "created");
+    assert_eq!(data["items"][1]["reason"], "label_actor_unknown");
+    assert_eq!(repo.tasks().len(), 1);
 }
 
 #[test]
@@ -310,7 +514,7 @@ fn missing_latest_actor_or_later_api_failure_cannot_authorize_any_creation() {
     );
     let result = repo.rabi(&["task", "intake", "--label", "ready", "--json"], 0);
     assert_eq!(result["data"]["items"][0]["action"], "created");
-    assert_eq!(result["data"]["items"][1]["reason"], "intake_not_permitted");
+    assert_eq!(result["data"]["items"][1]["reason"], "label_actor_unknown");
 }
 
 #[test]
@@ -403,6 +607,53 @@ fn issue_and_event_pagination_use_the_latest_addition_and_respect_limit() {
 }
 
 #[test]
+fn issue_title_and_body_keep_sanitized_beginnings_with_trailing_markers() {
+    let mut repo = Repo::new();
+    let title = format!(
+        "Title beginning token=fixture-secret\n{} TITLE_TAIL",
+        "é".repeat(3000)
+    );
+    let body = format!(
+        "Body beginning \u{1b}[31mred\u{1b}[0m\u{0}\n{} BODY_TAIL",
+        "界".repeat(3000)
+    );
+    repo.issue(7, "writer", &body);
+    repo.responses["repos/project/repo/issues/7"]["title"] = json!(title);
+    repo.permission("writer", "write");
+    let task = repo.rabi(&["task", "new", "--issue", "7", "--json"], 0)["data"]["task"].clone();
+    let fields = task["intent"]
+        .as_str()
+        .unwrap()
+        .strip_suffix("\n\nIssue: https://example.invalid/project/repo/issues/7")
+        .unwrap();
+    let (title, body) = fields.split_once("\n\n").unwrap();
+    assert!(title.starts_with("Title beginning token=[redacted]\né"));
+    assert!(body.starts_with("Body beginning red\n界"));
+    for field in [title, body] {
+        assert!(field.len() <= 4096 && field.len() > 4092);
+        assert!(field.ends_with("\n[truncated]"));
+        assert!(!field.contains("TAIL"));
+        assert!(!field.contains("fixture-secret"));
+        assert!(!field.contains('\u{1b}') && !field.contains('\u{0}'));
+    }
+}
+
+#[test]
+fn issue_title_and_body_at_the_cap_are_preserved_without_markers() {
+    let mut repo = Repo::new();
+    let title = "t".repeat(4096);
+    let body = "é".repeat(2048);
+    repo.issue(7, "writer", &body);
+    repo.responses["repos/project/repo/issues/7"]["title"] = json!(title);
+    repo.permission("writer", "write");
+    let task = repo.rabi(&["task", "new", "--issue", "7", "--json"], 0)["data"]["task"].clone();
+    assert_eq!(
+        task["intent"],
+        format!("{title}\n\n{body}\n\nIssue: https://example.invalid/project/repo/issues/7")
+    );
+}
+
+#[test]
 fn sanitized_bounded_issue_injection_stays_inside_fresh_implementer_frame() {
     let mut repo = Repo::new();
     let injection =
@@ -411,7 +662,7 @@ fn sanitized_bounded_issue_injection_stays_inside_fresh_implementer_frame() {
         7,
         "writer",
         &format!(
-            "{}\u{1b}[31m{injection}\u{0}\nTOKEN=fixture-secret",
+            "\u{1b}[31m{injection}\u{0}\nTOKEN=fixture-secret\n{}",
             "é".repeat(5000)
         ),
     );
