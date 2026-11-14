@@ -163,7 +163,7 @@ fn redact_secret_patterns(text: &str) -> String {
         let boundary = text[..offset]
             .chars()
             .next_back()
-            .is_none_or(|character| !character.is_alphanumeric() && character != '_');
+            .is_none_or(|character| !character.is_ascii_alphanumeric());
         let github = ["ghp_", "gho_", "ghs_", "ghu_", "ghr_", "github_pat_"]
             .iter()
             .any(|prefix| tail.starts_with(prefix));
@@ -599,16 +599,7 @@ impl Publisher {
             .to_str()
             .ok_or_else(|| Error::msg("Review checkout path is not UTF-8"))?;
         let result = self.git_inner(
-            &[
-                "-c",
-                "core.hooksPath=/dev/null",
-                "worktree",
-                "add",
-                "--detach",
-                "--",
-                path,
-                &self.head,
-            ],
+            &["worktree", "add", "--detach", "--", path, &self.head],
             true,
         )?;
         if result.code != 0 {
@@ -642,6 +633,8 @@ impl Publisher {
             "--no-lazy-fetch",
             "--git-dir",
             git_dir,
+            "-c",
+            "core.hooksPath=/dev/null",
             "-c",
             "core.commitGraph=false",
             "-c",
@@ -1363,6 +1356,16 @@ mod tests {
                 "aUtHoRiZaTiOn : [redacted]",
             ),
             ("token=x", "token=[redacted]"),
+            ("NPM_TOKEN=fixture-secret", "NPM_TOKEN=[redacted]"),
+            ("access_token=fixture-secret", "access_token=[redacted]"),
+            (
+                "AWS_SESSION_TOKEN=fixture-secret",
+                "AWS_SESSION_TOKEN=[redacted]",
+            ),
+            (
+                "MY_AWS_SECRET_ACCESS_KEY=fixture-secret",
+                "MY_AWS_SECRET_ACCESS_KEY=[redacted]",
+            ),
             (
                 "?token=fixture-secret&keep=yes",
                 "?token=[redacted]&keep=yes",
@@ -1398,10 +1401,31 @@ mod tests {
                 "redaction must be idempotent"
             );
         }
+        for separator in ["_", "-", ".", "?", "&", "=", ":", "é"] {
+            for secret in [
+                "ghp_fixtureSecret123",
+                "github_pat_fixtureSecret123",
+                "AKIAIOSFODNN7EXAMPLE",
+                "ASIAIOSFODNN7EXAMPLE",
+                "token=fixture-secret",
+            ] {
+                let input = format!("prefix{separator}{secret}");
+                let replacement = if secret.starts_with("token=") {
+                    "token=[redacted]"
+                } else {
+                    "[redacted]"
+                };
+                assert_eq!(
+                    super::sanitized(input.as_bytes(), std::path::Path::new("workspace")),
+                    format!("prefix{separator}{replacement}"),
+                    "{input}"
+                );
+            }
+        }
     }
 
     #[test]
-    fn secret_patterns_require_word_boundaries_and_preserve_failure_fingerprints() {
+    fn secret_patterns_require_non_alphanumeric_boundaries_and_preserve_failure_fingerprints() {
         let workspace = std::path::Path::new("workspace");
         for text in [
             "lengthp_failure",
@@ -1410,8 +1434,6 @@ mod tests {
             "mytoken=second",
             "reauthorization: first",
             "reauthorization: second",
-            "éghp_fixture",
-            "_ghp_fixture",
             "xAKIAIOSFODNN7EXAMPLE",
             "myaws_secret_access_key=first",
         ] {

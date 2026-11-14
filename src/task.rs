@@ -533,8 +533,11 @@ pub(crate) fn github_report(
         .as_ref()
         .map(|tree| commit(Path::new(&tree.path), "HEAD"))
         .transpose()?;
+    let review_root = workspace
+        .as_ref()
+        .map_or(root.as_path(), |tree| Path::new(&tree.path));
     let report = merge_evaluation(
-        root,
+        review_root,
         &client,
         &facts,
         &policy,
@@ -643,7 +646,13 @@ fn merge_evaluation(
         base,
     );
     if let Some(record) = merge_base.and_then(|merge_base| {
-        review::matching_pass(root, &facts.pr.head_sha, &facts.pr.base_sha, merge_base)
+        let store = store::Store::locate(root).ok()?;
+        let task = store.implementation_task(None).ok()?;
+        if task.pr_number != Some(facts.pr.number) || task.branch != facts.pr.head_ref {
+            return None;
+        }
+        review::earned_pass(root, &store, &task, &facts.pr.head_sha)
+            .filter(|record| record.merge_base_sha == merge_base)
     }) {
         report.review_pass(&record);
     }

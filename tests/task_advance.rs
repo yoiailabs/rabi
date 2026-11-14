@@ -2071,21 +2071,30 @@ fn landing_base_movement_preserves_only_the_reviewed_range() {
 }
 
 #[test]
-fn landing_remote_only_head_move_and_new_base_floor_require_rederivation() {
-    let repo = Repo::landing(
-        "[approval]\napprovers=['maintainer']",
-        Some("docs/change.md"),
-    );
-    decode(repo.advance().output().unwrap(), 10);
-    repo.approval("success", "maintainer", &repo.git(&["rev-parse", "topic"]));
-    fs::write(
-        repo.root.join("pr-head"),
-        "ffffffffffffffffffffffffffffffffffffffff",
-    )
-    .unwrap();
-    let moved = decode(repo.advance().output().unwrap(), 0);
-    assert_eq!(moved["data"]["state"]["name"], "implementing");
-    assert!(repo.view()["task"]["advance"]["approvalHead"].is_null());
+fn landing_remote_only_head_move_blocks_and_new_base_floor_requires_approval() {
+    for awaiting in [false, true] {
+        let repo = Repo::landing(
+            "[approval]\napprovers=['maintainer']",
+            Some("docs/change.md"),
+        );
+        if awaiting {
+            decode(repo.advance().output().unwrap(), 10);
+            repo.approval("success", "maintainer", &repo.git(&["rev-parse", "topic"]));
+        }
+        fs::write(
+            repo.root.join("pr-head"),
+            "ffffffffffffffffffffffffffffffffffffffff",
+        )
+        .unwrap();
+        let moved = decode(repo.advance().output().unwrap(), 4);
+        assert_eq!(
+            moved["data"]["state"],
+            json!({"name":"blocked","reason":"record_mismatch"})
+        );
+        decode(repo.advance().output().unwrap(), 4);
+        assert_eq!(repo.launches(), 0);
+        assert_eq!(repo.view()["task"]["advance"]["fixesUsed"], 0);
+    }
 
     let repo = Repo::landing("[merge]\nauto=['low']", Some("docs/change.md"));
     let policy = repo.repo.join(".rabi/policy.toml");
@@ -2213,4 +2222,155 @@ fn landing_disconnected_history_waits_high_and_dry_run_reports_unknown_kinds() {
             .contains(&json!("unknown:kinds")),
         "{dry_run}"
     );
+}
+
+#[test]
+fn landing_rewritten_or_dirty_local_head_blocks_without_launching() {
+    for (awaiting, dirty) in [(false, false), (true, false), (false, true), (true, true)] {
+        let repo = Repo::landing("", Some("docs/change.md"));
+        if awaiting {
+            decode(repo.advance().output().unwrap(), 10);
+        }
+        if dirty {
+            fs::write(repo.workspace.join("local-work"), "fixture work\n").unwrap();
+        } else {
+            repo.git(&[
+                "-C",
+                repo.workspace.to_str().unwrap(),
+                "reset",
+                "--hard",
+                "main",
+            ]);
+            repo.git(&[
+                "-C",
+                repo.workspace.to_str().unwrap(),
+                "commit",
+                "--allow-empty",
+                "-m",
+                "fixture replacement",
+            ]);
+        }
+        let blocked = decode(repo.advance().output().unwrap(), 4);
+        assert_eq!(
+            blocked["data"]["state"],
+            json!({"name":"blocked","reason":"record_mismatch"})
+        );
+        decode(repo.advance().output().unwrap(), 4);
+        assert_eq!(repo.launches(), 0);
+        assert_eq!(repo.view()["task"]["advance"]["fixesUsed"], 0);
+    }
+}
+
+#[test]
+fn standalone_merge_requires_event_bound_earned_pass_or_external_review() {
+    for case in ["earned", "bare", "replaced", "wrong_head"] {
+        let repo = Repo::landing("[merge]\nauto=['low']", Some("docs/change.md"));
+        decode(repo.advance().output().unwrap(), 0);
+        decode(
+            repo.command(&[
+                "set",
+                repo.workspace.to_str().unwrap(),
+                "--pr",
+                "7",
+                "--json",
+            ])
+            .output()
+            .unwrap(),
+            0,
+        );
+        if case == "replaced" {
+            let head = repo.git(&["rev-parse", "topic"]);
+            let path = repo
+                .repo
+                .join(".git/rabi/reviews")
+                .join(format!("{head}.json"));
+            let mut record: Value = serde_json::from_slice(&fs::read(&path).unwrap()).unwrap();
+            record["createdAt"] = json!("2000-01-01T00:00:00Z");
+            fs::write(path, serde_json::to_vec(&record).unwrap()).unwrap();
+        } else if case != "earned" {
+            let path = repo.record.with_file_name("events.jsonl");
+            let mut events: Vec<Value> = fs::read_to_string(&path)
+                .unwrap()
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            if case == "bare" {
+                events.retain(|event| event["reason"] != "review_passed");
+            } else {
+                for event in &mut events {
+                    if event["reason"] == "review_passed" {
+                        event["review"]["headSha"] =
+                            json!("ffffffffffffffffffffffffffffffffffffffff");
+                    }
+                }
+            }
+            fs::write(
+                path,
+                events
+                    .iter()
+                    .map(|event| format!("{event}\n"))
+                    .collect::<String>(),
+            )
+            .unwrap();
+        }
+        let mut command =
+            repo.command(&["task", "merge", repo.workspace.to_str().unwrap(), "--json"]);
+        let result = decode(
+            command.output().unwrap(),
+            if case == "earned" { 0 } else { 4 },
+        );
+        if case != "earned" {
+            let review = result["data"]["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|item| item["id"] == "review_record")
+                .unwrap();
+            assert_eq!(review["result"], "not_evaluated", "{case}: {result}");
+            assert!(!repo.root.join("merged").exists());
+            decode(command.arg("--external-review").output().unwrap(), 0);
+        }
+        assert!(repo.root.join("merged").exists(), "{case}");
+        assert_eq!(repo.launches(), 0);
+    }
+}
+
+#[test]
+fn landing_remote_deletion_disables_hooks_and_repository_push_configuration() {
+    let repo = Repo::landing(
+        "[merge]\nauto=['low']\ndelete-branch=true",
+        Some("docs/change.md"),
+    );
+    decode(repo.advance().output().unwrap(), 0);
+    let hooks = repo.root.join("hostile-hooks");
+    fs::create_dir_all(&hooks).unwrap();
+    test_support::write_executable(
+        hooks.join("pre-push"),
+        "#!/bin/sh\ntouch \"$RABI_ADVANCE_FIXTURE/hook-ran\"\nexit 1\n",
+    )
+    .unwrap();
+    let transport = repo.root.join("transport.gitconfig");
+    let mut config = fs::read_to_string(&transport).unwrap();
+    config.push_str(&format!("[core]\n hooksPath = {}\n", hooks.display()));
+    fs::write(transport, config).unwrap();
+    repo.git(&["config", "core.hooksPath", hooks.to_str().unwrap()]);
+    repo.git(&["config", "push.followTags", "true"]);
+    repo.git(&["config", "url.https://invalid.example/.insteadOf", PUSH_URL]);
+    let merged = decode(repo.advance().output().unwrap(), 0);
+    assert_eq!(merged["data"]["remoteBranchDeleted"], true, "{merged}");
+    assert!(!repo.root.join("hook-ran").exists());
+    assert!(!repo.git(&["rev-parse", "refs/heads/topic"]).is_empty());
+    assert!(!repo
+        .base_command("git")
+        .args([
+            "--git-dir",
+            repo.root.join("remote.git").to_str().unwrap(),
+            "show-ref",
+            "--verify",
+            "refs/heads/topic"
+        ])
+        .output()
+        .unwrap()
+        .status
+        .success());
 }

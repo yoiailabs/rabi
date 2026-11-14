@@ -24,7 +24,11 @@
 
 ### Fixed
 
-- Review finding bodies are limited to 4096 bytes; redaction expansion that requires a cut has an explicit truncation marker. Secret-pattern redaction requires a word boundary, preserving non-secret diagnostic words and their failure fingerprints.
+- Landing blocks remote-only PR head movement, non-descendant local heads and dirty re-derivation before an implementer can launch. Standalone `task merge` requires the same event-bound earned review pass as advance unless `--external-review` is supplied.
+
+- Secret redaction recognizes assignment suffixes and credential prefixes after underscores and punctuation while preserving non-secret diagnostic words and failure fingerprints. Publication and remote branch deletion explicitly disable Git hooks. `remove --keep-branch` retains preservation evidence in JSON and gc text.
+
+- Review finding bodies are limited to 4096 bytes; redaction expansion that requires a cut has an explicit truncation marker. Secret-pattern redaction requires a non-ASCII-alphanumeric boundary, preserving non-secret diagnostic words and their failure fingerprints.
 
 - Failure-output normalization preserves plain decimal numbers and hex-letter words; unprefixed hex identifiers require both digits and letters.
 

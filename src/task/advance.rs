@@ -112,7 +112,7 @@ pub(super) fn block(
     store.advance_event(task, TaskState::Blocked(reason), message)?;
     Ok(report(task, message, head, REFUSED))
 }
-fn descendant(workspace: &Path, before: &str, after: &str) -> Result<bool> {
+pub(super) fn descendant(workspace: &Path, before: &str, after: &str) -> Result<bool> {
     if before == after {
         return Ok(false);
     }

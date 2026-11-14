@@ -826,13 +826,7 @@ fn preflight_remove_selected(
             &worktree,
         ));
     }
-    // Keeping a named branch preserves all of its commits locally. No remote
-    // preservation query is needed when branch deletion is not requested.
-    let preservation_reason = if options.keep_branch && !worktree.detached {
-        None
-    } else {
-        preservation_reason(context, &worktree)
-    };
+    let preservation_reason = preservation_reason(context, &worktree);
     let preserved = preservation_reason.is_some();
     check_detached_preserved(context, &worktree, options, label)?;
     let branch_kept_reason = if worktree.detached {

@@ -126,15 +126,37 @@ fn step(
         );
     }
     let expected = if waiting.is_some() {
-        task.advance.approval_head.as_deref()
+        task.advance
+            .approval_head
+            .as_deref()
+            .or(task.advance.pushed_head.as_deref())
+            .or(task.advance.evaluated_head.as_deref())
     } else {
         task.advance
             .pushed_head
             .as_deref()
             .or(task.advance.evaluated_head.as_deref())
     };
-    if facts.pr.head_sha != head || expected.is_some_and(|expected| expected != head) {
-        return rederive(store, task, head);
+    if facts.pr.head_sha != head || super::dirty(&workspace)? {
+        return advance::block(
+            store,
+            task,
+            BlockReason::RecordMismatch,
+            "record_mismatch",
+            Some(head),
+        );
+    }
+    if let Some(expected) = expected.filter(|expected| *expected != head) {
+        if advance::descendant(&workspace, expected, &head)? {
+            return rederive(store, task, head);
+        }
+        return advance::block(
+            store,
+            task,
+            BlockReason::RecordMismatch,
+            "record_mismatch",
+            Some(head),
+        );
     }
     if facts.pr.state != "open" || facts.pr.merged {
         return advance::block(
@@ -349,8 +371,8 @@ fn merging_inner(root: &Path, store: &Store, task: &mut Task) -> Result<Report> 
         merge_base.as_deref(),
         Some(expected_base),
     )?;
-    // Advance requires its own earned pass, tied to the persisted digest. The
-    // standalone merge accepts a matching pass record without a task event.
+    // An absent earned pass is a hard failure for advance; standalone merge
+    // may instead accept the explicit external-review attestation.
     match super::review::earned_pass(&workspace, store, task, &head) {
         Some(record) if merge_base.as_deref() == Some(&record.merge_base_sha) => {
             evaluation.review_pass(&record);

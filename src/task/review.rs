@@ -204,14 +204,6 @@ fn load(root: &Path, head: &str) -> Option<Record> {
 fn matching(root: &Path, head: &str, base: &str, merge_base: &str) -> Option<Record> {
     load(root, head).filter(|record| record.base_sha == base && record.merge_base_sha == merge_base)
 }
-pub(super) fn matching_pass(
-    root: &Path,
-    head: &str,
-    base: &str,
-    merge_base: &str,
-) -> Option<Record> {
-    matching(root, head, base, merge_base).filter(|record| record.answer.verdict == Verdict::Pass)
-}
 fn record_id(record: &Record) -> Result<String> {
     let bytes =
         serde_json::to_vec(record).map_err(|_| Error::msg("Cannot identify review record"))?;
