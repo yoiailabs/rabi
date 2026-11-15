@@ -15,6 +15,7 @@ mod preflight;
 pub(crate) mod publish;
 pub(crate) mod review;
 mod reviewer_provider;
+pub(crate) mod selectors;
 pub(crate) mod store;
 pub(crate) mod tune;
 
@@ -436,22 +437,17 @@ pub(crate) fn github_report(
     base: Option<&str>,
     action: GithubAction<'_>,
 ) -> Result<()> {
+    let (recorded_number, workspace) = selectors::github_target(context, selector)?;
     let client = crate::github::facts::Client::new(&context.git_root)?;
-    let (number, workspace) = if let Some(number) = selector.strip_prefix("pr:") {
-        let number = number
-            .parse::<u64>()
-            .ok()
-            .filter(|n| *n > 0)
-            .ok_or_else(|| Error::validation("Expected pr:N with a positive PR number"))?;
-        (number, None)
-    } else {
-        let tree = crate::selectors::resolve_without_status(context, selector)?;
-        crate::worktree::validate_checkout(context, &tree, "task")?;
-        let number = match &tree.metadata.links.pr {
+    let number = if let Some(number) = recorded_number {
+        number
+    } else if let Some(tree) = &workspace {
+        match &tree.metadata.links.pr {
             Some(link) => client.recorded_number(link)?,
             None => client.branch_number(&tree.branch)?,
-        };
-        (number, Some(tree))
+        }
+    } else {
+        return Err(Error::msg("Task selector has no pull request or workspace"));
     };
     let facts = client.snapshot(number)?;
     if matches!(action, GithubAction::Status) {
