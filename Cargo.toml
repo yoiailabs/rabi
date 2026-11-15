@@ -23,6 +23,7 @@ sha2 = "0.11"
 terminal_size = "0.4"
 thiserror = "2"
 toml_edit = { version = "0.25.17", features = ["serde"] }
+unicode-segmentation = "1.12"
 uuid = { version = "1", features = ["v4"] }
 
 [target.'cfg(unix)'.dependencies]
