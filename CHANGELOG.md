@@ -2,15 +2,17 @@
 
 ## Unreleased
 
+## v8.2.1 (2026-11-15)
+
 ### Fixed
 
-- `rabi task publish` prefers a single implement commit subject for the PR title, otherwise the first nonempty intent line, trimming long titles at word boundaries with an ellipsis. PR bodies now show sanitized intent and up to 30 commit subjects in a readable generic Summary section instead of JSON strings.
-- `rabi task advance` now reports `remoteBranchDeleted: true` when a failed branch-delete push is followed by confirmation that the remote branch is already absent. A branch that still exists or cannot be inspected continues to report `false`.
-- `task risk`, `task classify`, `task status`, `task merge` and `task approve` accept full task IDs and unique `task_` prefixes of at least six characters. Unknown IDs retain workspace selector fallback; tasks without a live linked workspace report a task-specific error, while GitHub commands can use a recorded PR with existing `pr:N` behavior.
+- `rabi task publish` prefers a single implement commit subject for the PR title, otherwise the first nonempty intent line, trimming long titles at word boundaries with an ellipsis. PR bodies now show sanitized intent and up to 30 commit subjects in a readable generic Summary section instead of JSON strings. (#975)
+- `rabi task advance` now reports `remoteBranchDeleted: true` when a failed branch-delete push is followed by confirmation that the remote branch is already absent. A branch that still exists or cannot be inspected continues to report `false`. (#976)
+- `task risk`, `task classify`, `task status`, `task merge` and `task approve` accept full task IDs and unique `task_` prefixes of at least six characters. Unknown IDs retain workspace selector fallback; tasks without a live linked workspace report a task-specific error, while GitHub commands can use a recorded PR with existing `pr:N` behavior. (#978)
 
 ### Changed
 
-- Clarify that required CI results must be produced by the repository's own workflow after `task publish`, including local scripts that post commit statuses. Advance and merge observe GitHub results without running local CI or sign-off commands; advance waits for missing or pending requirements until `ci_timeout`, while an empty required set still blocks as `no_ci`.
+- Clarify that required CI results must be produced by the repository's own workflow after `task publish`, including local scripts that post commit statuses. Advance and merge observe GitHub results without running local CI or sign-off commands; advance waits for missing or pending requirements until `ci_timeout`, while an empty required set still blocks as `no_ci`. (#977)
 
 ## v8.2.0 (2026-11-15)
 
