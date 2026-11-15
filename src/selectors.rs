@@ -179,6 +179,111 @@ fn absolute_path(path: &str) -> Result<std::path::PathBuf> {
     }
 }
 
+/// An omitted selector uses the checkout named by `--repo`; explicit dot still uses cwd.
+fn default_workspace(context: &Context, without_status: bool) -> Result<WorktreeInfo> {
+    let Some(checkout) = context.selected_checkout.as_deref() else {
+        return if without_status {
+            resolve_without_status(context, ".")
+        } else {
+            resolve_including_orphaned(context, ".", false, None)
+        };
+    };
+    let listed = if without_status {
+        crate::worktree::list_worktrees_without_status(context)?
+    } else {
+        crate::worktree::list_worktrees(context, false, true)?
+    };
+    listed
+        .into_iter()
+        .find(|tree| paths::same_location(&tree.registered_path, checkout))
+        .ok_or_else(|| Error::WorktreeNotFound(checkout.to_string_lossy().into_owned()))
+}
+
+pub(crate) fn resolve_optional_including_orphaned(
+    context: &Context,
+    input: Option<&str>,
+    exclude_default: bool,
+) -> Result<WorktreeInfo> {
+    if let Some(input) = input {
+        return resolve_including_orphaned(context, input, exclude_default, None);
+    }
+    let tree = default_workspace(context, false)?;
+    if exclude_default && tree.is_default {
+        return Err(Error::Status {
+            code: "primary",
+            message: "The primary checkout cannot be selected for this operation".into(),
+        });
+    }
+    Ok(tree)
+}
+
+/// Mutating commands always infer their workspace from cwd, never from `--repo`.
+pub(crate) fn resolve_optional_current(
+    context: &Context,
+    input: Option<&str>,
+    exclude_default: bool,
+) -> Result<WorktreeInfo> {
+    let input = input.unwrap_or(".");
+    if input == "." {
+        current_operational_checkout(context)?;
+    }
+    let tree = resolve(context, input, exclude_default, None)?;
+    require_operational_path(tree)
+}
+
+pub(crate) fn resolve_optional(
+    context: &Context,
+    input: Option<&str>,
+    exclude_default: bool,
+) -> Result<WorktreeInfo> {
+    require_default_operational_path(context, input)?;
+    let found = resolve_optional_including_orphaned(context, input, exclude_default)?;
+    let found = require_operational_path(found)?;
+    crate::worktree::require_live(found, input.unwrap_or("selected checkout"))
+}
+
+pub(crate) fn resolve_optional_without_status(
+    context: &Context,
+    input: Option<&str>,
+) -> Result<WorktreeInfo> {
+    require_default_operational_path(context, input)?;
+    let found = match input {
+        Some(input) => resolve_without_status(context, input)?,
+        None => default_workspace(context, true)?,
+    };
+    let found = require_operational_path(found)?;
+    crate::worktree::require_live(found, input.unwrap_or("selected checkout"))
+}
+
+// Reject unsupported defaults before status reads can run checkout programs.
+fn require_default_operational_path(context: &Context, input: Option<&str>) -> Result<()> {
+    if input.is_none()
+        && context
+            .selected_checkout
+            .as_deref()
+            .is_some_and(|checkout| paths::canonical_location(checkout).to_str().is_none())
+    {
+        return Err(operational_path_error());
+    }
+    Ok(())
+}
+
+fn operational_path_error() -> Error {
+    Error::validation(
+        "Checkout operations require a UTF-8 checkout path; use show/path/list for inspection",
+    )
+}
+
+/// Operational callers still use the text path. Refuse a lossy representation
+/// before it can redirect execution or updates into a different checkout.
+fn require_operational_path(tree: WorktreeInfo) -> Result<WorktreeInfo> {
+    let native = paths::canonical_location(&tree.registered_path);
+    if native.to_str() != Some(tree.path.as_str()) {
+        return Err(operational_path_error());
+    }
+    Ok(tree)
+}
+
 /// Interpret a user selector at the command boundary, then resolve it.
 pub(crate) fn resolve_including_orphaned(
     context: &Context,
@@ -227,20 +332,44 @@ pub(crate) fn is_current(path: &Path) -> bool {
         .is_some_and(|top| paths::same_location(&top, path))
 }
 
+/// Validate dot before operational inspection or task-current inference.
+pub(crate) fn current_checkout(context: &Context) -> Result<std::path::PathBuf> {
+    let cwd = std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?;
+    let root = git::git_root(&cwd).map_err(|_| {
+        if context.selected_checkout.is_some() {
+            current_checkout_error()
+        } else {
+            Error::WorktreeNotFound(".".into())
+        }
+    })?;
+    if !paths::same_location(&root, &context.git_root) {
+        return Err(current_checkout_error());
+    }
+    crate::repository::filesystem_checkout_root(&cwd)
+}
+
+/// Task launchers and other operational callers still require text paths.
+pub(crate) fn current_operational_checkout(context: &Context) -> Result<std::path::PathBuf> {
+    let checkout = current_checkout(context)?;
+    if checkout.to_str().is_none() {
+        return Err(operational_path_error());
+    }
+    Ok(checkout)
+}
+
+fn current_checkout_error() -> Error {
+    Error::validation(
+        "Selector '.' defaults to the current checkout; cwd is not inside the selected repository. Pass a workspace name or path, or run from that checkout",
+    )
+}
+
 pub(crate) fn matches(
     context: &Context,
     listed: &[WorktreeInfo],
     selector: &str,
 ) -> Result<Vec<WorktreeInfo>> {
     if selector == "." {
-        let cwd = std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?;
-        let root = git::git_root(&cwd).map_err(|_| Error::WorktreeNotFound(".".into()))?;
-        if !paths::same_location(&root, &context.git_root) {
-            return Err(Error::validation(
-                "Selector '.' cannot be combined with a different -R/--repo; use a workspace name",
-            ));
-        }
-        let top = git::top_level(&cwd)?;
+        let top = current_checkout(context)?;
         return Ok(listed
             .iter()
             .filter(|tree| paths::same_location(&top, Path::new(&tree.path)))

@@ -238,12 +238,12 @@ pub(crate) fn run(
 
 pub(crate) fn execute(
     context: &Context,
-    selector: &str,
+    selector: Option<&str>,
     extra: &[String],
     control: trust::HookControl,
     logger: &worktree::Logger,
 ) -> Result<i32> {
-    let tree = crate::selectors::resolve(context, selector, false, None)?;
+    let tree = crate::selectors::resolve_optional_current(context, selector, false)?;
     if tree.is_default {
         return Err(Error::Status {
             code: "primary",

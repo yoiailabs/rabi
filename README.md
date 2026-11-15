@@ -87,7 +87,7 @@ The latest `rabi/approval` status must be success from `[approval] approvers` on
 
 ## Workspaces
 
-Use workspace commands for investigations, manual edits or existing branches without the task lifecycle. The primary checkout supplies copied files and is protected from removal. Select workspaces by name, `.`, path or recorded PR/issue link. Commands target one repository: the current checkout or `-R/--repo` with a checkout root path or canonical `host/owner/repo` at its existing clone location. Prefix relative paths with `./`; repository registration and discovery are removed.
+Use workspace commands for investigations, manual edits or existing branches without the task lifecycle. The primary checkout supplies copied files and is protected from removal. Select workspaces by name, `.`, path or recorded PR/issue link. Commands target one repository: the current checkout or `-R/--repo` with a checkout root path or canonical `host/owner/repo` at its existing clone location. Prefix relative paths with `./`; repository registration and discovery are removed. Inspection commands with omitted SEL use the checkout selected by `-R` (shorthand uses primary), otherwise cwd. Mutating commands with optional SEL default to the current checkout and refuse when cwd is outside the selected repository; explicit `.` always means cwd.
 
 ```sh
 rabi create topic --base main --purpose 'investigate a change'

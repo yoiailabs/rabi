@@ -433,7 +433,7 @@ pub(crate) enum GithubAction<'a> {
 /// GitHub inspection shares risk's status-free selectors and protected object reads.
 pub(crate) fn github_report(
     context: &crate::context::Context,
-    selector: &str,
+    selector: Option<&str>,
     base: Option<&str>,
     action: GithubAction<'_>,
 ) -> Result<()> {

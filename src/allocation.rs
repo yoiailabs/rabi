@@ -656,6 +656,7 @@ mod adopt_tests {
                     retirement_queries: Default::default(),
                     git_root: repo.clone(),
                     source_checkout: repo,
+                    selected_checkout: None,
                     worktrees_directory: root.join("workspaces"),
                     project_common_dir: None,
                     config: None,

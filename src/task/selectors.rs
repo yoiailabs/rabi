@@ -54,7 +54,10 @@ fn task_workspace(context: &Context, task: &Task) -> Result<WorktreeInfo> {
     Ok(tree)
 }
 
-pub(crate) fn workspace(context: &Context, selector: &str) -> Result<WorktreeInfo> {
+pub(crate) fn workspace(context: &Context, selector: Option<&str>) -> Result<WorktreeInfo> {
+    let Some(selector) = selector else {
+        return crate::selectors::resolve_optional_without_status(context, None);
+    };
     match task(context, selector)? {
         Some(task) => task_workspace(context, &task),
         None => crate::selectors::resolve_without_status(context, selector),
@@ -78,8 +81,13 @@ fn task_github_target(
 /// the same behavior as an explicit pr:N selector.
 pub(super) fn github_target(
     context: &Context,
-    selector: &str,
+    selector: Option<&str>,
 ) -> Result<(Option<u64>, Option<WorktreeInfo>)> {
+    let Some(selector) = selector else {
+        let tree = crate::selectors::resolve_optional_without_status(context, None)?;
+        crate::worktree::validate_checkout(context, &tree, "task")?;
+        return Ok((None, Some(tree)));
+    };
     if let Some(task) = task(context, selector)? {
         return task_github_target(context, &task);
     }
@@ -150,6 +158,7 @@ mod tests {
                 retirement_queries: Default::default(),
                 git_root: repo.clone(),
                 source_checkout: repo,
+                selected_checkout: None,
                 worktrees_directory: root.clone(),
                 project_common_dir: None,
                 config: None,

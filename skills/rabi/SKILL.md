@@ -55,6 +55,9 @@ rabi help --json
 Commands target one repository: the current checkout or `-R/--repo REF`.
 REF is a checkout root path (`./your-repo` for a relative path), or canonical
 `host/owner/repo` / `owner/repo` at its existing, origin-matching clone location.
+Inspection commands with omitted SEL use the checkout selected by `-R` (shorthand
+uses primary), otherwise cwd. Mutating commands default to the current checkout
+and refuse cwd outside the selected repository; explicit `.` always means cwd.
 Subdirectories and `.git` paths are rejected. Registration, registry IDs, fuzzy
 names, cross-repository listing and skill discovery commands were removed in v8.
 `run --skill VALUE` remains an optional verbatim instruction, without lookup.

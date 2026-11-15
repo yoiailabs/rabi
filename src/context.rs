@@ -12,6 +12,8 @@ pub struct Context {
     pub git_root: PathBuf,
     /// Checkout the command is running in. `.rabi.toml` is loaded from here.
     pub source_checkout: PathBuf,
+    /// Checkout selected by `--repo`, used for omitted inspection selectors.
+    pub(crate) selected_checkout: Option<PathBuf>,
     pub worktrees_directory: PathBuf,
     /// Canonical git common dir when `worktrees_directory` is the default
     /// project directory. Unset when `workspace-root` overrides it.
@@ -27,8 +29,11 @@ pub fn create(git_root: &Path) -> Result<Context> {
 /// Context for a repository selected with `--repo`.
 ///
 /// Hooks are read from that repository's main checkout. Copies always use the primary.
-pub fn create_at(git_root: &Path) -> Result<Context> {
-    assemble(git_root, git_root.to_path_buf())
+pub fn create_at(checkout: &Path) -> Result<Context> {
+    let git_root = git::git_root(checkout)?;
+    let mut context = assemble(&git_root, git_root.to_path_buf())?;
+    context.selected_checkout = Some(checkout.to_path_buf());
+    Ok(context)
 }
 
 /// Open `repository` when `--repo` selected one, otherwise the current directory.
@@ -44,26 +49,30 @@ pub fn open(repository: Option<&Path>) -> Result<Context> {
 /// Committed inspection needs workspace layout and records, not checkout config.
 pub(crate) fn open_for_inspection(repository: Option<&Path>) -> Result<Context> {
     let root = match repository {
-        Some(root) => root.to_path_buf(),
+        Some(checkout) => git::git_root(checkout)?,
         None => git::git_root(&std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?)?,
     };
-    assemble_with_config(&root, root.to_path_buf(), None)
+    let mut context = assemble_with_config(&root, root.to_path_buf(), None)?;
+    context.selected_checkout = repository.map(Path::to_path_buf);
+    Ok(context)
 }
 
 /// Execution declarations always come from the selected primary checkout.
 pub(crate) fn open_for_execution(repository: Option<&Path>, no_env: bool) -> Result<Context> {
     let root = match repository {
-        Some(root) => root.to_path_buf(),
+        Some(checkout) => git::git_root(checkout)?,
         None => git::git_root(&std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?)?,
     };
-    assemble_for_execution(&root, root.to_path_buf(), no_env)
+    let mut context = assemble_for_execution(&root, root.to_path_buf(), no_env)?;
+    context.selected_checkout = repository.map(Path::to_path_buf);
+    Ok(context)
 }
 
 /// Select hooks independently of the target checkout used by dot.
 /// The source must belong to the selected repository; copies still use primary.
 pub(crate) fn open_for_hooks(repository: Option<&Path>, source: &Path) -> Result<Context> {
     let git_root = match repository {
-        Some(root) => root.to_path_buf(),
+        Some(checkout) => git::git_root(checkout)?,
         None => {
             git::git_root(&std::env::current_dir().map_err(|error| Error::msg(error.to_string()))?)?
         }
@@ -74,7 +83,9 @@ pub(crate) fn open_for_hooks(repository: Option<&Path>, source: &Path) -> Result
             "--source-checkout must belong to the selected repository",
         ));
     }
-    assemble(&git_root, source_checkout)
+    let mut context = assemble(&git_root, source_checkout)?;
+    context.selected_checkout = repository.map(Path::to_path_buf);
+    Ok(context)
 }
 
 fn assemble(git_root: &Path, source_checkout: PathBuf) -> Result<Context> {
@@ -122,6 +133,7 @@ fn assemble_with_config(
         retirement_queries: Default::default(),
         git_root: git_root.to_path_buf(),
         source_checkout,
+        selected_checkout: None,
         worktrees_directory: location.path,
         project_common_dir: location.project_common_dir,
         config,

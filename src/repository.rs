@@ -141,9 +141,16 @@ pub(crate) fn canonical_remote_name(url: &str) -> Option<String> {
     Some(format!("{}/{}/{}", spec.host, spec.owner, spec.repo))
 }
 
-/// Select a checkout by filesystem path or its exact clone-layout location.
-/// Only explicit path prefixes select filesystem lookup.
+/// Select a repository by filesystem path or its exact clone-layout location.
 pub fn resolve_repository_ref(reference: &str) -> Result<PathBuf> {
+    let checkout = resolve_repository_checkout_ref(reference)?;
+    let root = crate::git::git_root(&checkout)?;
+    fs::canonicalize(root).map_err(|error| Error::msg(error.to_string()))
+}
+
+/// Preserve checkout identity for omitted workspace selectors.
+/// Only explicit path prefixes select filesystem lookup.
+pub(crate) fn resolve_repository_checkout_ref(reference: &str) -> Result<PathBuf> {
     let reference = reference.trim();
     if reference.is_empty() {
         return Err(Error::validation(
@@ -257,11 +264,10 @@ fn resolve_checkout_path(path: &Path, reference: &str) -> Result<PathBuf> {
     if canonical != checkout {
         return Err(not_checkout_root(reference, &checkout));
     }
-    let root = crate::git::git_root(path)?;
-    fs::canonicalize(root).map_err(|error| Error::msg(error.to_string()))
+    Ok(checkout)
 }
 
-fn filesystem_checkout_root(path: &Path) -> Result<PathBuf> {
+pub(crate) fn filesystem_checkout_root(path: &Path) -> Result<PathBuf> {
     let inside = crate::git::output(&["rev-parse", "--is-inside-work-tree"], Some(path), true)?;
     if inside != "true" {
         return Err(Error::validation(
@@ -1647,7 +1653,11 @@ mod tests {
         let primary = fs::canonicalize(&checkout).expect("primary");
         for path in [checkout.clone(), linked.clone()] {
             assert_eq!(
-                resolve_directory_reference(&path, "checkout").expect("filesystem path"),
+                resolve_directory_reference(&path, "checkout").expect("filesystem checkout"),
+                fs::canonicalize(&path).expect("checkout identity")
+            );
+            assert_eq!(
+                resolve_repository_ref(path.to_str().expect("path")).expect("repository root"),
                 primary
             );
         }

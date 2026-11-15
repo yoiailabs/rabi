@@ -4,7 +4,7 @@
 
 ## Selection
 
-No arguments sync only the current workspace (including from a subdirectory). In primary, no arguments behave as `--main`: fast-forward primary only when it is on the default branch, otherwise skip with `not-default-branch`. A workspace sync never advances primary implicitly. `--main` alone selects primary; `sync . --main` selects the current workspace and primary. `--all` selects every workspace in the selected repository and cannot combine with SELs (exit 2); add `--main` to include primary.
+No arguments sync only the current workspace (including from a subdirectory), even with `-R`. If cwd is outside the selected repository, omitted SEL and explicit `.` both refuse with usage exit 2; pass a workspace name or path, or run from that checkout. In primary, no arguments behave as `--main`: fast-forward primary only when it is on the default branch, otherwise skip with `not-default-branch`. A workspace sync never advances primary implicitly. `--main` alone selects primary; `sync . --main` selects the current workspace and primary. `--all` selects every workspace in the selected repository and cannot combine with SELs (exit 2); add `--main` to include primary.
 
 ## Fetch and dry runs
 

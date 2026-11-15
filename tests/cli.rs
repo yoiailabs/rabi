@@ -3608,6 +3608,12 @@ fn explicit_repository_roots_preserve_trailing_whitespace() {
         let selected = repo.rabi(&["-R", ".", "list", "--json"]);
         assert!(selected.status.success(), "{selected:?}");
         let expected = canonical(&repo.repo);
+        let default = repo.rabi(&["-R", ".", "path", "--json"]);
+        assert!(default.status.success(), "{default:?}");
+        assert_eq!(
+            json_value(&default)["data"]["path"],
+            expected.to_str().unwrap()
+        );
         assert_eq!(
             json_value(&selected)["data"]["workspaces"][0]["path"],
             expected.to_str().unwrap()
@@ -3647,6 +3653,12 @@ fn explicit_repository_roots_preserve_non_utf8_paths() {
     assert!(current.status.success(), "{current:?}");
     let selected = repo.rabi(&["-R", ".", "list", "--json"]);
     assert!(selected.status.success(), "{selected:?}");
+    let default = repo.rabi(&["-R", ".", "path", "--json"]);
+    assert!(default.status.success(), "{default:?}");
+    assert_eq!(
+        json_value(&default)["data"]["path"],
+        json_value(&current)["data"]["workspaces"][0]["path"]
+    );
     assert_eq!(
         json_value(&selected)["data"]["workspaces"][0]["path"],
         json_value(&current)["data"]["workspaces"][0]["path"]
@@ -3667,6 +3679,483 @@ fn explicit_repository_roots_preserve_non_utf8_paths() {
             "{message}"
         );
     }
+}
+
+#[test]
+#[cfg(unix)]
+fn repository_option_refuses_operations_through_lossy_checkout_paths() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let repo = Repo::new();
+    let native = repo.root.join(OsString::from_vec(b"repo\xff".to_vec()));
+    let clone = repo
+        .command("git", &["clone", "--no-hardlinks"])
+        .arg(&repo.repo)
+        .arg(&native)
+        .output()
+        .unwrap();
+    assert!(clone.status.success(), "{clone:?}");
+    let collision = repo.root.join("repo\u{fffd}");
+    fs::create_dir(&collision).unwrap();
+    let init = repo
+        .command("git", &["init", "-b", "main"])
+        .current_dir(&collision)
+        .output()
+        .unwrap();
+    assert!(init.status.success(), "{init:?}");
+    let native_parent = repo
+        .root
+        .join(OsString::from_vec(b"checkouts\xff".to_vec()));
+    fs::create_dir(&native_parent).unwrap();
+    let alias = repo.root.join("checkouts");
+    std::os::unix::fs::symlink(&native_parent, &alias).unwrap();
+    let linked = alias.join("linked");
+    let add = repo
+        .command("git", &["worktree", "add", "-b", "linked"])
+        .arg(&linked)
+        .output()
+        .unwrap();
+    assert!(add.status.success(), "{add:?}");
+    let linked_collision = repo.root.join("checkouts\u{fffd}/linked");
+    fs::create_dir_all(&linked_collision).unwrap();
+    let init = repo
+        .command("git", &["init", "-b", "main"])
+        .current_dir(&linked_collision)
+        .output()
+        .unwrap();
+    assert!(init.status.success(), "{init:?}");
+    let marker = repo.root.join("executed");
+    let commands = [
+        vec![
+            "exec",
+            "--",
+            "sh",
+            "-c",
+            "printf executed > \"$RABI_TEST_EXEC_MARKER\"; pwd",
+        ],
+        vec!["set", "--purpose", "selected checkout"],
+        vec!["setup", "--no-hooks"],
+        vec!["handoff", "show"],
+        vec!["sync", "--dry-run"],
+        vec!["task", "risk", "--base", "HEAD"],
+        vec!["task", "classify", "--base", "HEAD"],
+        vec!["task", "status"],
+        vec!["task", "merge", "--dry-run"],
+    ];
+    for checkout in [&native, &linked] {
+        for command in &commands {
+            let mut args = vec!["-R", "~"];
+            args.extend(command.iter().copied());
+            let output = repo
+                .command(env!("CARGO_BIN_EXE_rabi"), &args)
+                .env("HOME", checkout)
+                .env("RABI_TEST_EXEC_MARKER", &marker)
+                .current_dir(&repo.home)
+                .output()
+                .unwrap();
+            assert!(
+                !marker.exists(),
+                "command ran through the lossy path: {output:?}"
+            );
+            assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+            assert!(
+                text(&output.stderr).contains("UTF-8")
+                    || text(&output.stderr).contains("cwd is not inside the selected repository"),
+                "{output:?}"
+            );
+        }
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn repository_option_lifecycle_refuses_lossy_current_checkout_paths() {
+    use std::ffi::OsString;
+    use std::os::unix::ffi::OsStringExt;
+
+    let repo = Repo::new();
+    let real_git = repo
+        .command("sh", &["-c", "command -v git"])
+        .output()
+        .unwrap();
+    assert!(real_git.status.success(), "{real_git:?}");
+    let bin = repo.root.join("git-wrapper");
+    fs::create_dir(&bin).unwrap();
+    test_support::write_executable(
+        bin.join("git"),
+        r#"#!/bin/sh
+current=$(pwd -P; printf .)
+collision=$(printf '%s\n.' "$RABI_TEST_COLLISION")
+if [ "$current" = "$collision" ]; then
+    printf 'unexpected Git call\n' >> "$RABI_TEST_COLLISION_LOG"
+fi
+exec "$RABI_TEST_REAL_GIT" "$@"
+"#,
+    )
+    .unwrap();
+    let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(
+        &std::env::var_os("PATH").unwrap_or_default(),
+    )))
+    .unwrap();
+    let log = repo.root.join("collision-git-calls");
+    for (native_name, collision_name) in [
+        (OsString::from_vec(b"repo\xff".to_vec()), "repo\u{fffd}"),
+        (OsString::from("space "), "space"),
+        (OsString::from("newline\n"), "newline"),
+    ] {
+        let native = repo.root.join(native_name);
+        let collision = repo.root.join(collision_name);
+        for checkout in [&native, &collision] {
+            let clone = repo
+                .command("git", &["clone", "--no-hardlinks"])
+                .arg(&repo.repo)
+                .arg(checkout)
+                .output()
+                .unwrap();
+            assert!(clone.status.success(), "{clone:?}");
+        }
+        let nested = native.join("sub");
+        fs::create_dir(&nested).unwrap();
+        for cwd in [&native, &nested] {
+            for command in [
+                vec!["implement"],
+                vec!["publish"],
+                vec!["advance"],
+                vec!["review"],
+                vec!["merge"],
+                vec!["merge", "--dry-run"],
+            ] {
+                if command[0] == "merge" && native.to_str().is_some() {
+                    continue;
+                }
+                for selector in [None, Some(".")] {
+                    let mut args = vec!["-R", "~", "task"];
+                    args.extend(command.iter().copied());
+                    args.push("--json");
+                    args.extend(selector);
+                    let output = repo
+                        .command(env!("CARGO_BIN_EXE_rabi"), &args)
+                        .current_dir(cwd)
+                        .env("HOME", &native)
+                        .env("PATH", &path)
+                        .env("RABI_TEST_COLLISION", &collision)
+                        .env("RABI_TEST_COLLISION_LOG", &log)
+                        .env("RABI_TEST_REAL_GIT", text(&real_git.stdout))
+                        .output()
+                        .unwrap();
+                    assert!(
+                        !log.exists(),
+                        "Git ran in the collision checkout: {output:?}"
+                    );
+                    if native.to_str().is_none() {
+                        assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+                        assert_eq!(json_value(&output)["error"]["code"], "usage");
+                        assert!(
+                            json_value(&output)["error"]["message"]
+                                .as_str()
+                                .unwrap()
+                                .contains("UTF-8"),
+                            "{output:?}"
+                        );
+                    } else {
+                        // A valid whitespace checkout stays distinct from its
+                        // trimmed sibling and reaches its own empty task store.
+                        assert_eq!(output.status.code(), Some(3), "{args:?}: {output:?}");
+                        assert!(
+                            json_value(&output)["error"]["message"]
+                                .as_str()
+                                .unwrap()
+                                .contains("No active task"),
+                            "{output:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn repository_option_remove_dot_refuses_foreign_checkout_in_a_stale_record() {
+    let repo = Repo::new();
+    let created = repo.rabi(&["create", "stale"]);
+    assert!(created.status.success(), "{created:?}");
+    let path = managed(&repo, "stale");
+    let admin = repo
+        .command("git", &["rev-parse", "--absolute-git-dir"])
+        .current_dir(&path)
+        .output()
+        .unwrap();
+    assert!(admin.status.success(), "{admin:?}");
+    fs::remove_dir_all(text(&admin.stdout)).unwrap();
+    fs::remove_file(path.join(".git")).unwrap();
+    let foreign = repo
+        .command("git", &["init", "-b", "main"])
+        .current_dir(&path)
+        .output()
+        .unwrap();
+    assert!(foreign.status.success(), "{foreign:?}");
+    for cwd in [&repo.home, &path] {
+        for dry_run in [false, true] {
+            let mut args = vec!["-R", repo.repo.to_str().unwrap(), "remove", ".", "--json"];
+            if dry_run {
+                args.push("--dry-run");
+            }
+            let output = repo
+                .command(env!("CARGO_BIN_EXE_rabi"), &args)
+                .current_dir(cwd)
+                .output()
+                .unwrap();
+            assert_eq!(output.status.code(), Some(2), "{output:?}");
+            assert_eq!(json_value(&output)["error"]["code"], "usage");
+            assert!(path.join(".git").is_dir());
+            assert!(branch_listed(&repo, "stale"));
+        }
+    }
+}
+
+#[test]
+fn repository_option_defaults_to_the_selected_checkout() {
+    let repo = Repo::new();
+    let created = repo.create_recorded(&["create", "feature", "--pr", "7"]);
+    assert!(created.status.success(), "{created:?}");
+    let linked = managed(&repo, "feature");
+    let commit = repo
+        .command("git", &["commit", "--allow-empty", "-m", "advance feature"])
+        .current_dir(&linked)
+        .output()
+        .unwrap();
+    assert!(commit.status.success(), "{commit:?}");
+    let run = |args: &[&str], cwd: &Path| {
+        repo.command(env!("CARGO_BIN_EXE_rabi"), args)
+            .current_dir(cwd)
+            .output()
+            .unwrap()
+    };
+    for checkout in [&linked, &repo.repo] {
+        let reference = checkout.to_str().unwrap();
+        let path = run(&["-R", reference, "path"], &repo.home);
+        assert!(path.status.success(), "{path:?}");
+        assert!(same_dir(&text(&path.stdout), checkout));
+        let show = run(&["-R", reference, "show", "--json"], &repo.home);
+        assert!(show.status.success(), "{show:?}");
+        assert!(same_dir(
+            json_value(&show)["data"]["workspace"]["path"]
+                .as_str()
+                .unwrap(),
+            checkout
+        ));
+        let risk = run(
+            &["-R", reference, "task", "risk", "--base", "HEAD", "--json"],
+            &repo.home,
+        );
+        assert!(risk.status.success(), "{risk:?}");
+        let head = repo
+            .command("git", &["rev-parse", "HEAD"])
+            .current_dir(checkout)
+            .output()
+            .unwrap();
+        assert!(head.status.success(), "{head:?}");
+        assert_eq!(json_value(&risk)["data"]["head"], text(&head.stdout));
+        for command in [
+            vec!["path", "."],
+            vec!["task", "risk", ".", "--base", "HEAD"],
+        ] {
+            let mut args = vec!["-R", reference];
+            args.extend(command);
+            let explicit = run(&args, &repo.home);
+            assert_eq!(explicit.status.code(), Some(2), "{explicit:?}");
+            assert!(
+                text(&explicit.stderr).contains("Selector '.'"),
+                "{explicit:?}"
+            );
+        }
+    }
+    for selector in ["feature", "pr:7", linked.to_str().unwrap()] {
+        let path = run(
+            &["-R", repo.repo.to_str().unwrap(), "path", selector],
+            &repo.home,
+        );
+        assert!(path.status.success(), "{path:?}");
+        assert!(same_dir(&text(&path.stdout), &linked));
+    }
+    let current = run(&["path"], &linked);
+    assert!(current.status.success(), "{current:?}");
+    assert!(same_dir(&text(&current.stdout), &linked));
+    let dot = run(&["-R", repo.repo.to_str().unwrap(), "path", "."], &linked);
+    assert!(dot.status.success(), "{dot:?}");
+    assert!(same_dir(&text(&dot.stdout), &linked));
+}
+
+#[test]
+fn repository_option_mutations_require_current_checkout_or_explicit_target() {
+    let repo = Repo::new();
+    let created = repo.rabi(&["create", "feature", "--base", "main"]);
+    assert!(created.status.success(), "{created:?}");
+    let linked = managed(&repo, "feature");
+    let foreign = Repo::new();
+    let before = repo.rabi(&["show", "feature", "--json"]);
+    assert!(before.status.success(), "{before:?}");
+    let head = repo
+        .command("git", &["rev-parse", "HEAD"])
+        .output()
+        .unwrap()
+        .stdout;
+    let marker = repo.root.join("unexpected-execution");
+    let commands = [
+        vec!["sync", "--json"],
+        vec!["sync", "--dry-run", "--json"],
+        vec!["set", "--purpose", "unexpected", "--json"],
+        vec!["setup", "--no-hooks", "--json"],
+        vec!["exec", "--", "sh", "-c", "touch \"$RABI_TEST_EXEC_MARKER\""],
+        vec!["handoff", "add", "unexpected", "--json"],
+        vec!["task", "merge", "--json"],
+        vec!["task", "merge", "--dry-run", "--json"],
+        vec!["task", "implement", "--json"],
+        vec!["task", "publish", "--json"],
+        vec!["task", "advance", "--json"],
+        vec!["task", "review", "--json"],
+        vec!["remove", "--json"],
+        vec!["forget", "--json"],
+        vec!["run", "--fresh", "--json"],
+    ];
+    for checkout in [&repo.repo, &linked] {
+        for cwd in [&repo.home, &foreign.repo] {
+            for command in &commands {
+                let mut args = vec!["-R", checkout.to_str().unwrap()];
+                args.extend(command.iter().copied());
+                let output = repo
+                    .command(env!("CARGO_BIN_EXE_rabi"), &args)
+                    .current_dir(cwd)
+                    .env("RABI_TEST_EXEC_MARKER", &marker)
+                    .output()
+                    .unwrap();
+                assert_eq!(output.status.code(), Some(2), "{args:?}: {output:?}");
+                if !matches!(command[0], "remove" | "forget" | "run") {
+                    let message = if command.contains(&"--json") {
+                        json_value(&output)["error"]["message"]
+                            .as_str()
+                            .unwrap()
+                            .to_owned()
+                    } else {
+                        text(&output.stderr)
+                    };
+                    assert!(
+                        message.contains("cwd is not inside the selected repository"),
+                        "{args:?}: {output:?}"
+                    );
+                }
+                assert!(!marker.exists(), "{output:?}");
+                assert!(linked.exists());
+                assert_eq!(
+                    repo.command("git", &["rev-parse", "HEAD"])
+                        .output()
+                        .unwrap()
+                        .stdout,
+                    head
+                );
+                let after = repo.rabi(&["show", "feature", "--json"]);
+                assert!(after.status.success(), "{after:?}");
+                assert_eq!(json_value(&after), json_value(&before));
+            }
+        }
+    }
+    // Inside the selected repository, omitted operational SEL keeps cwd even
+    // when -R names a different checkout in the same repository.
+    let set = repo
+        .command(
+            env!("CARGO_BIN_EXE_rabi"),
+            &[
+                "-R",
+                repo.repo.to_str().unwrap(),
+                "set",
+                "--purpose",
+                "current checkout",
+            ],
+        )
+        .current_dir(&linked)
+        .output()
+        .unwrap();
+    assert!(set.status.success(), "{set:?}");
+    let after = repo.rabi(&["show", "feature", "--json"]);
+    assert_eq!(
+        json_value(&after)["data"]["workspace"]["purpose"],
+        "current checkout"
+    );
+}
+
+#[test]
+fn repository_option_explicit_operations_keep_primary_hook_source() {
+    let repo = Repo::new();
+    let created = repo.rabi(&["create", "feature", "--base", "main"]);
+    assert!(created.status.success(), "{created:?}");
+    let linked = managed(&repo, "feature");
+    let reference = linked.to_str().unwrap();
+    let run = |args: &[&str]| {
+        repo.command(env!("CARGO_BIN_EXE_rabi"), args)
+            .current_dir(&repo.home)
+            .output()
+            .unwrap()
+    };
+    let sync = run(&["-R", reference, "sync", "feature", "--dry-run", "--json"]);
+    assert!(sync.status.success(), "{sync:?}");
+    assert!(same_dir(
+        json_value(&sync)["data"]["items"][0]["workspace"]["path"]
+            .as_str()
+            .unwrap(),
+        &linked
+    ));
+    let exec = run(&["-R", reference, "exec", "feature", "--", "pwd"]);
+    assert!(exec.status.success(), "{exec:?}");
+    assert!(same_dir(&text(&exec.stdout), &linked));
+    let set = run(&[
+        "-R",
+        reference,
+        "set",
+        "feature",
+        "--purpose",
+        "selected checkout",
+    ]);
+    assert!(set.status.success(), "{set:?}");
+    let show = repo.rabi(&["show", "feature", "--json"]);
+    assert_eq!(
+        json_value(&show)["data"]["workspace"]["purpose"],
+        "selected checkout"
+    );
+    let add = run(&[
+        "-R",
+        reference,
+        "handoff",
+        "add",
+        "feature",
+        "selected checkpoint",
+    ]);
+    assert!(add.status.success(), "{add:?}");
+    let handoff = run(&["-R", reference, "handoff", "show"]);
+    assert!(handoff.status.success(), "{handoff:?}");
+    assert!(text(&handoff.stdout).contains("selected checkpoint"));
+    fs::write(
+        repo.repo.join(".rabi.toml"),
+        "[hooks]\nsetup = [\"printf primary > hook-source\"]\n",
+    )
+    .unwrap();
+    fs::write(
+        linked.join(".rabi.toml"),
+        "[hooks]\nsetup = [\"printf linked > hook-source\"]\n",
+    )
+    .unwrap();
+    let setup = run(&["-R", reference, "setup", "feature"]);
+    assert!(setup.status.success(), "{setup:?}");
+    assert_eq!(
+        fs::read_to_string(linked.join("hook-source")).unwrap(),
+        "primary"
+    );
+    assert!(!repo.repo.join("hook-source").exists());
+    let trust = run(&["-R", reference, "trust", "add"]);
+    assert!(trust.status.success(), "{trust:?}");
+    assert!(text(&trust.stderr).contains("printf primary"), "{trust:?}");
+    assert!(!text(&trust.stderr).contains("printf linked"), "{trust:?}");
 }
 
 #[test]
@@ -3722,6 +4211,9 @@ fn repository_option_resolves_paths_and_exact_clone_locations() {
             text(&located.stderr)
         );
         assert!(same_dir(&text(&located.stdout), expected));
+        let default = run(&["-R", reference, "path"], &repo.home);
+        assert!(default.status.success(), "{default:?}");
+        assert!(same_dir(&text(&default.stdout), expected));
     }
     // Neither directory names nor origin identities outside the exact clone
     // location are searched. A location with a different origin is refused.

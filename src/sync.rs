@@ -531,7 +531,7 @@ pub fn run(context: &Context, request: &Request) -> Result<Report> {
             }
         }
     } else if !request.main {
-        let tree = crate::selectors::resolve(context, ".", false, None)?;
+        let tree = crate::selectors::resolve_optional_current(context, None, false)?;
         if tree.is_default {
             include_main = true;
         } else {
