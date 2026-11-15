@@ -1150,7 +1150,7 @@ fn generated_pr_title_and_body_bound_untrusted_intent_and_subjects() {
         .unwrap();
     let args: Vec<_> = create.split(|byte| *byte == 0).collect();
     let title = args.windows(2).find(|pair| pair[0] == b"--title").unwrap()[1];
-    assert_eq!(title, "x".repeat(128).as_bytes());
+    assert_eq!(title, b"Task...");
     let body = fs::read_to_string(repo.root.join("pr-body")).unwrap();
     assert!(body.len() < 32 * 1024);
     assert!(body.contains("[truncated]"));
