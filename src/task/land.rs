@@ -471,8 +471,41 @@ pub(super) fn cleanup(root: &Path, store: &Store, task: &mut Task) -> Result<Rep
 
 fn delete_remote_branch(workspace: &Path, task: &Task, head: &str) -> Result<bool> {
     let publisher = publish::Publisher::new(workspace, head)?;
-    let expected = format!("--force-with-lease=refs/heads/{}:{head}", task.branch);
-    let deletion = format!(":refs/heads/{}", task.branch);
+    let reference = format!("refs/heads/{}", task.branch);
+    let expected = format!("--force-with-lease={reference}:{head}");
+    let deletion = format!(":{reference}");
     let result = publisher.git(&["push", &expected, "--", &task.push_remote_url, &deletion])?;
-    Ok(result.code == 0)
+    let push_succeeded = result.code == 0;
+    let remote_present = if push_succeeded {
+        None
+    } else {
+        publisher
+            .remote_head(&task.push_remote_url, &reference)
+            .ok()
+            .map(|head| head.is_some())
+    };
+    Ok(remote_branch_deleted(push_succeeded, remote_present))
+}
+
+fn remote_branch_deleted(push_succeeded: bool, remote_present: Option<bool>) -> bool {
+    push_succeeded || remote_present == Some(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::remote_branch_deleted;
+
+    #[test]
+    fn successful_delete_push_reports_deleted() {
+        for remote_present in [Some(true), Some(false), None] {
+            assert!(remote_branch_deleted(true, remote_present));
+        }
+    }
+
+    #[test]
+    fn failed_delete_push_requires_confirmed_absence() {
+        assert!(remote_branch_deleted(false, Some(false)));
+        assert!(!remote_branch_deleted(false, Some(true)));
+        assert!(!remote_branch_deleted(false, None));
+    }
 }
