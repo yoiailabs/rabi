@@ -128,10 +128,18 @@ fn list_worktrees_with_status(
     let mut infos = Vec::new();
     let common_dir = git::git_common_dir(&context.git_root)?;
     let canonical_common = git::canonical_common_dir(&context.git_root)?;
-    let listed = git::list_worktrees(&context.git_root)
+    let registrations = git::list_worktrees_with_paths(&context.git_root)
         .map_err(|error| Error::msg(format!("Failed to list workspaces: {error}")))?;
-    for mut worktree in listed.iter().cloned() {
-        worktree.path = main_checkout_path(&worktree.path, &context.git_root, &common_dir);
+    let listed = registrations
+        .iter()
+        .map(|(tree, _)| tree.clone())
+        .collect::<Vec<_>>();
+    for (mut worktree, mut registered_path) in registrations {
+        let path = main_checkout_path(&worktree.path, &context.git_root, &common_dir);
+        if path != worktree.path {
+            registered_path = context.git_root.clone();
+        }
+        worktree.path = path;
         if !include_prunable && worktree.prunable {
             continue;
         }
@@ -143,6 +151,7 @@ fn list_worktrees_with_status(
         let record = found.map(|(_, record)| record.clone()).unwrap_or_default();
         infos.push(info_from_git(
             &worktree,
+            registered_path,
             context,
             record,
             recorded_path.as_deref(),
@@ -209,6 +218,7 @@ fn main_checkout_path(path: &str, git_root: &Path, common_dir: &Path) -> String 
 
 fn info_from_git(
     worktree: &GitWorktree,
+    original: PathBuf,
     context: &Context,
     metadata: metadata::WorktreeMetadata,
     recorded_path: Option<&Path>,
@@ -225,7 +235,6 @@ fn info_from_git(
         _ => "(detached HEAD)".to_string(),
     };
     let detached = branch == "(detached HEAD)";
-    let original = PathBuf::from(&worktree.path);
     let path = paths::canonical_location(&original);
     let name = resolve_worktree_name(
         &original,
@@ -1087,10 +1096,20 @@ pub fn exec_in_worktree(
     args: &[&str],
     no_env: bool,
 ) -> Result<i32> {
+    exec_in_selected_worktree(context, Some(name), command, args, no_env)
+}
+
+pub(crate) fn exec_in_selected_worktree(
+    context: &Context,
+    name: Option<&str>,
+    command: &str,
+    args: &[&str],
+    no_env: bool,
+) -> Result<i32> {
     if let Some(warning) = metadata::read_problem(&context.git_root) {
         crate::output::warning("metadata_read", format!("Warning: {warning}"));
     }
-    let worktree = crate::selectors::resolve(context, name, false, None)?;
+    let worktree = crate::selectors::resolve_optional_current(context, name, false)?;
     let environment = if no_env {
         Default::default()
     } else {

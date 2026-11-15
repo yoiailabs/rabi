@@ -312,17 +312,13 @@ fn setup(args: &[String]) -> Result<i32> {
         ));
     }
     let context = if let Some(source) = single_value(&parsed, "source-checkout")? {
-        crate::context::open_for_hooks(selected_repository(&parsed)?.as_deref(), Path::new(source))?
+        crate::context::open_for_hooks(selected_checkout(&parsed)?.as_deref(), Path::new(source))?
     } else {
         command_context(&parsed)?
     };
     crate::setup::execute(
         &context,
-        parsed
-            .positionals
-            .first()
-            .map(String::as_str)
-            .unwrap_or("."),
+        parsed.positionals.first().map(String::as_str),
         &parsed.values("copy-file"),
         hook_control(&parsed, crate::output::json(), true),
         &logger_for(crate::output::json()),
@@ -554,15 +550,10 @@ fn inspect(args: &[String], path_only: bool) -> Result<i32> {
     if let Some(warning) = metadata::read_problem(&context.git_root) {
         crate::output::warning("metadata_read", format!("Warning: {warning}"));
     }
-    let tree = crate::selectors::resolve_including_orphaned(
+    let tree = crate::selectors::resolve_optional_including_orphaned(
         &context,
-        parsed
-            .positionals
-            .first()
-            .map(String::as_str)
-            .unwrap_or("."),
+        parsed.positionals.first().map(String::as_str),
         false,
-        None,
     )?;
     if path_only && tree.orphaned {
         return Err(Error::msg(
@@ -1164,6 +1155,24 @@ fn task_store(args: &[String], command: &str) -> Result<i32> {
     }
 }
 
+// Lifecycle selectors infer the active task from cwd's branch. --repo only
+// chooses the task store; it must not supply a different implicit branch.
+fn lifecycle_root(
+    parsed: &Parsed,
+    selector: Option<&str>,
+    all: bool,
+) -> Result<std::path::PathBuf> {
+    let repository = selected_checkout(parsed)?;
+    if !all && selector.is_none_or(|value| value == ".") {
+        let context = crate::context::open_for_inspection(repository.as_deref())?;
+        return crate::selectors::current_operational_checkout(&context);
+    }
+    match repository {
+        Some(checkout) => crate::git::git_root(&checkout),
+        None => std::env::current_dir().map_err(|error| Error::msg(error.to_string())),
+    }
+}
+
 fn task_implement(args: &[String]) -> Result<i32> {
     let parsed = args::parse(args, &command_options("task implement"), true)?;
     let provider = single_value(&parsed, "provider")?
@@ -1194,10 +1203,8 @@ fn task_implement(args: &[String]) -> Result<i32> {
         None => None,
     };
     let _git = crate::task::boundary::git_read_scope();
-    let repository = selected_repository(&parsed)?;
-    let cwd = std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?;
-    let root = repository.as_deref().unwrap_or(&cwd);
-    crate::git::git_root(root)?;
+    let task_root = lifecycle_root(&parsed, selector, false)?;
+    let root = task_root.as_path();
     let report =
         crate::task::implement::execute(root, selector, provider, timeout, message.as_deref())?;
     emit_json(&report)?;
@@ -1220,10 +1227,12 @@ fn task_publish(args: &[String]) -> Result<i32> {
         return Err(Error::validation("Usage: rabi task publish [SEL]"));
     }
     let _git = crate::task::boundary::git_read_scope();
-    let repository = selected_repository(&parsed)?;
-    let cwd = std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?;
-    let root = repository.as_deref().unwrap_or(&cwd);
-    crate::git::git_root(root)?;
+    let task_root = lifecycle_root(
+        &parsed,
+        parsed.positionals.first().map(String::as_str),
+        false,
+    )?;
+    let root = task_root.as_path();
     let report =
         crate::task::publish::execute(root, parsed.positionals.first().map(String::as_str))?;
     emit_json(&report)?;
@@ -1248,10 +1257,12 @@ fn task_advance(args: &[String]) -> Result<i32> {
         .map(crate::run::timeout)
         .transpose()?;
     let _git = crate::task::boundary::git_read_scope();
-    let repository = selected_repository(&parsed)?;
-    let cwd = std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?;
-    let root = repository.as_deref().unwrap_or(&cwd);
-    crate::git::git_root(root)?;
+    let task_root = lifecycle_root(
+        &parsed,
+        parsed.positionals.first().map(String::as_str),
+        parsed.flag("all"),
+    )?;
+    let root = task_root.as_path();
     if parsed.flag("all") {
         let batch = crate::task::advance::execute_all(root, parsed.flag("wait"), timeout)?;
         emit_json(&batch)?;
@@ -1340,10 +1351,12 @@ fn task_review(args: &[String]) -> Result<i32> {
         return Err(Error::validation("Usage: rabi task review [SEL]"));
     }
     let _git = crate::task::boundary::git_read_scope();
-    let repository = selected_repository(&parsed)?;
-    let cwd = std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?;
-    let root = repository.as_deref().unwrap_or(&cwd);
-    crate::git::git_root(root)?;
+    let task_root = lifecycle_root(
+        &parsed,
+        parsed.positionals.first().map(String::as_str),
+        false,
+    )?;
+    let root = task_root.as_path();
     let report =
         crate::task::review::execute(root, parsed.positionals.first().map(String::as_str))?;
     emit_json(&report)?;
@@ -1424,20 +1437,20 @@ fn task_github(args: &[String], key: &str) -> Result<i32> {
     } else {
         None
     };
-    let repository = selected_repository(&parsed)?;
+    let repository = selected_checkout(&parsed)?;
     let cwd = std::env::current_dir().map_err(|e| Error::msg(e.to_string()))?;
     crate::task::check_git(repository.as_deref().unwrap_or(&cwd))?;
     let context = crate::context::open_for_inspection(repository.as_deref())?;
-    crate::task::github_report(
-        &context,
-        parsed
-            .positionals
-            .first()
-            .map(String::as_str)
-            .unwrap_or("."),
-        base,
-        action,
-    )?;
+    let selector = parsed.positionals.first().map(String::as_str);
+    let selector = if key == "task status" {
+        selector
+    } else {
+        if selector.is_none() || selector == Some(".") {
+            crate::selectors::current_operational_checkout(&context)?;
+        }
+        Some(selector.unwrap_or("."))
+    };
+    crate::task::github_report(&context, selector, base, action)?;
     Ok(SUCCESS)
 }
 fn doctor(args: &[String]) -> Result<i32> {
@@ -1480,17 +1493,13 @@ fn task_assess(args: &[String], classifier: bool) -> Result<i32> {
     let provider = single_value(&parsed, "provider")?
         .map(crate::task::assessment::parse_provider)
         .transpose()?;
-    let repository = selected_repository(&parsed)?;
+    let repository = selected_checkout(&parsed)?;
     let cwd = std::env::current_dir().map_err(|error| Error::msg(error.to_string()))?;
     crate::task::check_git(repository.as_deref().unwrap_or(&cwd))?;
     let context = crate::context::open_for_inspection(repository.as_deref())?;
     let tree = crate::task::selectors::workspace(
         &context,
-        parsed
-            .positionals
-            .first()
-            .map(String::as_str)
-            .unwrap_or("."),
+        parsed.positionals.first().map(String::as_str),
     )?;
     worktree::validate_checkout(&context, &tree, command)?;
     let report = if classifier {
@@ -1520,16 +1529,16 @@ fn handoff_command(args: &[String], action: &str) -> Result<i32> {
     let (selector, text) =
         if action == "add" {
             match parsed.positionals.as_slice() {
-                [text] => (".", Some(text.as_str())),
-                [selector, text] => (selector.as_str(), Some(text.as_str())),
+                [text] => (None, Some(text.as_str())),
+                [selector, text] => (Some(selector.as_str()), Some(text.as_str())),
                 _ => return Err(Error::validation(
                     "Usage: rabi handoff add [SEL] [--kind checkpoint|decision|note] (TEXT | -)",
                 )),
             }
         } else {
             match parsed.positionals.as_slice() {
-                [] => (".", None),
-                [selector] => (selector.as_str(), None),
+                [] => (None, None),
+                [selector] => (Some(selector.as_str()), None),
                 _ => {
                     return Err(Error::validation(
                         "Handoff show/path accepts at most one selector",
@@ -1563,7 +1572,11 @@ fn handoff_command(args: &[String], action: &str) -> Result<i32> {
     }
     let _hooks = crate::process::suppress_git_hooks();
     let context = command_context(&parsed)?;
-    let tree = crate::selectors::resolve(&context, selector, true, None)?;
+    let tree = if action == "add" {
+        crate::selectors::resolve_optional_current(&context, selector, true)?
+    } else {
+        crate::selectors::resolve_optional(&context, selector, true)?
+    };
     worktree::validate_checkout(&context, &tree, "handoff")?;
     let memory = crate::handoff::Memory::locate(&context.git_root, &tree)?;
     if let Some(text) = text {
@@ -1611,7 +1624,7 @@ fn remove(args: &[String]) -> Result<i32> {
     // hooks before any inspection so a plan cannot run fsmonitor commands.
     let _hooks = dry_run.then(crate::process::suppress_git_hooks);
     let context = if let Some(source) = single_value(&parsed, "source-checkout")? {
-        crate::context::open_for_hooks(selected_repository(&parsed)?.as_deref(), Path::new(source))?
+        crate::context::open_for_hooks(selected_checkout(&parsed)?.as_deref(), Path::new(source))?
     } else {
         command_context(&parsed)?
     };
@@ -1653,7 +1666,13 @@ fn remove(args: &[String]) -> Result<i32> {
                 plans.push((index, plan));
             }
             Err(mut failure) => {
-                if matches!(failure.error, Error::WorktreeNotFound(_)) {
+                // Dot can still acknowledge a selected-repository record after
+                // its Git registration disappears. Never use that fallback for
+                // cwd in an actual different repository.
+                let unregistered_dot = name == "."
+                    && matches!(failure.error, Error::Validation(_))
+                    && std::env::current_dir().is_ok_and(|cwd| crate::git::git_root(&cwd).is_err());
+                if matches!(failure.error, Error::WorktreeNotFound(_)) || unregistered_dot {
                     match crate::selectors::Selector::parse(name)?.unregistered_record(&context) {
                         Ok(Some(tree)) => {
                             if seen_paths.insert(tree.path.clone()) {
@@ -1919,18 +1938,14 @@ fn exec(args: &[String]) -> Result<i32> {
             "Usage: rabi exec [SEL] -- COMMAND [ARG...]",
         ));
     }
-    let repository = selected_repository(&parsed)?;
+    let repository = selected_checkout(&parsed)?;
     let context = crate::context::open_for_execution(repository.as_deref(), parsed.flag("no-env"))?;
-    let name = parsed
-        .positionals
-        .first()
-        .map(String::as_str)
-        .unwrap_or(".");
+    let name = parsed.positionals.first().map(String::as_str);
     let rest = command_args[1..]
         .iter()
         .map(String::as_str)
         .collect::<Vec<_>>();
-    match worktree::exec_in_worktree(
+    match worktree::exec_in_selected_worktree(
         &context,
         name,
         &command_args[0],
@@ -2193,12 +2208,8 @@ fn set(args: &[String]) -> Result<i32> {
             Err(error) => return fail_with(&error, VALIDATION),
         };
     }
-    let name = parsed
-        .positionals
-        .first()
-        .map(String::as_str)
-        .unwrap_or(".");
-    let worktree = match crate::selectors::resolve(&context, name, false, None) {
+    let name = parsed.positionals.first().map(String::as_str);
+    let worktree = match crate::selectors::resolve_optional_current(&context, name, false) {
         Ok(worktree) => worktree,
         Err(error @ Error::WorktreeNotFound(_)) => return fail_with(&error, NOT_FOUND),
         Err(error) => return fail_with(&error, error.exit_code()),
@@ -2450,13 +2461,22 @@ fn single_value<'a>(parsed: &'a Parsed, name: &str) -> Result<Option<&'a str>> {
 }
 
 fn selected_repository(parsed: &Parsed) -> Result<Option<std::path::PathBuf>> {
+    selected_checkout(parsed)?
+        .map(|checkout| {
+            let root = crate::git::git_root(&checkout)?;
+            std::fs::canonicalize(root).map_err(|error| Error::msg(error.to_string()))
+        })
+        .transpose()
+}
+
+fn selected_checkout(parsed: &Parsed) -> Result<Option<std::path::PathBuf>> {
     if parsed.occurrences("repo") > 1 {
         return Err(Error::validation(
             "The --repo option can only be specified once".to_string(),
         ));
     }
     match parsed.value("repo") {
-        Some(reference) => repository::resolve_repository_ref(reference).map(Some),
+        Some(reference) => repository::resolve_repository_checkout_ref(reference).map(Some),
         None => Ok(None),
     }
 }
@@ -2507,7 +2527,7 @@ fn gc(args: &[String]) -> Result<i32> {
 }
 
 fn command_context(parsed: &Parsed) -> Result<crate::context::Context> {
-    let repository = selected_repository(parsed)?;
+    let repository = selected_checkout(parsed)?;
     crate::context::open(repository.as_deref())
 }
 
@@ -3152,6 +3172,7 @@ mod forget_tests {
                 retirement_queries: Default::default(),
                 git_root: repo.clone(),
                 source_checkout: repo.clone(),
+                selected_checkout: None,
                 worktrees_directory: root.join("workspaces"),
                 project_common_dir: None,
                 config: None,
@@ -3322,6 +3343,7 @@ mod allocation_tests {
                 retirement_queries: Default::default(),
                 git_root: repo.clone(),
                 source_checkout: repo,
+                selected_checkout: None,
                 worktrees_directory: root.join("workspaces"),
                 project_common_dir: None,
                 config: None,

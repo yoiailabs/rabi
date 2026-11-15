@@ -1097,12 +1097,40 @@ pub fn is_clean(cwd: &Path) -> bool {
 }
 
 pub fn list_worktrees(git_root: &Path) -> Result<Vec<GitWorktree>> {
-    let stdout = output(
-        &["worktree", "list", "--porcelain", "-z"],
-        Some(git_root),
-        false,
-    )?;
-    Ok(parse_worktrees(&stdout))
+    Ok(list_worktrees_with_paths(git_root)?
+        .into_iter()
+        .map(|(tree, _)| tree)
+        .collect())
+}
+
+/// Keep native registration paths alongside the public text representation.
+pub(crate) fn list_worktrees_with_paths(git_root: &Path) -> Result<Vec<(GitWorktree, PathBuf)>> {
+    let captured = raw_git_bytes(git_root, &["worktree", "list", "--porcelain", "-z"])?;
+    if !captured.status.success() {
+        return Err(Error::msg(format!(
+            "git worktree list failed: {}",
+            String::from_utf8_lossy(&captured.stderr)
+        )));
+    }
+    let paths = captured
+        .stdout
+        .split(|byte| *byte == 0)
+        .filter_map(|field| field.strip_prefix(b"worktree "))
+        .map(|bytes| {
+            #[cfg(unix)]
+            {
+                use std::os::unix::ffi::OsStrExt;
+                PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
+            }
+            #[cfg(not(unix))]
+            {
+                PathBuf::from(String::from_utf8_lossy(bytes).into_owned())
+            }
+        });
+    Ok(parse_worktrees(&String::from_utf8_lossy(&captured.stdout))
+        .into_iter()
+        .zip(paths)
+        .collect())
 }
 
 pub fn fetch(cwd: &Path, remote: &str, refspec: &str) -> Result<()> {
