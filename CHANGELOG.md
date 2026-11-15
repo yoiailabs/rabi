@@ -2,15 +2,17 @@
 
 ## Unreleased
 
+## v8.2.2 (2026-11-15)
+
 ### Fixed
 
-- `rabi -R <checkout>` uses that checkout when SEL is omitted on `path`, `show`, `handoff show/path`, `task risk`, `task classify`, and `task status`, instead of defaulting to cwd. This applies from outside the repository (previously exit 3 `Workspace '.' not found` when cwd was outside any Git repository, or exit 2 when cwd was inside a different repository) and from another checkout in the same repository (previously the cwd checkout). A `host/owner/repo` or `owner/repo` shorthand uses the primary checkout at the clone-root location. `task merge --dry-run` still defaults omitted SEL to cwd.
+- `rabi -R <checkout>` uses that checkout when SEL is omitted on `path`, `show`, `handoff show/path`, `task risk`, `task classify`, and `task status`, instead of defaulting to cwd. This applies from outside the repository (previously exit 3 `Workspace '.' not found` when cwd was outside any Git repository, or exit 2 when cwd was inside a different repository) and from another checkout in the same repository (previously the cwd checkout). A `host/owner/repo` or `owner/repo` shorthand uses the primary checkout at the clone-root location. `task merge --dry-run` still defaults omitted SEL to cwd. (#980)
 
 ### Changed
 
-- Commands that allow omitted SEL and mutate the workspace (`sync`, `setup`, `set`, `exec`, `handoff add`, and `task merge`) still default it to the current checkout. `run` does so only without `-R`; with `-R`, `run` requires SEL. `remove` and `forget` always require SEL. With `-R`, if cwd is outside any Git repository, omitted-SEL mutating commands exit 2 with a usage error instead of exit 3 `Workspace '.' not found`, and they do not fall back to the selected primary. If cwd is inside a different repository, they already exited 2. When cwd is another checkout in the same repository, they keep using cwd even if `-R` names a different checkout.
-- With `-R`, an explicit `.` selector also exits 2 when cwd is outside the selected repository, including on inspection commands such as `show` and `path`. Previously, when cwd was outside any Git repository, explicit `.` exited 3 (`Workspace '.' not found`).
-- Task lifecycle commands (`task implement`, `task publish`, `task advance`, `task review`) now infer the active task from cwd's branch even when `-R` is set. Previously `-R` made them use the primary checkout's branch. If cwd is outside the selected repository, omitted SEL or explicit `.` exits 2 instead of inferring from the primary.
+- Commands that allow omitted SEL and mutate the workspace (`sync`, `setup`, `set`, `exec`, `handoff add`, and `task merge`) still default it to the current checkout. `run` does so only without `-R`; with `-R`, `run` requires SEL. `remove` and `forget` always require SEL. With `-R`, if cwd is outside any Git repository, omitted-SEL mutating commands exit 2 with a usage error instead of exit 3 `Workspace '.' not found`, and they do not fall back to the selected primary. If cwd is inside a different repository, they already exited 2. When cwd is another checkout in the same repository, they keep using cwd even if `-R` names a different checkout. (#980)
+- With `-R`, an explicit `.` selector also exits 2 when cwd is outside the selected repository, including on inspection commands such as `show` and `path`. Previously, when cwd was outside any Git repository, explicit `.` exited 3 (`Workspace '.' not found`). (#980)
+- Task lifecycle commands (`task implement`, `task publish`, `task advance`, `task review`) now infer the active task from cwd's branch even when `-R` is set. Previously `-R` made them use the primary checkout's branch. If cwd is outside the selected repository, omitted SEL or explicit `.` exits 2 instead of inferring from the primary. (#980)
 
 ## v8.2.1 (2026-11-15)
 
