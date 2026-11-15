@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- `task risk`, `task classify`, `task status`, `task merge` and `task approve` accept full task IDs and unique `task_` prefixes of at least six characters. Unknown IDs retain workspace selector fallback; tasks without a live linked workspace report a task-specific error, while GitHub commands can use a recorded PR with existing `pr:N` behavior.
+
 ## v8.2.0 (2026-11-15)
 
 ### Added

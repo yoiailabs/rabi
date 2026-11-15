@@ -1484,7 +1484,7 @@ fn task_assess(args: &[String], classifier: bool) -> Result<i32> {
     let cwd = std::env::current_dir().map_err(|error| Error::msg(error.to_string()))?;
     crate::task::check_git(repository.as_deref().unwrap_or(&cwd))?;
     let context = crate::context::open_for_inspection(repository.as_deref())?;
-    let tree = crate::selectors::resolve_without_status(
+    let tree = crate::task::selectors::workspace(
         &context,
         parsed
             .positionals

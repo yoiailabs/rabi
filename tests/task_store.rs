@@ -165,6 +165,85 @@ fn inventory(root: &Path) -> BTreeMap<PathBuf, Vec<u8>> {
 }
 
 #[test]
+fn task_assessment_selectors_accept_ids_and_preserve_workspace_fallback() {
+    let repo = Repo::new();
+    let task = repo.create("task/selected");
+    let id = task["id"].as_str().unwrap();
+    let workspace = task["workspacePath"].as_str().unwrap();
+    fs::write(
+        Path::new(workspace).join("selected.md"),
+        "selected change\n",
+    )
+    .unwrap();
+    let output = repo
+        .command("git", &["add", "selected.md"])
+        .current_dir(workspace)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let output = repo
+        .command("git", &["commit", "-m", "selected change"])
+        .current_dir(workspace)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    for command in ["risk", "classify"] {
+        let expected = repo.json(&["task", command, workspace, "--json"]);
+        for selector in [id, &id[..6], &id[..12]] {
+            let actual = repo.json(&["task", command, selector, "--json"]);
+            assert_eq!(actual["data"]["head"], expected["data"]["head"]);
+        }
+    }
+    repo.error(&["show", id, "--json"], 3, "not_found");
+    let unknown = "task_unknown";
+    repo.error(&["task", "risk", unknown, "--json"], 3, "not_found");
+    repo.json(&["create", unknown, "--no-setup", "--json"]);
+    repo.json(&["task", "risk", unknown, "--json"]);
+    repo.json(&["create", "task_", "--no-setup", "--json"]);
+    repo.error(&["task", "risk", "task_", "--json"], 2, "usage");
+
+    let duplicate_id = format!(
+        "{}{}",
+        &id[..id.len() - 1],
+        if id.ends_with('0') { '1' } else { '0' }
+    );
+    fs::create_dir(repo.tasks().join(&duplicate_id)).unwrap();
+    repo.json(&["create", &id[..12], "--no-setup", "--json"]);
+    let error = repo.error(&["task", "risk", &id[..12], "--json"], 2, "usage");
+    assert!(error["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("Ambiguous task ID"));
+}
+
+#[test]
+fn task_assessment_reports_missing_linked_workspaces_as_task_errors() {
+    let repo = Repo::new();
+    let task = repo.create("task/missing");
+    let id = task["id"].as_str().unwrap();
+    let workspace = task["workspacePath"].as_str().unwrap();
+    for absent_binding in [false, true] {
+        if absent_binding {
+            let mut record = task.clone();
+            record["workspacePath"] = Value::Null;
+            fs::write(
+                repo.directory(&task).join("task.json"),
+                serde_json::to_vec(&record).unwrap(),
+            )
+            .unwrap();
+        } else {
+            fs::remove_dir_all(workspace).unwrap();
+        }
+        for command in ["risk", "classify", "status"] {
+            let error = repo.error(&["task", command, id, "--json"], 3, "not_found");
+            let message = error["error"]["message"].as_str().unwrap();
+            assert!(message.contains(id));
+            assert!(message.contains("no live linked workspace"));
+        }
+    }
+}
+
+#[test]
 fn new_creates_workspace_and_preserves_primary_git_while_store_commands_append_events() {
     let repo = Repo::new();
     let git_before = inventory(&repo.repo.join(".git"));
