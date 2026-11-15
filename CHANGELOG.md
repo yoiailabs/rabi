@@ -8,6 +8,10 @@
 - `rabi task advance` now reports `remoteBranchDeleted: true` when a failed branch-delete push is followed by confirmation that the remote branch is already absent. A branch that still exists or cannot be inspected continues to report `false`.
 - `task risk`, `task classify`, `task status`, `task merge` and `task approve` accept full task IDs and unique `task_` prefixes of at least six characters. Unknown IDs retain workspace selector fallback; tasks without a live linked workspace report a task-specific error, while GitHub commands can use a recorded PR with existing `pr:N` behavior.
 
+### Changed
+
+- Clarify that required CI results must be produced by the repository's own workflow after `task publish`, including local scripts that post commit statuses. Advance and merge observe GitHub results without running local CI or sign-off commands; advance waits for missing or pending requirements until `ci_timeout`, while an empty required set still blocks as `no_ci`.
+
 ## v8.2.0 (2026-11-15)
 
 ### Added

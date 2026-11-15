@@ -176,3 +176,14 @@ review/classification record items after explicit external review; it cannot
 waive approval or other gates. Automation never runs approve or posts success
 approval. New HEADs require updated evidence and renewed maintainer approval
 when required. See [merge preflight](commands.md#task-status-and-merge-preflight).
+
+Required CI comes from the base policy's `[ci] required`. After `task publish`,
+the repository's own workflow must produce those Check Runs and commit statuses
+on the published head. Rabi does not execute local CI or sign-off commands to
+satisfy them; configured pre-publication `[precheck]` commands are separate. If
+hosted Actions do not produce a required result, run the repository's documented
+workflow, such as a local script that posts a required commit status.
+`task advance --wait` only polls GitHub: missing or pending requirements wait until
+`ci_timeout`, while an empty required set fails closed as `no_ci`. `task merge`
+also requires successful results and does not run their producers. See
+[publication](commands.md#task-publish) and [CI waiting](commands.md#task-advance).
