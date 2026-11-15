@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- `rabi task publish` prefers a single implement commit subject for the PR title, otherwise the first nonempty intent line, trimming long titles at word boundaries with an ellipsis. PR bodies now show sanitized intent and up to 30 commit subjects in a readable generic Summary section instead of JSON strings.
+
 ## v8.2.0 (2026-11-15)
 
 ### Added
