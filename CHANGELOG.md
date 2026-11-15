@@ -4,11 +4,11 @@
 
 ### Fixed
 
-- `rabi -R <checkout>` on inspection commands (`path`, `show`, `task risk`, and other inspect-only task commands) uses that checkout when SEL is omitted, instead of defaulting to cwd and failing with `Workspace '.' not found` from outside the repository.
+- `rabi -R <checkout>` uses that checkout when SEL is omitted on `path`, `show`, `handoff show/path`, `task risk`, `task classify`, and `task status`, instead of defaulting to cwd and failing with `Workspace '.' not found` from outside the repository. `task merge --dry-run` still defaults omitted SEL to cwd.
 
 ### Changed
 
-- Mutating commands (`sync`, `remove`, `setup`, `set`, `exec`, `run`, `forget`, and similar) still default omitted SEL to the current checkout. If cwd is outside the selected repository, they exit 2 with a usage error instead of exit 3 `Workspace '.' not found`, and they do not change the selected primary. When cwd is another checkout in the same repository, they keep using cwd even if `-R` names a different checkout.
+- Commands that allow omitted SEL and mutate the workspace (`sync`, `setup`, `set`, `exec`, `handoff add`, task lifecycle commands, and `task merge`) still default it to the current checkout. `run` does so only without `-R`; with `-R`, `run` requires SEL. `remove` and `forget` always require SEL. If cwd is outside the selected repository, omitted-SEL mutating commands exit 2 with a usage error instead of exit 3 `Workspace '.' not found`, and they do not change the selected primary. When cwd is another checkout in the same repository, they keep using cwd even if `-R` names a different checkout.
 
 ## v8.2.1 (2026-11-15)
 
