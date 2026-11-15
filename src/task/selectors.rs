@@ -42,8 +42,15 @@ fn task_workspace(context: &Context, task: &Task) -> Result<WorktreeInfo> {
                 && crate::paths::same_location(Path::new(&tree.path), path)
         })
         .ok_or_else(|| missing_workspace(task))?;
-    crate::worktree::validate_checkout(context, &tree, "task")
-        .map_err(|_| missing_workspace(task))?;
+    if std::fs::symlink_metadata(&tree.registered_path)
+        .is_err_and(|error| error.kind() == std::io::ErrorKind::NotFound)
+    {
+        return Err(missing_workspace(task));
+    }
+    crate::worktree::validate_checkout(context, &tree, "task")?;
+    if crate::git::current_branch(Path::new(&tree.path))? != task.branch {
+        return Err(missing_workspace(task));
+    }
     Ok(tree)
 }
 
@@ -213,5 +220,40 @@ mod tests {
         let error = task_github_target(&fixture.context, &fixture.task).unwrap_err();
         assert_eq!(error.exit_code(), crate::error::NOT_FOUND);
         assert!(error.to_string().contains("no live linked workspace"));
+    }
+
+    #[test]
+    fn github_task_target_uses_recorded_pr_after_branch_switch_or_detach() {
+        for args in [vec!["switch", "-c", "other"], vec!["switch", "--detach"]] {
+            let mut fixture = Fixture::new();
+            let output = Command::new("git")
+                .args(args)
+                .current_dir(fixture.task.workspace_path.as_ref().unwrap())
+                .output()
+                .unwrap();
+            assert!(output.status.success());
+            let (number, tree) = task_github_target(&fixture.context, &fixture.task).unwrap();
+            assert_eq!(number, Some(42));
+            assert!(tree.is_none());
+            fixture.task.pr_number = None;
+            let error = task_github_target(&fixture.context, &fixture.task).unwrap_err();
+            assert_eq!(error.exit_code(), crate::error::NOT_FOUND);
+            assert!(error.to_string().contains(&fixture.task.id));
+            assert!(error.to_string().contains("no live linked workspace"));
+        }
+    }
+
+    #[test]
+    fn github_task_target_preserves_checkout_validation_errors_with_recorded_pr() {
+        let fixture = Fixture::new();
+        fs::write(
+            fixture.task.workspace_path.as_ref().unwrap().join(".git"),
+            "invalid Git entry\n",
+        )
+        .unwrap();
+        let error = task_github_target(&fixture.context, &fixture.task).unwrap_err();
+        assert_eq!(error.exit_code(), crate::error::GENERAL);
+        assert!(error.to_string().contains("failed to inspect checkout"));
+        assert!(!error.to_string().contains("no live linked workspace"));
     }
 }

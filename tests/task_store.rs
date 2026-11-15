@@ -244,6 +244,39 @@ fn task_assessment_reports_missing_linked_workspaces_as_task_errors() {
 }
 
 #[test]
+fn task_assessment_rejects_switched_and_detached_workspaces_without_classifying_other_commits() {
+    let repo = Repo::new();
+    let task = repo.create("task/selected");
+    let id = task["id"].as_str().unwrap();
+    let workspace = task["workspacePath"].as_str().unwrap();
+    repo.git(&["-C", workspace, "switch", "-c", "other"]);
+    fs::write(Path::new(workspace).join("other.md"), "other branch work\n").unwrap();
+    repo.git(&["-C", workspace, "add", "other.md"]);
+    repo.git(&["-C", workspace, "commit", "-m", "other branch work"]);
+    let classifications = repo.repo.join(".git/rabi/classifications");
+    for detached in [false, true] {
+        if detached {
+            repo.git(&["-C", workspace, "switch", "--detach"]);
+        }
+        for selector in [id, &id[..12]] {
+            for args in [
+                vec!["task", "risk", selector, "--json"],
+                vec!["task", "classify", selector, "--json"],
+                vec!["task", "status", selector, "--json"],
+                vec!["task", "merge", selector, "--dry-run", "--json"],
+            ] {
+                let error = repo.error(&args, 3, "not_found");
+                assert_eq!(
+                    error["error"]["message"],
+                    format!("Task {id} has no live linked workspace")
+                );
+            }
+        }
+        assert!(!classifications.exists());
+    }
+}
+
+#[test]
 fn new_creates_workspace_and_preserves_primary_git_while_store_commands_append_events() {
     let repo = Repo::new();
     let git_before = inventory(&repo.repo.join(".git"));
