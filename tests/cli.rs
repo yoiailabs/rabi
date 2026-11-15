@@ -3986,6 +3986,45 @@ fn repository_option_defaults_to_the_selected_checkout() {
     let dot = run(&["-R", repo.repo.to_str().unwrap(), "path", "."], &linked);
     assert!(dot.status.success(), "{dot:?}");
     assert!(same_dir(&text(&dot.stdout), &linked));
+    // Inside a linked checkout, omitted inspection SEL uses the -R checkout,
+    // not cwd. Explicit "." still means cwd (asserted above).
+    let from_linked = run(&["-R", repo.repo.to_str().unwrap(), "path"], &linked);
+    assert!(from_linked.status.success(), "{from_linked:?}");
+    assert!(same_dir(&text(&from_linked.stdout), &repo.repo));
+    let show = run(
+        &["-R", repo.repo.to_str().unwrap(), "show", "--json"],
+        &linked,
+    );
+    assert!(show.status.success(), "{show:?}");
+    assert!(same_dir(
+        json_value(&show)["data"]["workspace"]["path"]
+            .as_str()
+            .unwrap(),
+        &repo.repo
+    ));
+    let risk = run(
+        &[
+            "-R",
+            repo.repo.to_str().unwrap(),
+            "task",
+            "risk",
+            "--base",
+            "HEAD",
+            "--json",
+        ],
+        &linked,
+    );
+    assert!(risk.status.success(), "{risk:?}");
+    let primary_head = repo
+        .command("git", &["rev-parse", "HEAD"])
+        .current_dir(&repo.repo)
+        .output()
+        .unwrap();
+    assert!(primary_head.status.success(), "{primary_head:?}");
+    assert_eq!(
+        json_value(&risk)["data"]["head"],
+        text(&primary_head.stdout)
+    );
 }
 
 #[test]

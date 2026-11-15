@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Fixed
+
+- `rabi -R <checkout>` on inspection commands (`path`, `show`, `task risk`, and other inspect-only task commands) uses that checkout when SEL is omitted, instead of defaulting to cwd and failing with `Workspace '.' not found` from outside the repository.
+
+### Changed
+
+- Mutating commands (`sync`, `remove`, `setup`, `set`, `exec`, `run`, `forget`, and similar) still default omitted SEL to the current checkout. If cwd is outside the selected repository, they exit 2 with a usage error instead of exit 3 `Workspace '.' not found`, and they do not change the selected primary. When cwd is another checkout in the same repository, they keep using cwd even if `-R` names a different checkout.
+
 ## v8.2.1 (2026-11-15)
 
 ### Fixed
