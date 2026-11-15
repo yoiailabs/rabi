@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- `rabi task publish` prefers a single implement commit subject for the PR title, otherwise the first nonempty intent line, trimming long titles at word boundaries with an ellipsis. PR bodies now show sanitized intent and up to 30 commit subjects in a readable generic Summary section instead of JSON strings.
+
 ### Changed
 
 - Clarify that required CI results must be produced by the repository's own workflow after `task publish`, including local scripts that post commit statuses. Advance and merge observe GitHub results without running local CI or sign-off commands; advance waits for missing or pending requirements until `ci_timeout`, while an empty required set still blocks as `no_ci`.

@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use unicode_segmentation::UnicodeSegmentation;
 
 use super::boundary::{Boundary, Process, Signals};
 use super::store::{BlockReason, Store, Task, TaskState};
@@ -313,22 +314,64 @@ pub(super) fn sanitized_with_marker(bytes: &[u8], workspace: &Path) -> String {
     format!("{MARKER}{}", tail(&text, TAIL - MARKER.len()))
 }
 
-fn pr_title(intent: &str, workspace: &Path) -> String {
-    let first = intent
-        .lines()
-        .find(|line| !line.trim().is_empty())
-        .unwrap_or("Task");
-    let first: String = first.trim().chars().take(128).collect();
-    let title = sanitized(first.as_bytes(), workspace);
-    let title = title.trim();
-    if title.is_empty() {
-        "Task".into()
+fn trim_title_whitespace(title: &str) -> &str {
+    let mut content = title
+        .grapheme_indices(true)
+        .filter(|(_, grapheme)| !grapheme.chars().all(char::is_whitespace));
+    let Some((start, first)) = content.next() else {
+        return "";
+    };
+    let end = content
+        .next_back()
+        .map(|(index, grapheme)| index + grapheme.len())
+        .unwrap_or(start + first.len());
+    &title[start..end]
+}
+
+fn pr_title(intent: &str, commits: &str, workspace: &Path) -> String {
+    let mut subjects = commits.lines().filter(|line| !line.trim().is_empty());
+    let first_subject = subjects.next();
+    let source = if first_subject.is_some() && subjects.next().is_none() {
+        first_subject.unwrap_or("")
     } else {
-        title.chars().take(128).collect()
+        intent
+            .lines()
+            .find(|line| !line.trim().is_empty())
+            .unwrap_or("")
+    };
+    let title = sanitized_text(source.as_bytes(), workspace);
+    let title = trim_title_whitespace(&title);
+    if title.is_empty() {
+        return "Task".into();
+    }
+    if title.chars().count() <= 72 {
+        return title.into();
+    }
+    // Only whitespace-only graphemes separate words: a whitespace codepoint
+    // can itself belong to a larger cluster, such as Prepend + space.
+    // Allow a long first word past the target, but reserve room for the marker
+    // within GitHub's 256-character limit. An oversized word is omitted whole.
+    let mut count = 0;
+    let mut boundaries = Vec::new();
+    for (index, grapheme) in title.grapheme_indices(true) {
+        if grapheme.chars().all(char::is_whitespace) {
+            boundaries.push((count, index));
+        }
+        count += grapheme.chars().count();
+    }
+    let end = boundaries
+        .iter()
+        .rfind(|(count, _)| *count <= 69)
+        .or_else(|| boundaries.iter().find(|(count, _)| *count <= 253))
+        .map(|(_, index)| *index);
+    match end {
+        Some(end) => format!("{}...", trim_title_whitespace(&title[..end])),
+        None if title.chars().count() <= 256 => title.into(),
+        None => "Task...".into(),
     }
 }
 
-fn quoted_data(value: &str, limit: usize) -> Result<String> {
+fn indented_data(value: &str, limit: usize) -> String {
     let mut end = value.len().min(limit);
     while !value.is_char_boundary(end) {
         end -= 1;
@@ -338,27 +381,34 @@ fn quoted_data(value: &str, limit: usize) -> Result<String> {
     } else {
         value.to_owned()
     };
-    serde_json::to_string(&value).map_err(|_| Error::msg("Cannot encode PR metadata"))
+    value.lines().map(|line| format!("    {line}\n")).collect()
 }
 
-fn pr_body(intent: &str, commits: &str) -> Result<String> {
-    // Bound raw data before JSON encoding; even six-byte control escapes keep
-    // the body below 32 KiB. Subjects are data, never Markdown instructions.
-    let subjects = commits
+fn pr_body(intent: &str, commits: &str, workspace: &Path) -> String {
+    // Sanitize before bounding so cuts cannot expose partial secrets. Every
+    // untrusted line stays in an indented code block, including Markdown/HTML.
+    let intent = sanitized_text(intent.as_bytes(), workspace);
+    let subjects: Vec<_> = commits
         .lines()
+        .filter(|line| !line.trim().is_empty())
         .take(30)
-        .map(|line| quoted_data(line, 128))
-        .collect::<Result<Vec<_>>>()?;
-    Ok(format!(
-        "Task intent (JSON string):\n```json\n{}\n```\n\nCommit subjects (JSON strings):\n```json\n{}\n```\n{}",
-        quoted_data(intent, 1024)?,
-        subjects.join("\n"),
-        if commits.lines().count() > 30 {
-            "Additional commit subjects omitted.\n"
+        .map(|line| indented_data(&sanitized_text(line.as_bytes(), workspace), 128))
+        .collect();
+    format!(
+        "## Summary\n\nTask intent:\n\n{}\nCommit subjects:\n\n{}{}",
+        indented_data(&intent, 1024),
+        subjects.join(""),
+        if commits
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .count()
+            > 30
+        {
+            "\nAdditional commit subjects omitted.\n"
         } else {
             ""
         },
-    ))
+    )
 }
 
 struct Check {
@@ -1226,7 +1276,7 @@ fn execute_inner(root: &Path, selector: Option<&str>, locked: bool) -> Result<Re
             if signals.interrupted() {
                 return Err(Error::Signaled("SIGINT".into()));
             }
-            let mut body = pr_body(&task.intent, &commits)?;
+            let mut body = pr_body(&task.intent, &commits, &workspace);
             if let Some(proposal) = &task.proposal {
                 body.push_str(&super::tune::publication_body(proposal, &workspace)?);
             }
@@ -1235,7 +1285,7 @@ fn execute_inner(root: &Path, selector: Option<&str>, locked: bool) -> Result<Re
             let body_path = body_path
                 .to_str()
                 .ok_or_else(|| Error::msg("PR body path is not UTF-8"))?;
-            let title = pr_title(&task.intent, &workspace);
+            let title = pr_title(&task.intent, &commits, &workspace);
             gh(
                 gh_cwd,
                 &repository,
@@ -1316,6 +1366,180 @@ fn execute_inner(root: &Path, selector: Option<&str>, locked: bool) -> Result<Re
 #[cfg(test)]
 mod tests {
     use super::Repository;
+    use std::path::Path;
+
+    #[test]
+    fn pr_title_prefers_a_single_nonempty_commit_subject() {
+        assert_eq!(
+            super::pr_title(
+                "Long task intent",
+                "\nfix(task): improve PR metadata\n \n",
+                Path::new("workspace")
+            ),
+            "fix(task): improve PR metadata"
+        );
+    }
+
+    #[test]
+    fn pr_title_uses_first_nonempty_intent_for_zero_or_multiple_subjects() {
+        for commits in ["", " \n", "fix: first change\nfix: second change\n"] {
+            assert_eq!(
+                super::pr_title(
+                    "\n  Improve PR metadata  \nDetails",
+                    commits,
+                    Path::new("workspace")
+                ),
+                "Improve PR metadata"
+            );
+        }
+    }
+
+    #[test]
+    fn pr_title_trims_at_a_word_boundary_with_an_ellipsis() {
+        let prefix = "fix(task): make published pull request titles readable and preserve";
+        let title = super::pr_title(
+            "unused",
+            &format!("{prefix} whole words in long subjects"),
+            Path::new("workspace"),
+        );
+        assert_eq!(title, format!("{prefix}..."));
+        assert!(title.chars().count() <= 72);
+        let prefix = format!("fix: {}", "e\u{301} ".repeat(21));
+        assert_eq!(
+            super::pr_title(
+                "",
+                &format!("{prefix}{}", "word ".repeat(20)),
+                Path::new("workspace")
+            ),
+            format!("{}...", prefix.trim_end())
+        );
+    }
+
+    #[test]
+    fn pr_title_preserves_graphemes_containing_whitespace_and_emoji() {
+        let source = format!(
+            "fix: {}\u{600} {} additional words",
+            "a".repeat(60),
+            "b".repeat(6)
+        );
+        assert_eq!(
+            super::pr_title(&source, "", Path::new("workspace")),
+            "fix:..."
+        );
+        let prefix = format!("{} \u{301}{}", "a".repeat(64), "b".repeat(8));
+        assert_eq!(
+            super::pr_title(
+                &format!("{prefix} additional words"),
+                "",
+                Path::new("workspace")
+            ),
+            format!("{prefix}...")
+        );
+        for source in ["fix: preserve \u{600} ", " \u{301}fix: preserve whitespace"] {
+            assert_eq!(super::pr_title(source, "", Path::new("workspace")), source);
+        }
+        let prefix = format!("fix: {}", "👩‍👩‍👧‍👦 ".repeat(8));
+        assert_eq!(
+            super::pr_title(
+                &format!("{prefix}additional words"),
+                "",
+                Path::new("workspace")
+            ),
+            format!("{}...", prefix.trim_end())
+        );
+    }
+
+    #[test]
+    fn pr_title_preserves_short_titles_and_whole_long_words_within_github_limit() {
+        for title in [
+            "fix: improve metadata",
+            "Improve metadata",
+            "é",
+            &"é".repeat(100),
+        ] {
+            assert_eq!(super::pr_title(title, "", Path::new("workspace")), title);
+        }
+        assert_eq!(
+            super::pr_title(&"e\u{301}".repeat(200), "", Path::new("workspace")),
+            "Task..."
+        );
+        let long_word = "é".repeat(100);
+        assert_eq!(
+            super::pr_title(
+                &format!("{long_word} additional words"),
+                "",
+                Path::new("workspace")
+            ),
+            format!("{long_word}...")
+        );
+    }
+
+    #[test]
+    fn pr_title_sanitizes_before_trimming_and_uses_empty_fallback() {
+        let workspace = Path::new("fixture-workspace");
+        for (intent, commits) in [
+            ("fix: fixture-workspace token=fixture", ""),
+            ("unused", "fix: fixture-workspace token=fixture"),
+        ] {
+            assert_eq!(
+                super::pr_title(intent, commits, workspace),
+                "fix: [workspace] token=[redacted]"
+            );
+        }
+        for (intent, commits) in [("", ""), ("\u{1b}[31m", ""), ("unused", "\u{1b}[31m")] {
+            assert_eq!(super::pr_title(intent, commits, workspace), "Task");
+        }
+        let title = super::pr_title("", &format!("fix: token={}", "x".repeat(1000)), workspace);
+        assert_eq!(title, "fix: token=[redacted]");
+    }
+
+    #[test]
+    fn pr_body_has_a_readable_summary_and_keeps_untrusted_lines_indented() {
+        let body = super::pr_body(
+            "Improve PR metadata\n\n## Injected heading\n```\n<script>text</script>",
+            "fix: improve title\nfix: improve body\n## Another heading",
+            Path::new("workspace"),
+        );
+        assert!(body.starts_with("## Summary\n\nTask intent:\n\n    Improve PR metadata\n"));
+        assert!(
+            body.contains("\nCommit subjects:\n\n    fix: improve title\n    fix: improve body\n")
+        );
+        assert!(body.contains("\n    ## Injected heading\n    ```\n    <script>text</script>\n"));
+        assert!(body.contains("\n    ## Another heading\n"));
+        assert!(!body.contains("JSON"));
+        assert_eq!(body.lines().filter(|line| line.starts_with('#')).count(), 1);
+        assert!(!body.contains("\"Improve PR metadata"));
+    }
+
+    #[test]
+    fn pr_body_caps_subjects_and_marks_omissions_and_truncation() {
+        let commits = (1..=31)
+            .map(|i| format!("fix: subject {i}\n"))
+            .collect::<String>();
+        let body = super::pr_body(&"é".repeat(1000), &commits, Path::new("workspace"));
+        assert!(body.contains("    fix: subject 30\n"));
+        assert!(!body.contains("subject 31"));
+        assert!(body.ends_with("Additional commit subjects omitted.\n"));
+        assert!(body.contains("[truncated]"));
+        let body = super::pr_body("Intent", "fix: subject", Path::new("workspace"));
+        assert!(!body.contains("omitted"));
+        let path = std::env::temp_dir().join("subject-fixture");
+        let commits = format!("{}\n", path.display()).repeat(31);
+        let body = super::pr_body("Intent", &commits, Path::new("workspace"));
+        assert_eq!(body.matches("    [path]").count(), 30);
+        assert!(body.ends_with("Additional commit subjects omitted.\n"));
+    }
+
+    #[test]
+    fn pr_body_redacts_intent_and_subjects_before_bounding_them() {
+        let workspace = Path::new("fixture-workspace");
+        let data = format!("fix: fixture-workspace token={}", "x".repeat(2000));
+        let body = super::pr_body(&data, &data, workspace);
+        assert_eq!(body.matches("fix: [workspace] token=[redacted]").count(), 2);
+        assert!(!body.contains("fixture-workspace"));
+        assert!(!body.contains("xxx"));
+        assert!(!body.contains("[truncated]"));
+    }
 
     #[test]
     fn diagnostics_strip_terminal_sequences_and_bound_utf8_tail() {
