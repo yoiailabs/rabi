@@ -5,6 +5,7 @@
 ### Fixed
 
 - `rabi task publish` prefers a single implement commit subject for the PR title, otherwise the first nonempty intent line, trimming long titles at word boundaries with an ellipsis. PR bodies now show sanitized intent and up to 30 commit subjects in a readable generic Summary section instead of JSON strings.
+- `rabi task advance` now reports `remoteBranchDeleted: true` when a failed branch-delete push is followed by confirmation that the remote branch is already absent. A branch that still exists or cannot be inspected continues to report `false`.
 
 ## v8.2.0 (2026-11-15)
 
