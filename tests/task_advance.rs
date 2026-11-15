@@ -1920,7 +1920,12 @@ fn landing_wait_approval_deadline_is_waiting_and_head_bound() {
 
 #[test]
 fn landing_remote_deletion_is_explicit_remote_only_and_retains_new_remote_work() {
-    for (enabled, moved) in [(false, false), (true, false), (true, true)] {
+    for (enabled, moved, missing) in [
+        (false, false, false),
+        (true, false, false),
+        (true, true, false),
+        (true, false, true),
+    ] {
         let repo = Repo::landing(
             &format!("[merge]\nauto=['low']\ndelete-branch={enabled}"),
             Some("docs/change.md"),
@@ -1934,6 +1939,15 @@ fn landing_remote_deletion_is_explicit_remote_only_and_retains_new_remote_work()
                 "update-ref",
                 "refs/heads/topic",
                 &base,
+            ]);
+        }
+        if missing {
+            repo.git(&[
+                "--git-dir",
+                repo.root.join("remote.git").to_str().unwrap(),
+                "update-ref",
+                "-d",
+                "refs/heads/topic",
             ]);
         }
         let merged = decode(repo.advance().output().unwrap(), 0);
@@ -1951,9 +1965,13 @@ fn landing_remote_deletion_is_explicit_remote_only_and_retains_new_remote_work()
             .unwrap()
             .status
             .success();
-        assert_eq!(remote_present, !(enabled && !moved));
+        assert_eq!(remote_present, !missing && !(enabled && !moved));
         if enabled {
             assert_eq!(merged["data"]["remoteBranchDeleted"], !moved);
+            assert_eq!(
+                repo.view()["task"]["advance"]["remoteBranchDeleted"],
+                !moved
+            );
         }
         assert!(!repo.git(&["rev-parse", "refs/heads/topic"]).is_empty());
         let trace = fs::read_to_string(repo.root.join("gh-trace")).unwrap();

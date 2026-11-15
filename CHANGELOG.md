@@ -5,6 +5,7 @@
 ### Fixed
 
 - `rabi task publish` prefers a single implement commit subject for the PR title, otherwise the first nonempty intent line, trimming long titles at word boundaries with an ellipsis. PR bodies now show sanitized intent and up to 30 commit subjects in a readable generic Summary section instead of JSON strings.
+- `rabi task advance` now reports `remoteBranchDeleted: true` when a failed branch-delete push is followed by confirmation that the remote branch is already absent. A branch that still exists or cannot be inspected continues to report `false`.
 - `task risk`, `task classify`, `task status`, `task merge` and `task approve` accept full task IDs and unique `task_` prefixes of at least six characters. Unknown IDs retain workspace selector fallback; tasks without a live linked workspace report a task-specific error, while GitHub commands can use a recorded PR with existing `pr:N` behavior.
 
 ## v8.2.0 (2026-11-15)
