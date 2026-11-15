@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- Clarify that required CI results must be produced by the repository's own workflow after `task publish`, including local scripts that post commit statuses. Advance and merge observe GitHub results without running local CI or sign-off commands; advance waits for missing or pending requirements until `ci_timeout`, while an empty required set still blocks as `no_ci`.
+
 ## v8.2.0 (2026-11-15)
 
 ### Added
