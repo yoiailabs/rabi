@@ -1961,7 +1961,7 @@
         }
       ],
       "notes": [
-        "SEL defaults to the current checkout, including primary; follows show/path selector and -R rules.",
+        "SEL defaults to the current checkout, including primary; follows show/path selector and -R rules. Also accepts a full task_<uuid> ID or unique task_ prefix of at least six characters, selecting its live linked workspace; a resolved task without one fails with a task-specific error. Unknown IDs fall back to workspace selectors; short or ambiguous task prefixes exit 2.",
         "Reads .rabi/policy.toml only from the resolved base commit. Classifies merge-base(base, HEAD)...HEAD; only committed changes are classified; the working tree and index are not read. No network calls or writes.",
         "Tier low, medium or high never changes the successful exit status (0). Built-in floor paths always require human review.",
         "Git 2.44 or later is required; unsupported --no-lazy-fetch or --attr-source options fail with git_failed."
@@ -2018,7 +2018,7 @@
         }
       ],
       "notes": [
-        "SEL, --base and -R semantics match task risk. Reads the policy and classifier.doc only from the base commit; working-tree and head documents are ignored. Claude chooses its default model unless classifier.model is set, then that value is passed as --model.",
+        "SEL accepts task IDs and unique task_ prefixes of at least six characters, as well as workspace selectors; --base and -R semantics match task risk. Reads the policy and classifier.doc only from the base commit; working-tree and head documents are ignored. Claude chooses its default model unless classifier.model is set, then that value is passed as --model.",
         "Floors and high kind, limit or unknown-data safeguards force high without a provider. Path rule/default tiers are ignored. Missing documents and diffs above 400 KiB yield high.",
         "Invokes one fresh provider in an empty temporary directory, with a 10-minute deadline and GitHub credentials removed. Only tool-less providers are supported: Claude disables all tools. Codex requires an injected model catalog to guarantee no tools and is unsupported. Provider API costs may apply.",
         "Provider failures, invalid answers and uncertainty yield high with classifier:* reasons and exit 0. Records atomically replace the exact-head JSON file under the Git common directory rabi/classifications.",
@@ -2067,7 +2067,7 @@
         }
       ],
       "notes": [
-        "SEL defaults to current workspace; pr:N selects any PR in the selected repository. Workspace selection uses its recorded PR or exactly one open same-repository PR for its branch.",
+        "SEL defaults to current workspace; pr:N selects any PR in the selected repository. Full task_<uuid> IDs and unique task_ prefixes of at least six characters select the linked workspace, falling back to the task recorded PR with pr:N behavior when no live workspace remains. Unknown IDs fall back to workspace selectors; short or ambiguous task prefixes exit 2. Workspace selection uses its recorded PR or exactly one open same-repository PR for its branch.",
         "GitHub facts use gh api GET only. No merges, comments, statuses, labels, fetches, refs or records are written."
       ]
     },
@@ -2116,7 +2116,7 @@
         }
       ],
       "notes": [
-        "SEL uses task status resolution. The PR must be open and its current head must match --sha (case-insensitive hex comparison).",
+        "SEL accepts task IDs, unique task_ prefixes of at least six characters, pr:N and workspace selectors using task status resolution. The PR must be open and its current head must match --sha (case-insensitive hex comparison).",
         "Refuses nonempty RABI_AGENT with exit 2; approvals must come from outside rabi-launched agents. This marker is a tripwire, not a security boundary.",
         "Posts one success commit status with context rabi/approval and a description containing the tier classified using the PR base policy."
       ]
@@ -2171,7 +2171,7 @@
         }
       ],
       "notes": [
-        "SEL defaults to current workspace; pr:N selects any PR in the selected repository. Workspace selection uses its recorded PR or exactly one open same-repository PR for its branch.",
+        "SEL defaults to current workspace; pr:N selects any PR in the selected repository. Full task_<uuid> IDs and unique task_ prefixes of at least six characters select the linked workspace, falling back to the task recorded PR with pr:N behavior when no live workspace remains. Unknown IDs fall back to workspace selectors; short or ambiguous task prefixes exit 2. Workspace selection uses its recorded PR or exactly one open same-repository PR for its branch.",
         "Dry-run uses read-only GET facts and exits 0 for blocked, incomplete or ready. Policy is read from the PR base SHA.",
         "Real merges refuse failed or unevaluated items with exit 4. --external-review covers only review_record and classification_record; approval must pass. pr:N still leaves the local head comparison unevaluated.",
         "classification_record passes only for a local record matching the exact PR head, locally computed PR merge-base and base policy/document blob IDs. A match supplies the tier with deterministic safeguards; missing or stale records retain path classification and remain not evaluated.",
