@@ -2176,7 +2176,8 @@
         "Real merges refuse failed or unevaluated items with exit 4. --external-review covers only review_record and classification_record; approval must pass. pr:N still leaves the local head comparison unevaluated.",
         "classification_record passes only for a local record matching the exact PR head, locally computed PR merge-base and base policy/document blob IDs. A match supplies the tier with deterministic safeguards; missing or stale records retain path classification and remain not evaluated.",
         "Approval passes for a non-floor auto tier, or the latest successful rabi/approval status on the exact head from a policy approver. High cannot be auto.",
-        "Merge uses the policy method (squash by default) with --match-head-commit, then re-reads facts even after a gh failure. No admin bypass, auto-merge or branch deletion."
+        "Merge uses the policy method (squash by default) with --match-head-commit, then re-reads facts even after a gh failure. No admin bypass, auto-merge or branch deletion.",
+        "A confirmed merge records merged_external on the unique matching non-terminal task with a verified same-repository push destination. An already merged PR with such a task reconciles without a merge call. Recording failures warn without changing merge status. Run rabi task advance ID for the recorded task to finish cleanup; merge never runs cleanup."
       ]
     },
     "doctor": {
@@ -3008,6 +3009,7 @@
     "handoff_request_skipped",
     "env_untrusted",
     "task_config_unavailable",
+    "task_merge_record_failed",
     "env_workspace_path_skipped",
     "record_mismatch",
     "internal"

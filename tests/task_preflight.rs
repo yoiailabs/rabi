@@ -730,6 +730,9 @@ fn dry_run_and_real_merge_share_evaluation_table() {
                 ]]
             );
             assert_eq!(real["data"]["merged"], true);
+            assert_eq!(real["data"]["taskRecorded"], false);
+            assert!(real["data"]["taskId"].is_null());
+            assert!(real["data"]["cleanupCommand"].is_null());
             assert_eq!(
                 real["data"]["mergeCommitSha"],
                 "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
@@ -1223,5 +1226,19 @@ fn classification_record_must_cover_the_full_pr_range_with_a_local_merge_base() 
     // hides its parent links, so the PR merge-base can no longer be verified.
     fs::write(repo.repo.join(".git/shallow"), format!("{}\n", repo.head)).unwrap();
     assert_eq!(record_result(), "not_evaluated");
+    repo.assert_get_only();
+}
+
+#[test]
+fn already_merged_without_a_matching_task_retains_preflight_refusal() {
+    let repo = Repo::new();
+    fs::write(repo.root.join("responses/did-merge"), "").unwrap();
+    let before = inventory(&repo.repo.join(".git"));
+    let output = repo.rabi(&["task", "merge", "--external-review", "--json"]);
+    assert_eq!(output.status.code(), Some(4));
+    let value: Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(value["error"]["code"], "refused");
+    assert_eq!(value["data"]["items"][0]["result"], "fail");
+    assert_eq!(inventory(&repo.repo.join(".git")), before);
     repo.assert_get_only();
 }
