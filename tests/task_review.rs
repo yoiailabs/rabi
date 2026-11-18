@@ -123,6 +123,22 @@ answer="$RABI_REVIEW_FIXTURE/framed.$index"
   cat "$RABI_REVIEW_FIXTURE/answer"
   printf '\n</rabi-review-output-%s>\n' "$nonce"
 } > "$answer"
+mode=normal
+if [ -f "$RABI_REVIEW_FIXTURE/frame-mode.$index" ]; then
+  mode=$(cat "$RABI_REVIEW_FIXTURE/frame-mode.$index")
+elif [ -f "$RABI_REVIEW_FIXTURE/frame-mode" ]; then
+  mode=$(cat "$RABI_REVIEW_FIXTURE/frame-mode")
+fi
+cp "$answer" "$answer.original"
+case "$mode" in
+  prose) { printf 'The review result follows.\n'; cat "$answer.original"; printf 'The review is complete.\n'; } > "$answer" ;;
+  double) cat "$answer.original" "$answer.original" > "$answer" ;;
+  no-frame) cp "$RABI_REVIEW_FIXTURE/answer" "$answer" ;;
+  extra-start) { printf '<rabi-review-output-%s>\n' "$nonce"; cat "$answer.original"; } > "$answer" ;;
+  extra-end) { cat "$answer.original"; printf '</rabi-review-output-%s>\n' "$nonce"; } > "$answer" ;;
+  reversed) printf '</rabi-review-output-%s>\n<rabi-review-output-%s>\n' "$nonce" "$nonce" > "$answer" ;;
+  invalid-json) printf '<rabi-review-output-%s>invalid JSON</rabi-review-output-%s>\n' "$nonce" "$nonce" > "$answer" ;;
+esac
 last=0
 for arg in "$@"; do
   if [ "$last" -eq 1 ]; then cp "$answer" "$arg"; last=0; fi
@@ -623,6 +639,120 @@ fn malformed_and_wrong_sha_retry_once_then_block_without_record_or_publication()
         assert!(!repo.review_record().exists());
         assert!(!repo.root.join("ready").exists());
         assert!(!repo.root.join("comment.json").exists());
+    }
+}
+
+#[test]
+fn prose_outside_the_frame_and_fenced_json_inside_pass() {
+    for variant in ["prose", "fenced"] {
+        let repo = Repo::new(&["test"], "", None);
+        if variant == "prose" {
+            fs::write(repo.root.join("frame-mode"), "prose").unwrap();
+        } else {
+            let answer = fs::read_to_string(repo.root.join("answer")).unwrap();
+            fs::write(repo.root.join("answer"), format!("```json\n{answer}\n```")).unwrap();
+        }
+        let data = decode(repo.review().output().unwrap(), 0)["data"].clone();
+        assert_eq!(data["state"]["name"], "classifying");
+        assert_eq!(repo.launches(), 1);
+        let prompt = fs::read_to_string(repo.root.join("prompt.1")).unwrap();
+        assert!(prompt.contains("Write nothing before or after the delimiters."));
+    }
+}
+
+#[test]
+fn missing_duplicate_and_reversed_markers_remain_invalid() {
+    for mode in ["double", "no-frame", "extra-start", "extra-end", "reversed"] {
+        let repo = Repo::new(&["test"], "", None);
+        fs::write(repo.root.join("frame-mode"), mode).unwrap();
+        let data = decode(repo.review().output().unwrap(), 4)["data"].clone();
+        assert_eq!(
+            data["state"],
+            json!({"name":"blocked","reason":"review_invalid"})
+        );
+        let view = repo.view();
+        let blocked = view["events"].as_array().unwrap().last().unwrap();
+        assert_eq!(
+            blocked["review"]["failureCodes"],
+            json!(["review:invalid-frame", "review:invalid-frame"])
+        );
+        assert_eq!(repo.launches(), 2);
+        assert!(!repo.review_record().exists());
+        assert!(!repo.root.join("ready").exists());
+        assert!(!repo.root.join("comment.json").exists());
+    }
+}
+
+#[test]
+fn invalid_review_records_both_failure_codes_and_can_retry_without_using_a_fix() {
+    let repo = Repo::new(&["test"], "", None);
+    repo.edit(|task| task["advance"]["fixesUsed"] = json!(1));
+    fs::write(repo.root.join("frame-mode.1"), "no-frame").unwrap();
+    fs::write(repo.root.join("frame-mode.2"), "invalid-json").unwrap();
+    decode(repo.review().output().unwrap(), 4);
+    let view = repo.view();
+    assert_eq!(
+        view["task"]["state"],
+        json!({"name":"blocked","reason":"review_invalid"})
+    );
+    let blocked = view["events"].as_array().unwrap().last().unwrap();
+    assert_eq!(blocked["reason"], "review_invalid");
+    assert_eq!(
+        blocked["review"],
+        json!({
+            "headSha":repo.git(&["rev-parse", "topic"]),
+            "failureCodes":["review:invalid-frame", "review:invalid-json"]
+        })
+    );
+    decode(repo.advance().output().unwrap(), 4);
+    assert_eq!(repo.launches(), 2);
+    assert_eq!(repo.view()["task"]["state"], view["task"]["state"]);
+    let data = decode(repo.review().output().unwrap(), 0)["data"].clone();
+    assert_eq!(data["state"]["name"], "classifying");
+    assert_eq!(repo.launches(), 3);
+    let view = repo.view();
+    assert_eq!(view["task"]["advance"]["fixesUsed"], 1);
+    let retry = view["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|event| event["reason"] == "review_retry")
+        .unwrap();
+    assert_eq!(
+        retry["from"],
+        json!({"name":"blocked","reason":"review_invalid"})
+    );
+    assert_eq!(retry["to"], json!({"name":"reviewing"}));
+    assert!(repo
+        .transitions()
+        .contains(&("reviewing".into(), "ready".into())));
+}
+
+#[test]
+fn review_retry_still_blocks_a_moved_pr_head() {
+    let repo = Repo::new(&["test"], "", None);
+    fs::write(repo.root.join("frame-mode"), "no-frame").unwrap();
+    decode(repo.review().output().unwrap(), 4);
+    fs::write(repo.root.join("pr-head"), repo.git(&["rev-parse", "main"])).unwrap();
+    let data = decode(repo.review().output().unwrap(), 4)["data"].clone();
+    assert_eq!(data["state"], json!({"name":"blocked","reason":"diverged"}));
+    assert_eq!(repo.launches(), 2);
+    assert!(repo.view()["events"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .any(|event| event["reason"] == "review_retry"));
+}
+
+#[test]
+fn review_refuses_other_blocked_reasons_without_a_retry_event() {
+    for reason in ["diverged", "review_diff_too_large"] {
+        let repo = Repo::new(&["test"], "", None);
+        repo.edit(|task| task["state"] = json!({"name":"blocked","reason":reason}));
+        let before = repo.view();
+        decode(repo.review().output().unwrap(), 4);
+        assert_eq!(repo.view(), before);
+        assert_eq!(repo.launches(), 0);
     }
 }
 
