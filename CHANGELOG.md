@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- `rabi task review` accepts prose outside a single nonce frame and Markdown-fenced JSON inside it while retaining strict marker counts, JSON validation and exact-head checks. After two invalid attempts, the blocked event records both static failure codes for diagnosis. Retry `blocked(review_invalid)` with `task review`; it records `review_retry` through `reviewing` without consuming a fix, and still blocks a moved PR head as `diverged`. Other blocked reasons and `task advance` on blocked tasks still refuse.
+
 ## v8.2.2 (2026-11-15)
 
 ### Fixed
