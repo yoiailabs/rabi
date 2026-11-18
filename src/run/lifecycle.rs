@@ -714,7 +714,8 @@ exit 0"#,
     fn cursor_stop_sends_int_then_term_before_kill() {
         let root = FixtureDir::new();
         let path = root.0.join("signals");
-        let child = std::process::Command::new("sh")
+        let mut command = std::process::Command::new("sh");
+        command
             .args([
                 "-c",
                 "trap 'printf INT' INT; trap 'printf TERM' TERM; printf ready; while [ -d \"$1\" ]; do :; done",
@@ -723,9 +724,17 @@ exit 0"#,
             .arg(&root.0)
             .stdout(File::create(&path).unwrap())
             .stderr(std::process::Stdio::null())
-            .process_group(0)
-            .spawn()
-            .unwrap();
+            .process_group(0);
+        // A shell cannot trap a signal that was ignored when it started, and
+        // background jobs of non-interactive shells inherit SIGINT as ignored.
+        // SAFETY: signal(2) is async-signal-safe and runs only in the forked child.
+        unsafe {
+            command.pre_exec(|| {
+                signal(2, 0);
+                Ok(())
+            });
+        }
+        let child = command.spawn().unwrap();
         let mut group = Group::new(child, Provider::Cursor.stop_policy());
         let deadline = test_wait::hang_guard();
         while fs::read_to_string(&path).unwrap().is_empty() {
