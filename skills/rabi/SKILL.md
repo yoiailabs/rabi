@@ -203,7 +203,8 @@ inspect events and involve the operator instead of repeatedly advancing.
 | `environment`, `provider_failed` | Inspect tool availability/login, launch exit and retained edits |
 | `destination_not_github`, `diverged` | Inspect recorded destination and remote ancestry; never force or redirect publication |
 | `record_mismatch` | Compare saved/displayed state, branch, local/pushed/PR heads and dirty state |
-| `review_invalid`, `review_diff_too_large`, `review_pass_invalid` | Inspect reviewer protocol/evidence or split the change; never fabricate an earned pass |
+| `review_invalid` | Inspect both static codes in the blocked event’s `review.failureCodes` with `task show ID --json`, fix the cause, then retry `task review ID`; `review_retry` returns through `reviewing` on the recorded published head without consuming a fix. A moved PR head still blocks as `diverged`; advance still refuses blocked tasks |
+| `review_diff_too_large`, `review_pass_invalid` | Inspect reviewer evidence or split the change; review refuses these blocked reasons; never fabricate an earned pass |
 | `merge_preflight`, `merge_failed` | Stop writes; operator inspects fresh PR facts and gate reasons because a remote merge may already have occurred |
 | `conflict`, `policy_invalid`, `evidence_missing`, `internal` | Inspect event details and resolve the underlying issue with the operator |
 
