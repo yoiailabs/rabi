@@ -2,10 +2,12 @@
 
 ## Unreleased
 
+## v8.2.3 (2026-11-18)
+
 ### Fixed
 
-- `rabi task review` accepts prose outside a single nonce frame and Markdown-fenced JSON inside it while retaining strict marker counts, JSON validation and exact-head checks. After two invalid attempts, the blocked event records both static failure codes for diagnosis. Retry `blocked(review_invalid)` with `task review`; it records `review_retry` through `reviewing` without consuming a fix, and still blocks a moved PR head as `diverged`. Other blocked reasons and `task advance` on blocked tasks still refuse.
-- `rabi task merge`, including `--external-review`, records a confirmed merge on the unique matching non-terminal task with its merged head, merge commit and `merged_external` event. Already merged PRs can reconcile the task without another merge call. Recording failures warn without hiding the merge result; run `rabi task advance ID` to finish cleanup.
+- `rabi task review` accepts prose outside a single nonce frame and Markdown-fenced JSON inside it while retaining strict marker counts, JSON validation and exact-head checks. After two invalid attempts, the blocked event records both static failure codes for diagnosis. Retry `blocked(review_invalid)` with `task review`; it records `review_retry` through `reviewing` without consuming a fix, and still blocks a moved PR head as `diverged`. Other blocked reasons and `task advance` on blocked tasks still refuse. (#982)
+- `rabi task merge`, including `--external-review`, records a confirmed merge on the unique matching non-terminal task with its merged head, merge commit and `merged_external` event. Already merged PRs can reconcile the task without another merge call. Recording failures warn without hiding the merge result; run `rabi task advance ID` to finish cleanup. (#983)
 
 ## v8.2.2 (2026-11-15)
 
