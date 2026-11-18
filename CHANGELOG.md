@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- `rabi task merge`, including `--external-review`, records a confirmed merge on the unique matching non-terminal task with its merged head, merge commit and `merged_external` event. Already merged PRs can reconcile the task without another merge call. Recording failures warn without hiding the merge result; run `rabi task advance ID` to finish cleanup.
+
 ## v8.2.2 (2026-11-15)
 
 ### Fixed

@@ -114,8 +114,20 @@ Task lifecycle selectors (`implement`, `publish`, `advance`, `review`) are task
 IDs or unique prefixes of at least six characters; omitted SEL or `.` selects
 the unique active task on the current branch. `task show` and `task abandon`
 require an ID. In contrast, `task risk`, `classify`, `status`, `approve` and
-`merge` use workspace selectors; do not pass a task ID to them. PR commands also
-accept `pr:N` for inspection; real merge still needs a workspace's matching HEAD.
+`merge` accept workspace selectors, full task IDs and unique task prefixes.
+PR commands also accept `pr:N` for inspection; a new merge still needs a
+workspace's matching HEAD.
+
+After `task merge` (including `--external-review`) confirms a merged PR, it records
+`merged` with reason `merged_external` only for a unique non-terminal task matching
+the PR number, head branch and verified push destination in the same repository.
+Forks and ambiguous matches leave records unchanged. An already merged PR with
+an eligible task reconciles without another merge call; without a match the
+ordinary preflight refusal remains. State does not grant merge permission.
+Read `taskRecorded`, `taskId` and `cleanupCommand` in JSON and inspect warnings:
+`task_merge_record_failed` preserves the merge exit status. Run
+`rabi task advance ID` for the recorded task to finish cleanup. Merge never runs
+cleanup itself; status and dry-run never reconcile records.
 
 ## Inspect outcomes and advance a batch
 

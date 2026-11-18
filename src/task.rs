@@ -469,6 +469,13 @@ pub(crate) fn github_report(
         }
     }
     let root = &context.git_root;
+    if matches!(action, GithubAction::Merge { .. }) && facts.pr.merged {
+        if let Some((store, task)) = external_merge_match(root, &client, &facts) {
+            let recorded = record_external_merge(&store, &task, &client, &facts);
+            print_merge_result(None, &facts, recorded.as_deref())?;
+            return Ok(());
+        }
+    }
     let base_local = resolves_commit(root, &facts.pr.base_sha)?;
     let blob = if base_local {
         policy_blob(root, &facts.pr.base_sha)?
@@ -548,27 +555,93 @@ pub(crate) fn github_report(
             }
         };
         let merged = updated.pr.merged;
-        let merged_head = merged.then_some(updated.pr.head_sha.as_str());
-        if crate::output::json() {
-            crate::output::data(&serde_json::json!({
-                "preflight": report, "merged": merged,
-                "mergeCommitSha": updated.pr.merge_commit_sha,
-                "mergedHeadSha": merged_head, "facts": updated,
-            }))?;
+        let recorded = if merged {
+            external_merge_match(root, &client, &updated)
+                .and_then(|(store, task)| record_external_merge(&store, &task, &client, &updated))
         } else {
-            updated.print();
-            crate::output::outln!(
-                "Merged: {} Merge commit: {} Merged head: {}",
-                merged,
-                updated.pr.merge_commit_sha.as_deref().unwrap_or("unknown"),
-                merged_head.unwrap_or("none")
-            );
-        }
+            None
+        };
+        print_merge_result(Some(&report), &updated, recorded.as_deref())?;
         result?;
         if !merged {
             return Err(Error::msg(
                 "GitHub did not report the PR as merged after gh pr merge",
             ));
+        }
+    }
+    Ok(())
+}
+
+/// Matching and recording are best effort: a local bookkeeping failure must
+/// never hide the observed remote merge or change the merge invocation's status.
+fn external_merge_match(
+    root: &Path,
+    client: &crate::github::facts::Client<'_>,
+    facts: &crate::github::facts::Snapshot,
+) -> Option<(store::Store, store::Task)> {
+    let matched: Result<Option<(store::Store, store::Task)>> = (|| {
+        let store = store::Store::locate(root)?;
+        let task = store.external_merge_task(facts, client)?;
+        Ok(task.map(|task| (store, task)))
+    })();
+    match matched {
+        Ok(matched) => matched,
+        Err(error) => {
+            merge_record_warning(error);
+            None
+        }
+    }
+}
+
+fn record_external_merge(
+    store: &store::Store,
+    task: &store::Task,
+    client: &crate::github::facts::Client<'_>,
+    facts: &crate::github::facts::Snapshot,
+) -> Option<String> {
+    match store.record_external_merge(task, facts, client) {
+        Ok(()) => Some(task.id.clone()),
+        Err(error) => {
+            merge_record_warning(error);
+            None
+        }
+    }
+}
+
+fn merge_record_warning(error: Error) {
+    crate::output::warning(
+        "task_merge_record_failed",
+        format!("PR merge observed, but task recording failed: {error}"),
+    );
+}
+
+fn print_merge_result(
+    report: Option<&preflight::Evaluation>,
+    facts: &crate::github::facts::Snapshot,
+    task_id: Option<&str>,
+) -> Result<()> {
+    let merged_head = facts.pr.merged.then_some(facts.pr.head_sha.as_str());
+    let cleanup_command = task_id.map(|id| format!("rabi task advance {id}"));
+    if crate::output::json() {
+        crate::output::data(&serde_json::json!({
+            "preflight": report, "merged": facts.pr.merged,
+            "mergeCommitSha": facts.pr.merge_commit_sha,
+            "mergedHeadSha": merged_head, "facts": facts,
+            "taskRecorded": task_id.is_some(), "taskId": task_id,
+            "cleanupCommand": cleanup_command,
+        }))?;
+    } else {
+        facts.print();
+        crate::output::outln!(
+            "Merged: {} Merge commit: {} Merged head: {}",
+            facts.pr.merged,
+            facts.pr.merge_commit_sha.as_deref().unwrap_or("unknown"),
+            merged_head.unwrap_or("none")
+        );
+        if let Some(id) = task_id {
+            crate::output::outln!(
+                "Task {id} recorded merged. Run rabi task advance {id} to finish cleanup."
+            );
         }
     }
     Ok(())

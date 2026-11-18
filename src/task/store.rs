@@ -51,24 +51,43 @@ pub(crate) enum TaskState {
     Abandoned,
 }
 
-// Every allowed edge lives here, including blocked re-derivation and abandonment.
+// Every allowed edge lives here, including externally observed merges.
+// New direct merged edges are reserved for record_external_merge.
 const TRANSITIONS: &[(&str, &[&str])] = &[
-    ("new", &["implementing", "blocked", "abandoned"]),
-    ("implementing", &["prechecking", "blocked", "abandoned"]),
+    ("new", &["implementing", "blocked", "abandoned", "merged"]),
+    (
+        "implementing",
+        &["prechecking", "blocked", "abandoned", "merged"],
+    ),
     (
         "prechecking",
-        &["publishing", "implementing", "blocked", "abandoned"],
+        &[
+            "publishing",
+            "implementing",
+            "blocked",
+            "abandoned",
+            "merged",
+        ],
     ),
     (
         "publishing",
-        &["ci", "implementing", "blocked", "abandoned"],
+        &["ci", "implementing", "blocked", "abandoned", "merged"],
     ),
-    ("ci", &["reviewing", "implementing", "blocked", "abandoned"]),
+    (
+        "ci",
+        &[
+            "reviewing",
+            "implementing",
+            "blocked",
+            "abandoned",
+            "merged",
+        ],
+    ),
     (
         "reviewing",
-        &["ready", "implementing", "blocked", "abandoned"],
+        &["ready", "implementing", "blocked", "abandoned", "merged"],
     ),
-    ("ready", &["classifying", "blocked", "abandoned"]),
+    ("ready", &["classifying", "blocked", "abandoned", "merged"]),
     (
         "classifying",
         &[
@@ -77,11 +96,12 @@ const TRANSITIONS: &[(&str, &[&str])] = &[
             "implementing",
             "blocked",
             "abandoned",
+            "merged",
         ],
     ),
     (
         "awaiting_approval",
-        &["merging", "implementing", "blocked", "abandoned"],
+        &["merging", "implementing", "blocked", "abandoned", "merged"],
     ),
     ("merging", &["merged", "blocked", "abandoned"]),
     (
@@ -99,6 +119,7 @@ const TRANSITIONS: &[(&str, &[&str])] = &[
             "merging",
             "blocked",
             "abandoned",
+            "merged",
         ],
     ),
 ];
@@ -918,6 +939,64 @@ impl Store {
         Ok(())
     }
 
+    /// Find one non-terminal task bound to this same-repository PR. State is
+    /// bookkeeping only; this match never authorizes a remote write.
+    pub(super) fn external_merge_task(
+        &self,
+        facts: &crate::github::facts::Snapshot,
+        client: &crate::github::facts::Client<'_>,
+    ) -> Result<Option<Task>> {
+        if !facts.pr.same_repository || facts.inconsistent {
+            return Ok(None);
+        }
+        let mut matching = None;
+        for id in self.ids()? {
+            let task = self.load(&id)?;
+            if !task.state.terminal()
+                && task.pr_number == Some(facts.pr.number)
+                && task.branch == facts.pr.head_ref
+            {
+                if matching.is_some() {
+                    return Ok(None);
+                }
+                matching = Some(task);
+            }
+        }
+        let Some(task) = matching else {
+            return Ok(None);
+        };
+        let destination = super::publish::destination(&self.root, &task.push_remote_url)?;
+        Ok(destination
+            .as_deref()
+            .is_some_and(|destination| client.matches_destination(destination))
+            .then_some(task))
+    }
+
+    /// Record an observed remote merge without invoking advancement or cleanup.
+    /// Reload the unique match under the task lock before changing its receipt.
+    pub(super) fn record_external_merge(
+        &self,
+        original: &Task,
+        facts: &crate::github::facts::Snapshot,
+        client: &crate::github::facts::Client<'_>,
+    ) -> Result<()> {
+        if !facts.pr.merged {
+            return Err(Error::validation("Cannot record an unmerged PR"));
+        }
+        let _advance = self.advance_lock(original)?;
+        let directory = self.path.join(&original.id);
+        let _lock = lock(&directory.join(".lock"))?;
+        let mut task = self
+            .external_merge_task(facts, client)?
+            .filter(|task| task.id == original.id)
+            .ok_or_else(|| Error::msg("Task merge match changed before recording"))?;
+        self.events(&task.id)?;
+        task.advance.merged_head_sha = Some(facts.pr.head_sha.clone());
+        task.advance.merge_commit_sha = facts.pr.merge_commit_sha.clone();
+        let event = transition(&mut task, TaskState::Merged, "merged_external")?;
+        self.save(&directory, &task, &event)
+    }
+
     pub fn transition(&self, prefix: &str, to: TaskState, reason: &str) -> Result<View> {
         let id = self.resolve(prefix)?;
         let directory = self.path.join(&id);
@@ -932,6 +1011,11 @@ impl Store {
         let _lock = lock(&directory.join(".lock"))
             .map_err(|error| Error::msg(format!("Cannot lock task {id}: {error}")))?;
         let mut task = self.load(&id)?;
+        // Direct transitions added for external reconciliation are not exposed
+        // through the generic bookkeeping operation.
+        if to == TaskState::Merged && task.state != TaskState::Merging {
+            return Err(Error::validation("Merged requires an observed PR merge"));
+        }
         let event = transition(&mut task, to, reason)?;
         let mut events = self.events(&id)?;
         let _publication = if to == TaskState::Abandoned {
@@ -1156,7 +1240,7 @@ mod tests {
         for from in states {
             for to in states {
                 let allowed = !from.terminal()
-                    && (matches!(to, Blocked(_) | Abandoned)
+                    && (matches!(to, Blocked(_) | Abandoned | Merged)
                         || (matches!(from, Blocked(_)) && !to.terminal())
                         || forward_and_back.contains(&(from, to)));
                 let mut task = Task {

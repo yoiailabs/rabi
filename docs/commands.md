@@ -24,8 +24,8 @@ Task lifecycle commands (`implement`, `publish`, `advance`, `review`) take task 
 | `classifying` | Tool-less classifier; deterministic rabi safeguards | Valid assessment in policy auto set with no floor → `merging`; otherwise → `awaiting_approval` | Missing/failed/uncertain assessment is high; mismatched checkout → `record_mismatch`; changed valid head → `implementing` |
 | `awaiting_approval` | Configured maintainer approves; rabi polls | Latest success `rabi/approval` from allowed issuer on exact head → `merging` | Pending approval/approval timeout returns 10; valid new head or changes requested → `implementing`; inconsistent checkout → `record_mismatch` |
 | `merging` | Rabi reruns full preflight and guarded merge | Current-head CI, policy freshness, earned review, classification, approval and mergeability pass → `merged` | Failed/incomplete preflight → `merge_preflight`; unverified merge outcome → `merge_failed` |
-| `merged` | Rabi safely cleans up | Terminal; repeat advance may retry retained cleanup | Keep dirty, stashed, unpushed or unsafe checkout and all local branches; remote deletion requires policy opt-in |
-| `blocked` | Human inspects reason/events | Advance refuses; no general unblock command | Repair the cause and choose explicit recovery; do not edit records or loop advance |
+| `merged` | Rabi safely cleans up on advance | Terminal; after `task merge`, run `rabi task advance ID` to finish cleanup; repeat advance may retry retained cleanup | Keep dirty, stashed, unpushed or unsafe checkout and all local branches; remote deletion requires policy opt-in |
+| `blocked` | Human inspects reason/events | Advance refuses; `task merge` can record a verified merged PR; no general unblock command | Repair the cause and choose explicit recovery; do not edit records or loop advance |
 | `abandoned` | Operator records abandonment | Terminal; no further transitions | Abandon leaves files, branches and remote state intact |
 
 Failure-driven implementation retries share `[factory] fix-budget` (default 3). Exhaustion blocks as `budget`; an unchanged consecutive failure fingerprint blocks as `repeated_failure` even after a new commit. CI and review text are untrusted feedback, not instructions granting permissions. Every non-terminal state can be blocked or abandoned; the [store transition table](#local-task-store) lists all legal bookkeeping edges, not a promise of a public recovery command for each edge.
@@ -89,20 +89,20 @@ Allowed transitions are defined in one data table in the implementation:
 
 | From | Allowed next states |
 |---|---|
-| `new` | `implementing`, `blocked`, `abandoned` |
-| `implementing` | `prechecking`, `blocked`, `abandoned` |
-| `prechecking` | `publishing`, `implementing`, `blocked`, `abandoned` |
-| `publishing` | `ci`, `implementing`, `blocked`, `abandoned` |
-| `ci` | `reviewing`, `implementing`, `blocked`, `abandoned` |
-| `reviewing` | `ready`, `implementing`, `blocked`, `abandoned` |
-| `ready` | `classifying`, `blocked`, `abandoned` |
-| `classifying` | `merging`, `awaiting_approval`, `implementing`, `blocked`, `abandoned` |
-| `awaiting_approval` | `merging`, `implementing`, `blocked`, `abandoned` |
+| `new` | `implementing`, `blocked`, `abandoned`, `merged` (verified external merge only) |
+| `implementing` | `prechecking`, `blocked`, `abandoned`, `merged` (verified external merge only) |
+| `prechecking` | `publishing`, `implementing`, `blocked`, `abandoned`, `merged` (verified external merge only) |
+| `publishing` | `ci`, `implementing`, `blocked`, `abandoned`, `merged` (verified external merge only) |
+| `ci` | `reviewing`, `implementing`, `blocked`, `abandoned`, `merged` (verified external merge only) |
+| `reviewing` | `ready`, `implementing`, `blocked`, `abandoned`, `merged` (verified external merge only) |
+| `ready` | `classifying`, `blocked`, `abandoned`, `merged` (verified external merge only) |
+| `classifying` | `merging`, `awaiting_approval`, `implementing`, `blocked`, `abandoned`, `merged` (verified external merge only) |
+| `awaiting_approval` | `merging`, `implementing`, `blocked`, `abandoned`, `merged` (verified external merge only) |
 | `merging` | `merged`, `blocked`, `abandoned` |
-| `blocked` | Any non-terminal state (including itself), or `abandoned` |
+| `blocked` | Any non-terminal state (including itself), `abandoned`, or `merged` (verified external merge only) |
 | `merged`, `abandoned` | None (terminal) |
 
-Creation and abandonment mutate the store directly. `task implement` records launches and advances `new` to `implementing`. `task publish` executes prechecks and publication through `ci`. `task advance` drives implementation, publication, CI, review, classification, approval waiting, merge and safe workspace cleanup. Each merge still requires fresh remote evidence and the full merge preflight.
+Creation and abandonment mutate the store directly. `task implement` records launches and advances `new` to `implementing`. `task publish` executes prechecks and publication through `ci`. `task advance` drives implementation, publication, CI, review, classification, approval waiting, merge and safe workspace cleanup. Each new merge still requires fresh remote evidence and the full merge preflight. Only the dedicated `task merge` receipt recorder uses the external-merge edges to `merged`; state never grants permission to merge.
 
 ## External issue intake
 
@@ -322,9 +322,13 @@ rabi -R owner/repo task merge --dry-run pr:7 --base main
 
 `rabi task approve SEL --sha <40 hex> [--note TEXT] [-R REPO] [--json]` accepts task IDs, unique `task_` prefixes of at least six characters, PR and workspace selectors with the same resolution as status. It rejects any nonempty `RABI_AGENT` before GitHub access (exit 2), rereads PR facts, and requires an open PR with a stable current head matching the full SHA (hex comparison is lowercase; abbreviations fail). It classifies at the PR base and posts exactly one success commit status to `repos/{owner}/{repo}/statuses/{sha}`, context `rabi/approval`. The description includes the tier and optional note, truncated to 140 characters. Text prints the SHA, context, state and description. An unlisted issuer can post an approval, but that status will fail merge's approver gate. Approval binds to the exact commit, not to a PR or base: the same commit in another same-repository PR into another base carries the same approval status, subject to that target’s policy and preflight. This marker is a tripwire; see [safety](safety.md#task-approval-and-merge).
 
-`rabi task merge [SEL] [--external-review] [--base REF] [-R REPO] [--json]` executes after the same preflight. Any FAIL or N/A refuses with exit 4 (`refused`) and the evaluation report, without writes. Without `--external-review`, the review gate requires the same event-bound earned pass as advance; placing a pass record in the reviews directory is insufficient. `--external-review` attests that review and classification were done externally and permits only `review_record` and `classification_record` to remain N/A; approval must pass. Stable `pr:N`, including a task ID resolved through its recorded PR without a live workspace, still has an N/A local-head comparison and cannot execute a merge. Select a workspace or task with a live linked workspace whose HEAD matches the PR. Agents may merge when these gates pass; the marker check applies only to approve.
+`rabi task merge [SEL] [--external-review] [--base REF] [-R REPO] [--json]` executes after the same preflight. For an unmerged PR, any FAIL or N/A refuses with exit 4 (`refused`) and the evaluation report, without writes. Without `--external-review`, the review gate requires the same event-bound earned pass as advance; placing a pass record in the reviews directory is insufficient. `--external-review` attests that review and classification were done externally and permits only `review_record` and `classification_record` to remain N/A; approval must pass. Stable `pr:N`, including a task ID resolved through its recorded PR without a live workspace, still has an N/A local-head comparison and cannot execute a merge. Select a workspace or task with a live linked workspace whose HEAD matches the PR. Agents may merge when these gates pass; the marker check applies only to approve.
 
 The command executes `gh pr merge <N> --repo <owner/repo> --<method> --match-head-commit <head_sha>` using the base policy method (default squash), without admin bypass, deferred auto-merge or branch deletion. `[merge] delete-branch` applies only to `task advance` cleanup. It rereads the PR after the invocation, including on gh failure, and reports whether it merged, the merge commit SHA and merged head SHA. A gh failure or a PR not reported merged exits 1 with the reread facts; no write is retried automatically. Collection failures retain their usual codes. No task records are created.
+
+When the updated PR snapshot reports merged, the command records the result only if exactly one non-terminal task in the same repository store matches the PR number and head branch, the PR is from the same repository, and the task’s recorded push destination matches the PR repository. It saves `advance.mergedHeadSha` and `advance.mergeCommitSha`, transitions to `merged`, and appends reason `merged_external` (advance uses `merged`). Zero or multiple matches, forks and destination mismatches leave records unchanged. A recording failure adds warning `task_merge_record_failed` without changing the merge exit status.
+
+If the initial facts already report merged and an eligible matching task exists, `task merge` reconciles that task and succeeds without invoking `gh pr merge` or requiring a fresh merge preflight. Without a matching task, the ordinary preflight refusal remains. Status and dry-run never reconcile. Output identifies the recorded task and `rabi task advance ID` to finish cleanup; `task merge` never removes the workspace or runs cleanup.
 
 ## Selecting and inspecting workspaces
 

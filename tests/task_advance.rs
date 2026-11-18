@@ -34,6 +34,7 @@ case "$1 $2" in
   'pr merge')
     [ ! -f "$RABI_ADVANCE_FIXTURE/merge-fails" ] || exit 1
     touch "$RABI_ADVANCE_FIXTURE/merged"
+    [ ! -f "$RABI_ADVANCE_FIXTURE/merge-fails-after-write" ] || exit 1
     if [ -f "$RABI_ADVANCE_FIXTURE/merge-creates-dirty" ]; then printf 'local work\n' > "$RABI_ADVANCE_WORKSPACE/local-work"; fi
     ;;
   'run view')
@@ -64,9 +65,11 @@ case "$1 $2" in
         if [ -f "$RABI_ADVANCE_FIXTURE/merged" ]; then merged=true; merge_commit='"3333333333333333333333333333333333333333"'; state=closed; fi
         mergeable=true; mergeable_state=clean
         if [ -f "$RABI_ADVANCE_FIXTURE/conflict" ]; then mergeable=false; mergeable_state=dirty; fi
+        head_repo=fixture/project
+        [ ! -f "$RABI_ADVANCE_FIXTURE/fork" ] || head_repo=contributor/project
         changed_files=0
         if [ -f "$RABI_ADVANCE_FIXTURE/files.json" ]; then changed_files=$(grep -o '"filename"' "$RABI_ADVANCE_FIXTURE/files.json" | wc -l); fi
-        printf '{"number":7,"state":"%s","draft":%s,"merged":%s,"merge_commit_sha":%s,"base":{"ref":"%s","sha":"%s","repo":{"full_name":"fixture/project"}},"head":{"ref":"topic","sha":"%s","repo":{"full_name":"fixture/project"}},"mergeable":%s,"mergeable_state":"%s","changed_files":%s,"additions":0,"deletions":0}\n' "$state" "$draft" "$merged" "$merge_commit" "$base_ref" "$base" "$head" "$mergeable" "$mergeable_state" "$changed_files"
+        printf '{"number":7,"state":"%s","draft":%s,"merged":%s,"merge_commit_sha":%s,"base":{"ref":"%s","sha":"%s","repo":{"full_name":"fixture/project"}},"head":{"ref":"topic","sha":"%s","repo":{"full_name":"%s"}},"mergeable":%s,"mergeable_state":"%s","changed_files":%s,"additions":0,"deletions":0}\n' "$state" "$draft" "$merged" "$merge_commit" "$base_ref" "$base" "$head" "$head_repo" "$mergeable" "$mergeable_state" "$changed_files"
         ;;
       repos/fixture/project/git/ref/heads/topic)
         remote_head=$head
@@ -2476,4 +2479,236 @@ fn landing_remote_deletion_disables_hooks_and_repository_push_configuration() {
         .unwrap()
         .status
         .success());
+}
+
+#[test]
+fn task_merge_records_external_and_normal_merges_then_advance_cleans_up() {
+    for state in ["blocked", "ready", "awaiting_approval"] {
+        let repo = Repo::landing("[merge]\nauto=['low']", Some("docs/change.md"));
+        decode(repo.advance().output().unwrap(), 0);
+        repo.edit(|task| {
+            task["state"] = if state == "blocked" {
+                json!({"name":"blocked", "reason":"review_invalid"})
+            } else {
+                json!({"name":state})
+            };
+        });
+        let mut command = repo.command(&["task", "merge", &repo.task, "--json"]);
+        if state == "blocked" {
+            command.arg("--external-review");
+        }
+        let merged = decode(command.output().unwrap(), 0);
+        assert_eq!(merged["data"]["merged"], true, "{state}: {merged}");
+        assert_eq!(merged["data"]["taskRecorded"], true, "{state}: {merged}");
+        assert_eq!(merged["data"]["taskId"], repo.task);
+        assert_eq!(
+            merged["data"]["cleanupCommand"],
+            format!("rabi task advance {}", repo.task)
+        );
+        let task = repo.view();
+        assert_eq!(task["task"]["state"]["name"], "merged");
+        assert_eq!(
+            task["task"]["advance"]["mergedHeadSha"],
+            repo.git(&["rev-parse", "topic"])
+        );
+        assert_eq!(
+            task["task"]["advance"]["mergeCommitSha"],
+            "3333333333333333333333333333333333333333"
+        );
+        assert_eq!(
+            task["events"].as_array().unwrap().last().unwrap()["reason"],
+            "merged_external"
+        );
+        assert!(
+            repo.workspace.is_dir(),
+            "task merge must retain the checkout"
+        );
+        assert!(task["task"]["advance"]["cleanup"].is_null());
+        let cleaned = decode(repo.advance().output().unwrap(), 0);
+        assert_eq!(cleaned["data"]["state"]["name"], "merged");
+        assert_eq!(
+            cleaned["data"]["cleanup"]["outcome"], "removed",
+            "{cleaned}"
+        );
+    }
+}
+
+#[test]
+fn task_merge_reconciles_already_merged_without_merge_call_or_live_workspace() {
+    for live in [true, false] {
+        let repo = Repo::new(&["test"], "", None);
+        repo.edit(|task| {
+            task["state"] = json!({"name":"blocked", "reason":"review_invalid"});
+            task["prNumber"] = json!(7);
+        });
+        if !live {
+            repo.git(&["worktree", "remove", repo.workspace.to_str().unwrap()]);
+        }
+        fs::write(repo.root.join("merged"), "").unwrap();
+        let merged = decode(
+            repo.command(&["task", "merge", &repo.task, "--json"])
+                .output()
+                .unwrap(),
+            0,
+        );
+        assert_eq!(merged["data"]["merged"], true);
+        assert_eq!(merged["data"]["taskRecorded"], true);
+        assert!(merged["data"]["preflight"].is_null());
+        assert_eq!(repo.view()["task"]["state"]["name"], "merged");
+        let trace = fs::read_to_string(repo.root.join("gh-trace")).unwrap();
+        assert!(
+            !trace.lines().any(|line| line.starts_with("pr merge ")),
+            "{trace}"
+        );
+    }
+}
+
+#[test]
+fn task_merge_does_not_record_nonmatching_ambiguous_or_terminal_tasks() {
+    for case in [
+        "branch",
+        "number",
+        "destination",
+        "ambiguous",
+        "terminal",
+        "fork",
+    ] {
+        for already in [false, true] {
+            let repo = Repo::landing("[merge]\nauto=['low']", Some("docs/change.md"));
+            decode(repo.advance().output().unwrap(), 0);
+            decode(
+                repo.command(&[
+                    "set",
+                    repo.workspace.to_str().unwrap(),
+                    "--pr",
+                    "7",
+                    "--json",
+                ])
+                .output()
+                .unwrap(),
+                0,
+            );
+            repo.edit(|task| {
+                task["state"] = json!({"name":"blocked", "reason":"review_invalid"});
+                match case {
+                    "branch" => task["branch"] = json!("different-topic"),
+                    "number" => task["prNumber"] = json!(8),
+                    "destination" => {
+                        task["pushRemoteUrl"] = json!("https://github.com/other/project.git")
+                    }
+                    "terminal" => task["state"] = json!({"name":"abandoned"}),
+                    _ => (),
+                }
+            });
+            if case == "ambiguous" {
+                let id = format!("task_{}", uuid::Uuid::new_v4());
+                let directory = repo.record.parent().unwrap().parent().unwrap().join(&id);
+                fs::create_dir(&directory).unwrap();
+                let mut task: Value =
+                    serde_json::from_slice(&fs::read(&repo.record).unwrap()).unwrap();
+                task["id"] = json!(id);
+                fs::write(
+                    directory.join("task.json"),
+                    serde_json::to_vec(&task).unwrap(),
+                )
+                .unwrap();
+                fs::write(directory.join("events.jsonl"), "").unwrap();
+            }
+            if case == "fork" {
+                fs::write(repo.root.join("fork"), "").unwrap();
+            }
+            if already {
+                fs::write(repo.root.join("merged"), "").unwrap();
+            }
+            let before = fs::read(&repo.record).unwrap();
+            // Stable PR selection avoids consulting the intentionally mismatched task.
+            // A live workspace keeps the local-head gate evaluated for new merges.
+            let selector = if already {
+                "pr:7"
+            } else {
+                repo.workspace.to_str().unwrap()
+            };
+            let output = repo
+                .command(&["task", "merge", selector, "--external-review", "--json"])
+                .output()
+                .unwrap();
+            let value = decode(output, if already || case == "fork" { 4 } else { 0 });
+            if !already && case != "fork" {
+                assert_eq!(value["data"]["taskRecorded"], false, "{case}: {value}");
+                assert!(value["data"]["taskId"].is_null());
+            }
+            assert_eq!(fs::read(&repo.record).unwrap(), before, "{case}: {value}");
+        }
+    }
+}
+
+#[test]
+fn task_merge_dry_run_and_status_never_record_an_already_merged_task() {
+    let repo = Repo::new(&["test"], "", None);
+    repo.edit(|task| {
+        task["state"] = json!({"name":"blocked", "reason":"review_invalid"});
+        task["prNumber"] = json!(7);
+    });
+    fs::write(repo.root.join("merged"), "").unwrap();
+    let before = fs::read(&repo.record).unwrap();
+    let events = fs::read(repo.record.with_file_name("events.jsonl")).unwrap();
+    for args in [
+        vec!["task", "merge", &repo.task, "--dry-run", "--json"],
+        vec!["task", "status", &repo.task, "--json"],
+    ] {
+        decode(repo.command(&args).output().unwrap(), 0);
+        assert_eq!(fs::read(&repo.record).unwrap(), before);
+        assert_eq!(
+            fs::read(repo.record.with_file_name("events.jsonl")).unwrap(),
+            events
+        );
+    }
+}
+
+#[test]
+fn task_merge_record_failure_warns_without_changing_merge_status() {
+    for already in [false, true] {
+        let repo = Repo::landing("[merge]\nauto=['low']", Some("docs/change.md"));
+        decode(repo.advance().output().unwrap(), 0);
+        repo.edit(|task| task["state"] = json!({"name":"blocked", "reason":"review_invalid"}));
+        fs::write(repo.record.with_file_name("events.jsonl"), "invalid\n").unwrap();
+        if already {
+            fs::write(repo.root.join("merged"), "").unwrap();
+        }
+        let value = decode(
+            repo.command(&["task", "merge", &repo.task, "--external-review", "--json"])
+                .output()
+                .unwrap(),
+            0,
+        );
+        assert_eq!(value["data"]["merged"], true);
+        assert_eq!(value["data"]["taskRecorded"], false);
+        assert_eq!(value["warnings"][0]["code"], "task_merge_record_failed");
+        let task: Value = serde_json::from_slice(&fs::read(&repo.record).unwrap()).unwrap();
+        assert_eq!(task["state"]["name"], "blocked");
+    }
+}
+
+#[test]
+fn task_merge_records_confirmed_merge_after_failed_gh_and_keeps_exit_one() {
+    let repo = Repo::landing("[merge]\nauto=['low']", Some("docs/change.md"));
+    decode(repo.advance().output().unwrap(), 0);
+    fs::write(repo.root.join("merge-fails-after-write"), "").unwrap();
+    let value = decode(
+        repo.command(&["task", "merge", &repo.task, "--external-review", "--json"])
+            .output()
+            .unwrap(),
+        1,
+    );
+    assert_eq!(value["data"]["merged"], true);
+    assert_eq!(value["data"]["taskRecorded"], true);
+    assert_eq!(repo.view()["task"]["state"]["name"], "merged");
+    let trace = fs::read_to_string(repo.root.join("gh-trace")).unwrap();
+    assert_eq!(
+        trace
+            .lines()
+            .filter(|line| line.starts_with("pr merge "))
+            .count(),
+        1
+    );
 }
